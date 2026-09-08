@@ -1,0 +1,6 @@
+* text=auto eol=lf
+# Cargo validates vendored file bytes against .cargo-checksum.json.
+Source/ThirdParty/RmlUiBridge/grid/vendor/** -text
+*.png binary
+*.ttf binary
+*.otf binary

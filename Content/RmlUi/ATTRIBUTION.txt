@@ -1,0 +1,9 @@
+Demo.rml, Demo.css, Sample.html and Sample.css are project sample content.
+
+hello_world.png is the original image from the RmlUi sample assets.
+Source: https://github.com/mikke89/RmlUi/tree/ba95ffe8bfb6370efb2cdcca927eaad4710c5413/Samples/assets
+RmlUi is distributed under the MIT license; see RmlUi-LICENSE.txt.
+
+LatoLatin-Regular.ttf, LatoLatin-Bold.ttf and RobotoMono-Regular.ttf are
+unmodified fonts from the same RmlUi sample assets. Their original SIL Open
+Font License notices are included in LICENSE.txt.

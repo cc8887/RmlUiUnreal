@@ -1,0 +1,63 @@
+cmake_minimum_required(VERSION 3.20)
+project(RmlUiUnrealBridge VERSION 1.0 LANGUAGES C CXX)
+
+if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "The reference RmlUi bridge currently supports Win64.")
+endif()
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(MSVC)
+    add_compile_options(/utf-8 /MP)
+endif()
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+foreach(dependency ZLIB BZIP2 PNG HARFBUZZ BROTLI)
+    set(FT_DISABLE_${dependency} ON CACHE BOOL "" FORCE)
+endforeach()
+
+set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+set(RMLUI_SAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(RMLUI_FONT_ENGINE freetype CACHE STRING "" FORCE)
+set(RMLUI_LUA_BINDINGS OFF CACHE BOOL "" FORCE)
+set(RMLUI_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
+set(RMLUI_COMPILER_OPTIONS OFF CACHE BOOL "" FORCE)
+set(RMLUI_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/RmlUi-ba95ffe8bfb6370efb2cdcca927eaad4710c5413")
+set(FREETYPE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/freetype-0a0221a1347e2f1e07c395263540026e9a0aa7c7")
+add_subdirectory("${FREETYPE_SOURCE}" freetype EXCLUDE_FROM_ALL)
+add_library(Freetype::Freetype ALIAS freetype)
+add_subdirectory("${RMLUI_SOURCE}" rmlui EXCLUDE_FROM_ALL)
+
+find_program(CARGO_EXECUTABLE cargo REQUIRED)
+set(GRID_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/grid/target/release/rmlui_grid.lib")
+add_custom_command(OUTPUT "${GRID_LIBRARY}"
+    COMMAND "${CARGO_EXECUTABLE}" build --release --locked --offline --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/grid/Cargo.toml"
+    DEPENDS grid/Cargo.toml grid/Cargo.lock grid/src/lib.rs .cargo/config.toml
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Building the pinned native Grid layout engine")
+add_custom_target(rmlui_grid_build DEPENDS "${GRID_LIBRARY}")
+add_library(rmlui_grid STATIC IMPORTED GLOBAL)
+set_target_properties(rmlui_grid PROPERTIES IMPORTED_LOCATION "${GRID_LIBRARY}")
+add_dependencies(rmlui_grid rmlui_grid_build)
+target_sources(rmlui_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/grid/GridFormattingContext.cpp")
+target_include_directories(rmlui_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/grid" "${RMLUI_SOURCE}/Source/Core")
+target_link_libraries(rmlui_core PRIVATE rmlui_grid ws2_32 userenv bcrypt ntdll)
+
+add_library(RmlUiBridge SHARED src/RmlUiBridge.cpp "${RMLUI_SOURCE}/Backends/RmlUi_Renderer_DX11.cpp")
+target_include_directories(RmlUiBridge PUBLIC include PRIVATE "${RMLUI_SOURCE}/Backends")
+target_compile_definitions(RmlUiBridge PRIVATE RMLUE_BRIDGE_EXPORTS NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(RmlUiBridge PRIVATE RmlUi::Core RmlUi::Debugger d3d11 dxgi d3dcompiler)
+get_filename_component(RMLUE_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/../../../Binaries/ThirdParty/Win64" ABSOLUTE)
+foreach(configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    set_target_properties(RmlUiBridge PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_${configuration} "${RMLUE_OUTPUT}"
+        ARCHIVE_OUTPUT_DIRECTORY_${configuration} "${RMLUE_OUTPUT}")
+endforeach()
+
+add_executable(RmlUiBridgeTests EXCLUDE_FROM_ALL tests/BridgeTests.cpp)
+add_executable(RmlUiGridTests EXCLUDE_FROM_ALL tests/GridTests.cpp)
+target_link_libraries(RmlUiGridTests PRIVATE RmlUiBridge)
+target_link_libraries(RmlUiBridgeTests PRIVATE RmlUiBridge)
+foreach(configuration DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    set_target_properties(RmlUiBridgeTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${configuration} "${RMLUE_OUTPUT}")
+    set_target_properties(RmlUiGridTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${configuration} "${RMLUE_OUTPUT}")
+endforeach()

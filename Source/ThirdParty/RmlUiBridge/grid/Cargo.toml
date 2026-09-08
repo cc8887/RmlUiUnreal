@@ -1,0 +1,16 @@
+[package]
+name = "rmlui_grid"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+taffy = { version = "=0.14.0", default-features = false, features = ["std", "taffy_tree", "grid", "content_size", "parse"] }
+cssparser = "=0.37.0"
+
+[profile.release]
+opt-level = 3
+

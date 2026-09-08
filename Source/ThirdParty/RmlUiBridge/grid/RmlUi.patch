@@ -1,0 +1,431 @@
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index d28c326..2617d21 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -32,6 +32,12 @@ enum class ShorthandId : uint8_t {
+ 	Flex,
+ 	FlexFlow,
+ 	Nav,
++	GridColumn,
++	GridRow,
++	GridArea,
++	GridTemplate,
++	PlaceItems,
++	PlaceSelf,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -156,12 +162,25 @@ enum class PropertyId : uint8_t {
+ 
+ 	RmlUi_Language,
+ 	RmlUi_Direction,
++	GridTemplateColumns,
++	GridTemplateRows,
++	GridAutoColumns,
++	GridAutoRows,
++	GridTemplateAreas,
++	GridAutoFlow,
++	GridColumnStart,
++	GridColumnEnd,
++	GridRowStart,
++	GridRowEnd,
++	JustifyItems,
++	JustifySelf,
++	Order,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+ 
+ 	// The maximum number of IDs. This limits the number of possible custom IDs to MaxNumIds - FirstCustomId.
+-	MaxNumIds = 128
++	MaxNumIds = 192
+ };
+ 
+ enum class MediaQueryId : uint8_t {
+diff --git a/Include/RmlUi/Core/PropertySpecification.h b/Include/RmlUi/Core/PropertySpecification.h
+index f15d2f8..4509178 100644
+--- a/Include/RmlUi/Core/PropertySpecification.h
++++ b/Include/RmlUi/Core/PropertySpecification.h
+@@ -27,7 +27,9 @@ enum class ShorthandType {
+ 	// Comma-separated list of properties or shorthands, the number of declared values must match the specified.
+ 	RecursiveCommaSeparated,
+ 	// The 'flex' shorthand has some special behavior but otherwise acts like 'FallThrough'.
+-	Flex
++	Flex,
++	GridPlacement,
++	GridTemplate
+ };
+ 
+ /**
+@@ -106,7 +108,7 @@ private:
+ 	PropertyIdSet property_ids_forcing_layout;
+ 
+ 	enum class ParsePropertyResult { Success, ContainsVariable, Error };
+-	enum class SplitOption { None, Whitespace, Comma };
++	enum class SplitOption { None, Whitespace, Comma, PreserveQuotes };
+ 	ParsePropertyResult ParsePropertyValues(StringList& values_list, const String& values, SplitOption split_option) const;
+ 
+ 	friend class Rml::StyleSheetSpecification;
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index fca4660..1e4ef80 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -42,7 +42,9 @@ namespace Style {
+ 		TableRowGroup,
+ 		TableColumn,
+ 		TableColumnGroup,
+-		TableCell
++		TableCell,
++		Grid,
++		InlineGrid
+ 	};
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
+ 
+@@ -130,7 +132,7 @@ namespace Style {
+ 	using FlexBasis = LengthPercentageAuto;
+ 	enum class FlexDirection : uint8_t { Row, RowReverse, Column, ColumnReverse };
+ 	enum class FlexWrap : uint8_t { Nowrap, Wrap, WrapReverse };
+-	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly };
++	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Stretch };
+ 
+ 	enum class Nav : uint8_t { None, Auto, Horizontal, Vertical, TreeOrder };
+ 
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index fa087f9..8a3e978 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1884,6 +1884,7 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		changed_properties.Contains(PropertyId::TransformOriginY) || changed_properties.Contains(PropertyId::TransformOriginZ);
+ 
+ 	// Update the z-index and stacking context.
++	if (changed_properties.Contains(PropertyId::Order) && parent) parent->DirtyStackingContext();
+ 	if (changed_properties.Contains(PropertyId::ZIndex) || filter_or_mask_changed || perspective_changed || transform_changed)
+ 	{
+ 		const Style::ZIndex z_index_property = meta->computed_values.z_index();
+@@ -2383,7 +2384,18 @@ void Element::BuildLocalStackingContext()
+ 
+ void Element::AddChildrenToStackingContext(Vector<StackingContextChild>& stacking_children)
+ {
+-	bool is_flex_container = (GetDisplay() == Style::Display::Flex);
++	if (GetDisplay() == Style::Display::Grid || GetDisplay() == Style::Display::InlineGrid)
++	{
++		ElementList ordered;
++		for (int i = 0; i < GetNumChildren(); ++i) ordered.push_back(GetChild(i));
++		std::stable_sort(ordered.begin(), ordered.end(), [](Element* a, Element* b) {
++			return a->GetProperty(PropertyId::Order)->Get<float>() < b->GetProperty(PropertyId::Order)->Get<float>();
++		});
++		for (Element* child : ordered) child->AddToStackingContext(stacking_children, true, false);
++		for (int i = GetNumChildren(); i < int(children.size()); ++i) children[i]->AddToStackingContext(stacking_children, false, true);
++		return;
++	}
++	bool is_flex_container = (GetDisplay() == Style::Display::Flex || GetDisplay() == Style::Display::Grid || GetDisplay() == Style::Display::InlineGrid);
+ 	const int num_children = (int)children.size();
+ 	for (int i = 0; i < num_children; ++i)
+ 	{
+@@ -2447,6 +2459,7 @@ void Element::AddToStackingContext(Vector<StackingContextChild>& stacking_childr
+ 		case Display::FlowRoot:
+ 		case Display::Table:
+ 		case Display::Flex:
++		case Display::Grid:
+ 			order = RenderOrder::Block;
+ 			render_as_atomic_unit = (display == Display::Table || is_flex_item);
+ 			break;
+@@ -2454,6 +2467,7 @@ void Element::AddToStackingContext(Vector<StackingContextChild>& stacking_childr
+ 		case Display::Inline:
+ 		case Display::InlineBlock:
+ 		case Display::InlineFlex:
++		case Display::InlineGrid:
+ 		case Display::InlineTable:
+ 			order = RenderOrder::Inline;
+ 			render_as_atomic_unit = (display != Display::Inline || is_flex_item);
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 412f9ba..9579490 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1345,6 +1345,19 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::FlexShrink:
+ 	case PropertyId::FlexWrap:
+ 	case PropertyId::JustifyContent:
++	case PropertyId::GridTemplateColumns:
++	case PropertyId::GridTemplateRows:
++	case PropertyId::GridAutoColumns:
++	case PropertyId::GridAutoRows:
++	case PropertyId::GridTemplateAreas:
++	case PropertyId::GridAutoFlow:
++	case PropertyId::GridColumnStart:
++	case PropertyId::GridColumnEnd:
++	case PropertyId::GridRowStart:
++	case PropertyId::GridRowEnd:
++	case PropertyId::JustifyItems:
++	case PropertyId::JustifySelf:
++	case PropertyId::Order:
+ 		break;
+ 	// Navigation properties. Must be manually retrieved with 'GetProperty()'.
+ 	case PropertyId::NavUp:
+diff --git a/Source/Core/Layout/BlockFormattingContext.cpp b/Source/Core/Layout/BlockFormattingContext.cpp
+index 526da4b..c694e77 100644
+--- a/Source/Core/Layout/BlockFormattingContext.cpp
++++ b/Source/Core/Layout/BlockFormattingContext.cpp
+@@ -66,11 +66,13 @@ static OuterDisplayType GetOuterDisplayType(Style::Display display)
+ 	case Style::Display::Block:
+ 	case Style::Display::FlowRoot:
+ 	case Style::Display::Flex:
++	case Style::Display::Grid:
+ 	case Style::Display::Table: return OuterDisplayType::BlockLevel;
+ 
+ 	case Style::Display::Inline:
+ 	case Style::Display::InlineBlock:
+ 	case Style::Display::InlineFlex:
++	case Style::Display::InlineGrid:
+ 	case Style::Display::InlineTable: return OuterDisplayType::InlineLevel;
+ 
+ 	case Style::Display::TableRow:
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 68ec692..f8012a7 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -593,6 +593,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 						break;
+ 					}
+ 					//-fallthrough
++				case JustifyContent::Stretch:
+ 				case JustifyContent::FlexStart: line.items.back().main_auto_margin_size_b = remaining_free_space; break;
+ 				case JustifyContent::FlexEnd: line.items.front().main_auto_margin_size_a = remaining_free_space; break;
+ 				case JustifyContent::Center:
+diff --git a/Source/Core/Layout/FormattingContext.cpp b/Source/Core/Layout/FormattingContext.cpp
+index bc80967..32bbf45 100644
+--- a/Source/Core/Layout/FormattingContext.cpp
++++ b/Source/Core/Layout/FormattingContext.cpp
+@@ -4,6 +4,7 @@
+ #include "../../../Include/RmlUi/Core/Profiling.h"
+ #include "BlockFormattingContext.h"
+ #include "FlexFormattingContext.h"
++#include "GridFormattingContext.h"
+ #include "LayoutBox.h"
+ #include "ReplacedFormattingContext.h"
+ #include "TableFormattingContext.h"
+@@ -27,6 +28,10 @@ UniquePtr<LayoutBox> FormattingContext::FormatIndependent(ContainerBox* parent_c
+ 	{
+ 		type = FormattingContextType::Flex;
+ 	}
++	else if (display == Display::Grid || display == Display::InlineGrid)
++	{
++		return GridFormattingContext::Format(parent_container, element, override_initial_box);
++	}
+ 	else if (display == Display::Table || display == Display::InlineTable)
+ 	{
+ 		type = FormattingContextType::Table;
+diff --git a/Source/Core/Layout/LayoutBox.h b/Source/Core/Layout/LayoutBox.h
+index a98cf01..5e37e0f 100644
+--- a/Source/Core/Layout/LayoutBox.h
++++ b/Source/Core/Layout/LayoutBox.h
+@@ -10,7 +10,7 @@ namespace Rml {
+ */
+ class LayoutBox {
+ public:
+-	enum class Type { Root, BlockContainer, InlineContainer, FlexContainer, TableWrapper, Replaced };
++	enum class Type { Root, BlockContainer, InlineContainer, FlexContainer, TableWrapper, Replaced, GridContainer };
+ 
+ 	virtual ~LayoutBox() = default;
+ 
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index c39dbbf..4f72ba2 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -1,4 +1,5 @@
+ #include "LayoutDetails.h"
++#include "GridFormattingContext.h"
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
+ #include "../../../Include/RmlUi/Core/ElementScroll.h"
+@@ -217,6 +218,8 @@ void LayoutDetails::BuildBoxSizeAndMargins(Box& box, Vector2f min_size, Vector2f
+ float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_block)
+ {
+ 	RMLUI_ASSERT(element);
++	if (element->GetDisplay() == Style::Display::Grid || element->GetDisplay() == Style::Display::InlineGrid)
++		return GridFormattingContext::ShrinkToFit(element, containing_block);
+ 
+ 	// @performance Can we lay out the elements directly using a fit-content size mode, instead of fetching the
+ 	// shrink-to-fit width first? Use a non-definite placeholder for the box content width, and available width as a
+@@ -427,7 +430,7 @@ void LayoutDetails::BuildBoxWidth(Box& box, const ComputedValues& computed, floa
+ 		// See CSS 2.1 section 10.3.7 for when this should be applied.
+ 		const bool shrink_to_fit = !replaced_element &&
+ 			((computed.float_() != Style::Float::None) || (absolutely_positioned && inset_auto) ||
+-				(computed.display() == Style::Display::InlineBlock || computed.display() == Style::Display::InlineFlex));
++				(computed.display() == Style::Display::InlineBlock || computed.display() == Style::Display::InlineFlex || computed.display() == Style::Display::InlineGrid));
+ 
+ 		if (!shrink_to_fit)
+ 		{
+diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
+index c0f8bbe..e25393f 100644
+--- a/Source/Core/PropertySpecification.cpp
++++ b/Source/Core/PropertySpecification.cpp
+@@ -1,4 +1,5 @@
+ #include "../../Include/RmlUi/Core/PropertySpecification.h"
++#include "RmlGrid.h"
+ #include "../../Include/RmlUi/Core/Debug.h"
+ #include "../../Include/RmlUi/Core/Log.h"
+ #include "../../Include/RmlUi/Core/Profiling.h"
+@@ -258,7 +259,7 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
+ 		return false;
+ 
+ 	StringList property_values;
+-	switch (ParsePropertyValues(property_values, property_value, SplitOption::None))
++	switch (ParsePropertyValues(property_values, property_value, property_id == PropertyId::GridTemplateAreas ? SplitOption::PreserveQuotes : SplitOption::None))
+ 	{
+ 	case ParsePropertyResult::Success: break;
+ 	case ParsePropertyResult::ContainsVariable:
+@@ -307,6 +308,33 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
+ 	}
+ 	RMLUI_ASSERT(!property_values.empty());
+ 
++	if (shorthand_definition->type == ShorthandType::GridPlacement || shorthand_definition->type == ShorthandType::GridTemplate)
++	{
++		StringList parts;
++		StringUtilities::ExpandString(parts, property_value, '/');
++		const size_t count = shorthand_definition->items.size();
++		if (parts.empty() || parts.size() > count) return false;
++		for (String& part : parts) { part = StringUtilities::StripWhitespace(part); if (part.empty()) return false; }
++		const bool is_template = shorthand_definition->type == ShorthandType::GridTemplate;
++		if (is_template && parts.size() != 2 && property_value != "none") return false;
++		auto omitted = [](const String& value) {
++			// A single custom identifier propagates to the corresponding omitted grid line.
++			if (RmlGrid_Validate("custom-ident", value.c_str())) return value;
++			return String("auto");
++		};
++		while (parts.size() < count)
++		{
++			const size_t source = count == 4 && parts.size() == 3 ? 1 : 0;
++			parts.push_back(is_template ? String("none") : omitted(parts[source]));
++		}
++		Vector<Property> parsed(count);
++		for (size_t i = 0; i < count; ++i)
++			if (!shorthand_definition->items[i].property_definition->ParseValue(parsed[i], parts[i])) return false;
++		for (size_t i = 0; i < count; ++i) dictionary.SetProperty(shorthand_definition->items[i].property_id, parsed[i]);
++		if (is_template) dictionary.SetProperty(PropertyId::GridTemplateAreas, Property(String("none"), Unit::STRING));
++		return true;
++	}
++
+ 	// Handle the special behavior of the flex shorthand first, otherwise it acts like 'FallThrough'.
+ 	if (shorthand_definition->type == ShorthandType::Flex && !property_values.empty())
+ 	{
+@@ -515,7 +543,8 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ {
+ 	RMLUI_ASSERT(values_list.empty());
+ 
+-	const bool split_values = (split_option != SplitOption::None);
++	const bool preserve_quotes = (split_option == SplitOption::PreserveQuotes);
++	const bool split_values = (split_option != SplitOption::None && !preserve_quotes);
+ 	const bool split_by_comma = (split_option == SplitOption::Comma);
+ 	const bool split_by_whitespace = (split_option == SplitOption::Whitespace);
+ 
+@@ -580,7 +609,7 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 				open_quote_character = character;
+ 				if (split_by_whitespace)
+ 					SubmitValue();
+-				else if (split_by_comma)
++				else if (split_by_comma || preserve_quotes)
+ 					value += character;
+ 				else if (IsAllWhitespace(value))
+ 					value.clear();
+@@ -631,7 +660,7 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 				if (open_parentheses == 0)
+ 				{
+ 					state = VALUE;
+-					if (split_by_comma)
++					if (split_by_comma || preserve_quotes)
+ 						value += character;
+ 					else
+ 						SubmitExactValue();
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index b7eda4a..8e4a9fa 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -13,6 +13,7 @@
+ #include "PropertyParserNumber.h"
+ #include "PropertyParserRatio.h"
+ #include "PropertyParserString.h"
++#include "GridPropertyParser.h"
+ #include "PropertyParserTransform.h"
+ #include "PropertyShorthandDefinition.h"
+ 
+@@ -29,6 +30,7 @@ struct DefaultStyleSheetParsers : NonCopyMoveable {
+ 	PropertyParserNumber angle = PropertyParserNumber(Unit::ANGLE, Unit::RAD);
+ 	PropertyParserKeyword keyword = PropertyParserKeyword();
+ 	PropertyParserString string = PropertyParserString();
++	GridPropertyParser grid_tracks{"tracks"}, grid_auto_tracks{"auto-tracks"}, grid_placement{"placement"}, grid_areas{"areas"}, grid_flow{"flow"}, grid_alignment{"alignment"};
+ 	PropertyParserAnimation animation = PropertyParserAnimation(PropertyParserAnimation::ANIMATION_PARSER);
+ 	PropertyParserAnimation transition = PropertyParserAnimation(PropertyParserAnimation::TRANSITION_PARSER);
+ 	PropertyParserColour color = PropertyParserColour();
+@@ -232,6 +234,12 @@ void StyleSheetSpecification::RegisterDefaultParsers()
+ 	RegisterParser("angle", &default_parsers->angle);
+ 	RegisterParser("keyword", &default_parsers->keyword);
+ 	RegisterParser("string", &default_parsers->string);
++	RegisterParser("grid_tracks", &default_parsers->grid_tracks);
++	RegisterParser("grid_auto_tracks", &default_parsers->grid_auto_tracks);
++	RegisterParser("grid_placement", &default_parsers->grid_placement);
++	RegisterParser("grid_areas", &default_parsers->grid_areas);
++	RegisterParser("grid_flow", &default_parsers->grid_flow);
++	RegisterParser("grid_alignment", &default_parsers->grid_alignment);
+ 	RegisterParser("animation", &default_parsers->animation);
+ 	RegisterParser("transition", &default_parsers->transition);
+ 	RegisterParser("color", &default_parsers->color);
+@@ -304,7 +312,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterShorthand(ShorthandId::BorderRadius, "border-radius", "border-top-left-radius, border-top-right-radius, border-bottom-right-radius, border-bottom-left-radius", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::Display, "display", "inline", false, true)
+-		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell");
++		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell, grid, inline-grid");
+ 	RegisterProperty(PropertyId::Position, "position", "static", false, true).AddParser("keyword", "static, relative, absolute, fixed");
+ 	RegisterProperty(PropertyId::Top, "top", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 	RegisterProperty(PropertyId::Right, "right", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockWidth);
+@@ -413,9 +421,9 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::FillImage, "fill-image", "", false, false).AddParser("string");
+ 
+ 	// Flexbox
+-	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch");
+-	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch");
+-	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch");
++	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch").AddParser("keyword", "start=0, end=1, normal=6");
++	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch").AddParser("keyword", "start=0, end=1, normal=4");
++	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch").AddParser("keyword", "start=1, end=2, normal=5");
+ 
+ 	RegisterProperty(PropertyId::FlexBasis, "flex-basis", "auto", false, true).AddParser("keyword", "auto").AddParser("length_percent");
+ 	RegisterProperty(PropertyId::FlexDirection, "flex-direction", "row", false, true).AddParser("keyword", "row, row-reverse, column, column-reverse");
+@@ -423,7 +431,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::FlexGrow, "flex-grow", "0", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexShrink, "flex-shrink", "1", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexWrap, "flex-wrap", "nowrap", false, true).AddParser("keyword", "nowrap, wrap, wrap-reverse");
+-	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly");
++	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch").AddParser("keyword", "start=0, end=1, normal=6");
+ 
+ 	RegisterShorthand(ShorthandId::Flex, "flex", "flex-grow, flex-shrink, flex-basis", ShorthandType::Flex);
+ 	RegisterShorthand(ShorthandId::FlexFlow, "flex-flow", "flex-direction, flex-wrap", ShorthandType::FallThrough);
+@@ -432,7 +440,26 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::RmlUi_Language, "-rmlui-language", "", true, true).AddParser("string");
+ 	RegisterProperty(PropertyId::RmlUi_Direction, "-rmlui-direction", "auto", true, true).AddParser("keyword", "auto, ltr, rtl");
+ 
+-	RMLUI_ASSERTMSG(instance->properties.shorthand_map->AssertAllInserted(ShorthandId::NumDefinedIds), "Missing specification for one or more Shorthand IDs.");
++	RegisterProperty(PropertyId::GridTemplateColumns, "grid-template-columns", "none", false, true).AddParser("grid_tracks");
++	RegisterProperty(PropertyId::GridTemplateRows, "grid-template-rows", "none", false, true).AddParser("grid_tracks");
++	RegisterProperty(PropertyId::GridAutoColumns, "grid-auto-columns", "auto", false, true).AddParser("grid_auto_tracks");
++	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("grid_auto_tracks");
++	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("grid_areas");
++	RegisterProperty(PropertyId::GridAutoFlow, "grid-auto-flow", "row", false, true).AddParser("grid_flow");
++	RegisterProperty(PropertyId::GridColumnStart, "grid-column-start", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::GridColumnEnd, "grid-column-end", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::GridRowStart, "grid-row-start", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::GridRowEnd, "grid-row-end", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("grid_alignment");
++	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("grid_alignment", "auto");
++	RegisterProperty(PropertyId::Order, "order", "0", false, true).AddParser("number");
++	RegisterShorthand(ShorthandId::GridColumn, "grid-column", "grid-column-start, grid-column-end", ShorthandType::GridPlacement);
++	RegisterShorthand(ShorthandId::GridRow, "grid-row", "grid-row-start, grid-row-end", ShorthandType::GridPlacement);
++	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row-start, grid-column-start, grid-row-end, grid-column-end", ShorthandType::GridPlacement);
++	RegisterShorthand(ShorthandId::GridTemplate, "grid-template", "grid-template-rows, grid-template-columns", ShorthandType::GridTemplate);
++	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
++	RegisterShorthand(ShorthandId::PlaceSelf, "place-self", "align-self, justify-self", ShorthandType::Replicate);
++	RMLUI_ASSERTMSG(instance->properties.shorthand_map->AssertAllInserted(ShorthandId::NumDefinedIds), "Missing grid shorthand IDs.");
+ 	RMLUI_ASSERTMSG(instance->properties.property_map->AssertAllInserted(PropertyId::NumDefinedIds), "Missing specification for one or more Property IDs.");
+ 	// clang-format on
+ }

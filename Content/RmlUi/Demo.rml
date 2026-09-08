@@ -1,0 +1,94 @@
+<rml>
+<head>
+    <title>RmlUi | Interface Workspace</title>
+    <link type="text/rcss" href="Demo.css" />
+</head>
+<body>
+    <div class="app-header">
+        <div class="brand">RmlUi<span class="brand-divider">/</span><span class="brand-subtitle">UNREAL</span></div>
+        <div class="header-right"><span class="connection-dot"></span><span>Native session</span><span class="header-build">01</span></div>
+    </div>
+    <div class="workspace-header">
+        <div><h1>Interface workspace</h1><div class="muted">Northstar / Interface 01</div></div>
+        <div class="toolbar"><span id="session-state" class="state">Ready</span><button id="reload">Reload</button><button id="debugger">Inspector</button></div>
+    </div>
+    <div class="tabs">
+        <button id="tab-workspace" class="tab active">Workspace</button>
+        <button id="tab-effects" class="tab">Effects</button>
+        <button id="tab-assets" class="tab">Assets</button>
+    </div>
+    <div class="view-scroll">
+        <div id="view-workspace" class="view">
+            <div class="workspace-columns">
+                <div class="settings">
+                    <h2>Session settings</h2>
+                    <label class="field-label" for="session-name">Session name</label>
+                    <input id="session-name" type="text" value="Northstar session" maxlength="80" />
+                    <label class="field-label" for="accent">Accent</label>
+                    <select id="accent"><option value="teal" selected="selected">Evergreen</option><option value="coral">Coral</option><option value="blue">Ocean</option></select>
+                    <div class="field-label label-row"><label for="intensity">Intensity</label><span id="intensity-value" class="mono">72%</span></div>
+                    <input id="intensity" type="range" min="0" max="100" step="1" value="72" />
+                    <div class="divider"></div>
+                    <label class="check-row"><input id="animate" type="checkbox" value="true" checked="checked" /> Motion</label>
+                    <label class="check-row"><input id="compact" type="checkbox" value="true" /> Compact rows</label>
+                    <div class="action-row"><button id="reset">Reset</button><button id="apply" class="primary">Apply changes</button></div>
+                    <div class="settings-foot"><span class="tiny-label">PRESET</span><div>Interface / Standard</div></div>
+                </div>
+                <div class="preview-area">
+                    <div class="section-heading"><h2>Live preview</h2><span class="muted mono">RML / CSS</span></div>
+                    <div class="preview">
+                        <div id="preview-accent" class="preview-topline"></div>
+                        <div class="preview-header"><div><div class="tiny-label">SESSION</div><h3 id="preview-title">Northstar session</h3></div><span class="success-label">Connected</span></div>
+                        <div class="metrics">
+                            <div class="metric"><div class="muted">Completed runs</div><div id="run-count" class="metric-value">42</div></div>
+                            <div class="metric"><div class="muted">Intensity</div><div id="preview-intensity" class="metric-value">72%</div></div>
+                            <div class="metric last"><div class="muted">Last applied</div><div id="preview-time" class="metric-time mono">09:41:00</div></div>
+                        </div>
+                        <div class="meter-track"><div id="preview-meter" class="meter-fill"></div></div>
+                        <div class="activity-heading"><strong>Activity</strong><span class="muted">Today</span></div>
+                        <div id="preview-rows" class="run-table">
+                            <div class="run-row"><span class="run-name">Interface assembly</span><span class="run-state">Complete</span><span class="run-duration mono">0.84 s</span></div>
+                            <div class="run-row"><span class="run-name">Style resolution</span><span class="run-state">Complete</span><span class="run-duration mono">0.12 s</span></div>
+                            <div class="run-row"><span class="run-name">Asset synchronization</span><span class="run-state">Complete</span><span class="run-duration mono">0.36 s</span></div>
+                        </div>
+                        <div class="motion-track"><div id="preview-motion" class="motion-indicator"></div></div>
+                        <div class="preview-footer"><span>Northstar workspace</span><span class="mono">LOCAL</span></div>
+                    </div>
+                    <div class="preview-meta"><span class="connection-dot"></span><span>Session active</span><span class="preview-meta-right">Viewport surface</span></div>
+                </div>
+            </div>
+        </div>
+        <div id="view-effects" class="view" style="display: none;">
+            <div class="section-heading"><h2>Effect samples</h2><span class="muted">06 specimens</span></div>
+            <div class="effect-grid">
+                <div class="effect-item"><div class="specimen gradient-sample"><div class="specimen-label">01</div></div><div class="effect-title">Linear gradient</div><div class="mono muted">decorator</div></div>
+                <div class="effect-item"><div class="specimen clipping-sample"><div class="clip-stripe stripe-a"></div><div class="clip-stripe stripe-b"></div><div class="specimen-label">02</div></div><div class="effect-title">Rounded clipping</div><div class="mono muted">overflow / border-radius</div></div>
+                <div class="effect-item"><div class="specimen shadow-sample"><div class="shadow-paper"></div><div class="specimen-label">03</div></div><div class="effect-title">Soft shadow</div><div class="mono muted">box-shadow</div></div>
+                <div class="effect-item"><div class="specimen filter-sample"><div class="filter-bars"><div class="bar teal"></div><div class="bar coral"></div><div class="bar yellow"></div></div><div class="specimen-label">04</div></div><div class="effect-title">Color filter</div><div class="mono muted">filter: grayscale</div></div>
+                <div class="effect-item"><div class="specimen mask-sample"><div class="masked-bars"><div class="bar teal"></div><div class="bar coral"></div><div class="bar yellow"></div></div><div class="specimen-label">05</div></div><div class="effect-title">Alpha mask</div><div class="mono muted">mask-image</div></div>
+                <div class="effect-item"><div class="specimen transform-sample"><div class="transform-square"></div><div class="specimen-label">06</div></div><div class="effect-title">Transform animation</div><div class="mono muted">keyframes / rotate</div></div>
+            </div>
+            <div class="section-heading additional-heading"><h2>Scrollable sample queue</h2><span class="muted">08 entries</span></div>
+            <div class="sample-queue">
+                <div class="queue-row"><span>01 / Linear gradient</span><span class="mono">Decorator</span></div>
+                <div class="queue-row"><span>02 / Rounded clipping</span><span class="mono">Geometry</span></div>
+                <div class="queue-row"><span>03 / Soft shadow</span><span class="mono">Layer</span></div>
+                <div class="queue-row"><span>04 / Color filter</span><span class="mono">Filter</span></div>
+                <div class="queue-row"><span>05 / Alpha mask</span><span class="mono">Mask</span></div>
+                <div class="queue-row"><span>06 / Transform animation</span><span class="mono">Transform</span></div>
+                <div class="queue-row"><span>07 / Pointer transition</span><span class="mono">Input</span></div>
+                <div class="queue-row"><span>08 / Nested scroll</span><span class="mono">Layout</span></div>
+            </div>
+        </div>
+        <div id="view-assets" class="view" style="display: none;">
+            <div class="section-heading"><h2>Document assets</h2><div class="toolbar"><button id="sample-grid">Open Grid.html</button><button id="sample-html" class="primary">Open Sample.html</button></div></div>
+            <div class="asset-columns">
+                <div class="image-asset"><div class="image-stage"><img src="hello_world.png" width="432" height="220" /></div><div class="asset-name">hello_world.png</div><span class="muted mono">540 x 276 / PNG</span></div>
+                <div class="font-assets"><div class="tiny-label">LATO LATIN / REGULAR</div><div class="font-specimen">Interface sample<br />0123456789</div><div class="divider"></div><div class="tiny-label">LATO LATIN / BOLD</div><div class="font-specimen strong">Interface workspace</div><div class="divider"></div><div class="tiny-label">ROBOTO MONO / REGULAR</div><div class="font-specimen mono">RmlUi::Context<br />0123456789</div></div>
+            </div>
+            <div class="asset-file-list"><div class="queue-row"><span>Demo.rml</span><span class="muted">Active document</span></div><div class="queue-row"><span>Demo.css</span><span class="muted">External stylesheet</span></div><div class="queue-row"><span>Sample.html + Sample.css</span><span class="muted">HTML sample</span></div><div class="queue-row"><span>LICENSE.txt</span><span class="muted">Font licenses</span></div></div>
+        </div>
+    </div>
+    <div class="statusbar"><span class="status-label">EVENTS</span><span id="event-count" class="mono">0</span><span id="event-latest" class="event-latest mono">Waiting</span><span class="status-end">RmlUi / Unreal Engine</span></div>
+</body>
+</rml>

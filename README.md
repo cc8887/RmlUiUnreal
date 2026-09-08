@@ -1,0 +1,25 @@
+# RmlUi Unreal
+
+Win64 runtime plugin for RmlUi 6.3 in Unreal Engine 5.8.1. No engine changes.
+
+This repository root is the plugin directory. The surrounding `RmlUiUnrealTest` project is a local test host and is not part of this repository. Generated binaries, intermediate files, native build caches and downloaded archives are excluded; pinned dependency source and Cargo.lock are tracked. Build the bridge before the first Unreal build of a fresh checkout, or use the separately packaged prebuilt plugin.
+
+Place this directory under your project's `Plugins` folder. Build the native bridge once:
+
+```powershell
+./Source/ThirdParty/RmlUiBridge/BuildBridge.ps1
+```
+
+Then build your Unreal project. Keep `Binaries/ThirdParty/Win64/RmlUiBridge.dll` and `RmlUiBridge.lib` with the plugin. CMake, Visual Studio 2022, a Windows SDK and an MSVC Rust/Cargo toolchain are required to rebuild the native bridge. Pinned sources are bundled under `Source/ThirdParty/RmlUiBridge/vendor` and `grid/vendor`.
+
+Add **RmlUi Document** in the UMG widget palette, or construct `SRmlUiWidget` from C++. Set a document path or inline document source; use Blueprint document events and DOM helpers for application logic. `Tools > RmlUi Preview` opens the editor preview. The inspector is included.
+
+The plugin accepts supported `<html>` or `<rml>` documents with linked `.css` or `.rcss`, images and fonts. RmlUi handles parsing and layout, with native Taffy-backed Grid support added by this plugin. See [Grid support and limitations](GRID_SUPPORT.md) and [RmlUi documentation](https://mikke89.github.io/RmlUiDoc/). It does not embed a browser or JavaScript runtime.
+
+The official full DX11 renderer runs on a private device and supplies pixels to an Unreal texture, so UE may run on DX11 or DX12. Filters, clipping, transforms, layers, masks, shadows and gradients use the upstream renderer. The transport reads pixels to CPU memory and uploads them every frame. This is a functional evaluation backend, not a zero-copy RHI renderer.
+
+Relative resource paths search `Project/Content/RmlUi`, then this plugin's `Content/RmlUi`. Plugin data is staged as UFS. After adding/moving resource files, rebuild with `-NoUBTMakefiles` before packaging so Unreal refreshes wildcard runtime dependencies. Add host project data to Packaging's Additional Non-Asset Directories to Package.
+
+`LoadFontFace` loads custom fonts and optional Unicode fallback fonts. Bundled fonts are Latin; native IME composition and complex-script shaping are not implemented. SVG/Lottie and Lua extensions are not compiled.
+
+Tests are registered as `RmlUiUnreal.*`. The sample project's root README contains launch, packaging and test commands. Upstream licenses are retained in vendored source and `Content/RmlUi`.

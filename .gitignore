@@ -1,0 +1,12 @@
+/Binaries/
+/Intermediate/
+/.vs/
+*.sln
+*.slnx
+*.VC.db
+/Source/ThirdParty/RmlUiBridge/build/
+/Source/ThirdParty/RmlUiBridge/Build/
+/Source/ThirdParty/RmlUiBridge/_build/
+/Source/ThirdParty/RmlUiBridge/_downloads/
+/Source/ThirdParty/RmlUiBridge/vendor/*.zip
+/Source/ThirdParty/RmlUiBridge/grid/target/

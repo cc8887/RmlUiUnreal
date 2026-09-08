@@ -1,0 +1,16 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "RmlUi Unreal",
+  "Description": "RmlUi documents rendered in Unreal Engine through Slate and UMG.",
+  "Category": "UI",
+  "CreatedBy": "RmlUi Unreal integration",
+  "CanContainContent": true,
+  "Installed": false,
+  "SupportedTargetPlatforms": ["Win64"],
+  "Modules": [
+    {"Name": "RmlUiUnreal", "Type": "Runtime", "LoadingPhase": "PreDefault"},
+    {"Name": "RmlUiUnrealEditor", "Type": "Editor", "LoadingPhase": "Default"}
+  ]
+}
