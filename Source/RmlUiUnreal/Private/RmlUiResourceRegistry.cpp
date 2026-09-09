@@ -3,7 +3,7 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/ScopeLock.h"
 #include "RmlUiBridge.h"
-#include "Trace/Trace.h"
+#include "Trace/Trace.inl"
 
 UE_TRACE_CHANNEL_DEFINE(RmlUiResourcesChannel, "RmlUi resource lifetime events");
 
@@ -15,6 +15,7 @@ UE_TRACE_EVENT_BEGIN(RmlUiResources, Lifetime)
     UE_TRACE_EVENT_FIELD(uint64, CreatedSequence)
     UE_TRACE_EVENT_FIELD(uint8, Action)
     UE_TRACE_EVENT_FIELD(uint8, Domain)
+    UE_TRACE_EVENT_FIELD(uint8, State)
     UE_TRACE_EVENT_FIELD(int32, Type)
     UE_TRACE_EVENT_FIELD(int32, Backend)
     UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
@@ -27,7 +28,7 @@ FRmlUiResourceRegistry& FRmlUiResourceRegistry::Get()
 }
 
 uint64 FRmlUiResourceRegistry::RegisterUnreal(ERmlUiResourceType Type, ERmlUiResourceBackend Backend, uint64 OwnerId,
-    uint64 EstimatedBytes, FString Name, UObject* Object)
+    uint64 EstimatedBytes, FString Name, UObject* Object, ERmlUiResourceState State)
 {
     FRmlUiResourceInfo Info;
     {
@@ -39,12 +40,26 @@ uint64 FRmlUiResourceRegistry::RegisterUnreal(ERmlUiResourceType Type, ERmlUiRes
         Info.Domain = ERmlUiResourceDomain::Unreal;
         Info.Type = Type;
         Info.Backend = Backend;
+        Info.State = State;
         Info.Name = MoveTemp(Name);
         Info.Object = Object;
         Resources.Add(Info.Id, Info);
     }
     Trace(ERmlUiResourceAction::Created, Info);
     return Info.Id;
+}
+
+void FRmlUiResourceRegistry::SetUnrealState(uint64 Id, ERmlUiResourceState State)
+{
+    FRmlUiResourceInfo Info;
+    {
+        FScopeLock Lock(&Mutex);
+        FRmlUiResourceInfo* Existing = Resources.Find(Id);
+        if (!Existing || Existing->Domain != ERmlUiResourceDomain::Unreal || Existing->State == State) return;
+        Existing->State = State;
+        Info = *Existing;
+    }
+    Trace(ERmlUiResourceAction::Updated, Info);
 }
 
 void FRmlUiResourceRegistry::UpdateUnreal(uint64 Id, uint64 EstimatedBytes)
@@ -105,9 +120,43 @@ TArray<FRmlUiResourceInfo> FRmlUiResourceRegistry::Snapshot() const
     return Result;
 }
 
+TArray<FRmlUiResourceInfo> FRmlUiResourceRegistry::SnapshotOwnedBy(uint64 OwnerId, bool bRecursive) const
+{
+    const TArray<FRmlUiResourceInfo> Copy = Snapshot();
+    TSet<uint64> Owners;
+    Owners.Add(OwnerId);
+    TArray<FRmlUiResourceInfo> Result;
+    bool bAdded = true;
+    while (bAdded)
+    {
+        bAdded = false;
+        for (const FRmlUiResourceInfo& Info : Copy)
+        {
+            if (!Owners.Contains(Info.OwnerId) || Result.ContainsByPredicate(
+                [&Info](const FRmlUiResourceInfo& Existing) { return Existing.Id == Info.Id; }))
+            {
+                continue;
+            }
+            Result.Add(Info);
+            if (bRecursive) Owners.Add(Info.Id);
+            bAdded = bRecursive;
+        }
+        if (!bRecursive) break;
+    }
+    Result.Sort([](const FRmlUiResourceInfo& A, const FRmlUiResourceInfo& B) { return A.Id < B.Id; });
+    return Result;
+}
+
 void FRmlUiResourceRegistry::Visit(TFunctionRef<void(const FRmlUiResourceInfo&)> Visitor) const
 {
     const TArray<FRmlUiResourceInfo> Copy = Snapshot();
+    for (const FRmlUiResourceInfo& Info : Copy) Visitor(Info);
+}
+
+void FRmlUiResourceRegistry::VisitOwnedBy(uint64 OwnerId, bool bRecursive,
+    TFunctionRef<void(const FRmlUiResourceInfo&)> Visitor) const
+{
+    const TArray<FRmlUiResourceInfo> Copy = SnapshotOwnedBy(OwnerId, bRecursive);
     for (const FRmlUiResourceInfo& Info : Copy) Visitor(Info);
 }
 
@@ -121,6 +170,7 @@ void FRmlUiResourceRegistry::Trace(ERmlUiResourceAction Action, const FRmlUiReso
         << Lifetime.CreatedSequence(Info.CreatedSequence)
         << Lifetime.Action(static_cast<uint8>(Action))
         << Lifetime.Domain(static_cast<uint8>(Info.Domain))
+        << Lifetime.State(static_cast<uint8>(Info.State))
         << Lifetime.Type(static_cast<int32>(Info.Type))
         << Lifetime.Backend(static_cast<int32>(Info.Backend))
         << Lifetime.Name(*Info.Name);

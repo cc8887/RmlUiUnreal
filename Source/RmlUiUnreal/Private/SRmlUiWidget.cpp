@@ -1,6 +1,7 @@
 #include "SRmlUiWidget.h"
 
 #include "Engine/Texture2D.h"
+#include "GlobalRenderResources.h"
 #include "RHITypes.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
@@ -11,10 +12,12 @@
 #include "Rendering/SlateRenderer.h"
 #include "RmlUiBridge.h"
 #include "RmlUiResourceRegistry.h"
+#include "RmlUiSlateRhiRenderer.h"
 #include "RmlUiUnrealModule.h"
 #include "Slate/DeferredCleanupSlateBrush.h"
 #include "SlateMaterialBrush.h"
 #include "Styling/CoreStyle.h"
+#include "TextureResource.h"
 
 namespace
 {
@@ -91,6 +94,16 @@ uint64 SRmlUiWidget::GetResolvedMaterialDrawCount(int32 MaterialSlot) const
         : 0;
 }
 
+int32 SRmlUiWidget::GetReadySlateRhiGeometryCount() const
+{
+    int32 Count = 0;
+    for (const auto& Pair : NativeGeometries)
+    {
+        if (IsRmlUiSlateRhiGeometryReady(Pair.Value.RhiGeometry)) ++Count;
+    }
+    return Count;
+}
+
 void SRmlUiWidget::ShutdownNative()
 {
     if (NativeView)
@@ -123,7 +136,9 @@ void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
     Texture = nullptr;
     TextureBrush.Reset();
     TextureSize = FIntPoint::ZeroValue;
-    for (const auto& Pair : NativeGeometries) Registry.UnregisterUnreal(Pair.Value.RegistryId);
+    for (const auto& DrawElement : SlateRhiDrawElements) ResetRmlUiSlateRhiDraw(DrawElement);
+    SlateRhiDrawElements.Reset();
+    for (const auto& Pair : NativeGeometries) MarkRmlUiSlateRhiGeometryPendingDestroy(Pair.Value.RhiGeometry);
     NativeGeometries.Reset();
     for (const auto& Pair : NativeTextures) Registry.UnregisterUnreal(Pair.Value.RegistryId);
     NativeTextures.Reset();
@@ -351,7 +366,7 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             if (Source.Action == RMLUE_SLATE_RESOURCE_DESTROY)
             {
                 if (const FGeometryResource* Existing = NativeGeometries.Find(Source.Id))
-                    FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
+                    MarkRmlUiSlateRhiGeometryPendingDestroy(Existing->RhiGeometry);
                 NativeGeometries.Remove(Source.Id);
                 continue;
             }
@@ -362,7 +377,7 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
                 return false;
             }
             if (const FGeometryResource* Existing = NativeGeometries.Find(Source.Id))
-                FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
+                MarkRmlUiSlateRhiGeometryPendingDestroy(Existing->RhiGeometry);
             FGeometryResource Resource;
             Resource.Vertices.Reserve(Source.VertexCount * 8);
             for (uint32 VertexIndex = 0; VertexIndex < Source.VertexCount; ++VertexIndex)
@@ -377,6 +392,26 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             Resource.RegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(ERmlUiResourceType::SlateGeometryCache,
                 ERmlUiResourceBackend::Slate, RmlUE_GetViewResourceId(NativeView), EstimatedBytes,
                 FString::Printf(TEXT("Slate geometry cache %llu"), Source.Id));
+            Resource.VertexBufferRegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(
+                ERmlUiResourceType::SlateVertexBuffer, ERmlUiResourceBackend::RHI, Resource.RegistryId,
+                static_cast<uint64>(Source.VertexCount) * 20,
+                FString::Printf(TEXT("Slate vertex buffer %llu"), Source.Id), nullptr,
+                ERmlUiResourceState::PendingCreate);
+            Resource.IndexBufferRegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(
+                ERmlUiResourceType::SlateIndexBuffer, ERmlUiResourceBackend::RHI, Resource.RegistryId,
+                static_cast<uint64>(Source.IndexCount) * sizeof(uint32),
+                FString::Printf(TEXT("Slate index buffer %llu"), Source.Id), nullptr,
+                ERmlUiResourceState::PendingCreate);
+            Resource.RhiGeometry = CreateRmlUiSlateRhiGeometry(Resource.Vertices, Resource.Indices,
+                Resource.RegistryId, Resource.VertexBufferRegistryId, Resource.IndexBufferRegistryId);
+            if (!Resource.RhiGeometry.IsValid())
+            {
+                FRmlUiResourceRegistry::Get().UnregisterUnreal(Resource.VertexBufferRegistryId);
+                FRmlUiResourceRegistry::Get().UnregisterUnreal(Resource.IndexBufferRegistryId);
+                FRmlUiResourceRegistry::Get().UnregisterUnreal(Resource.RegistryId);
+                LastError = FString::Printf(TEXT("Could not create Slate RHI geometry %llu."), Source.Id);
+                return false;
+            }
             NativeGeometries.Add(Source.Id, MoveTemp(Resource));
         }
         for (uint32 Index = 0; Index < SlateFrame.TextureCount; ++Index)
@@ -423,11 +458,10 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             uint8* Pixels = static_cast<uint8*>(FMemory::Malloc(ByteCount));
             for (SIZE_T Pixel = 0; Pixel < ByteCount; Pixel += 4)
             {
-                const uint32 Alpha = Source.PremultipliedRGBA[Pixel + 3];
-                Pixels[Pixel + 0] = Alpha ? static_cast<uint8>(FMath::Min(255u, (Source.PremultipliedRGBA[Pixel + 2] * 255u + Alpha / 2) / Alpha)) : 0;
-                Pixels[Pixel + 1] = Alpha ? static_cast<uint8>(FMath::Min(255u, (Source.PremultipliedRGBA[Pixel + 1] * 255u + Alpha / 2) / Alpha)) : 0;
-                Pixels[Pixel + 2] = Alpha ? static_cast<uint8>(FMath::Min(255u, (Source.PremultipliedRGBA[Pixel + 0] * 255u + Alpha / 2) / Alpha)) : 0;
-                Pixels[Pixel + 3] = static_cast<uint8>(Alpha);
+                Pixels[Pixel + 0] = Source.PremultipliedRGBA[Pixel + 2];
+                Pixels[Pixel + 1] = Source.PremultipliedRGBA[Pixel + 1];
+                Pixels[Pixel + 2] = Source.PremultipliedRGBA[Pixel + 0];
+                Pixels[Pixel + 3] = Source.PremultipliedRGBA[Pixel + 3];
             }
             FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Source.Width, Source.Height);
             NewTexture->UpdateTextureRegions(0, 1, Region, Source.Width * 4, 4, Pixels,
@@ -529,18 +563,22 @@ FVector2D SRmlUiWidget::ComputeDesiredSize(float) const
     return DesiredSize;
 }
 
-int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&,
+int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect& CullingRect,
     FSlateWindowElementList& Elements, int32 LayerId, const FWidgetStyle& Style, bool bParentEnabled) const
 {
+    SlateRhiDrawCount = 0;
+    SlateFallbackDrawCount = 0;
     if (bUseSlateRenderer && NativeDraws.Num() > 0)
     {
         const FSlateRenderTransform Transform = Geometry.GetAccumulatedRenderTransform();
+        int32 RhiDrawElementIndex = 0;
         for (const FNativeDraw& Draw : NativeDraws)
         {
             const FGeometryResource* GeometryResource = NativeGeometries.Find(Draw.GeometryId);
             if (!GeometryResource) continue;
             const FSlateBrush* Brush = nullptr;
-            if (const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId))
+            const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId);
+            if (NativeMaterial)
             {
                 if (const FMaterialResource* Material = Materials.Find(NativeMaterial->Alias))
                     if (Material->Brush.IsValid())
@@ -551,10 +589,69 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                             ++ResolvedMaterialDrawCounts[NativeMaterial->Slot];
                     }
             }
-            else if (const FTextureResource* Resource = NativeTextures.Find(Draw.TextureId))
+            const FTextureResource* TextureResource = NativeMaterial ? nullptr : NativeTextures.Find(Draw.TextureId);
+            if (TextureResource)
             {
-                if (Resource->Brush.IsValid()) Brush = Resource->Brush->GetSlateBrush();
+                if (TextureResource->Brush.IsValid()) Brush = TextureResource->Brush->GetSlateBrush();
             }
+
+            FTextureRHIRef TextureRhi;
+            if (!NativeMaterial && IsRmlUiSlateRhiGeometryReady(GeometryResource->RhiGeometry))
+            {
+                if (Draw.TextureId == 0)
+                {
+                    TextureRhi = GWhiteTexture->TextureRHI;
+                }
+                else if (TextureResource && TextureResource->Texture && TextureResource->Texture->GetResource())
+                {
+                    TextureRhi = TextureResource->Texture->GetResource()->GetTextureRHI();
+                }
+            }
+            if (TextureRhi.IsValid())
+            {
+                const auto ToWindowPosition = [&](FVector2f Position)
+                {
+                    Position += Draw.Translation;
+                    if (Draw.bTransform) Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
+                    Position /= PixelScale;
+                    return TransformPoint(Transform, Position);
+                };
+                const FVector2f Origin = ToWindowPosition(FVector2f::ZeroVector);
+                FRmlUiSlateRhiDrawDesc RhiDraw;
+                RhiDraw.Geometry = GeometryResource->RhiGeometry;
+                RhiDraw.Texture = TextureRhi;
+                RhiDraw.Origin = Origin;
+                RhiDraw.AxisX = ToWindowPosition(FVector2f(1.0f, 0.0f)) - Origin;
+                RhiDraw.AxisY = ToWindowPosition(FVector2f(0.0f, 1.0f)) - Origin;
+                RhiDraw.ScissorRect = CullingRect;
+                RhiDraw.GeometryId = Draw.GeometryId;
+                if (Draw.bScissor)
+                {
+                    const FVector2D TopLeft = Geometry.LocalToAbsolute(
+                        FVector2D(Draw.Scissor.Left, Draw.Scissor.Top) / PixelScale);
+                    const FVector2D BottomRight = Geometry.LocalToAbsolute(
+                        FVector2D(Draw.Scissor.Right, Draw.Scissor.Bottom) / PixelScale);
+                    RhiDraw.ScissorRect = RhiDraw.ScissorRect.IntersectionWith(
+                        FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y));
+                }
+                if (RhiDraw.ScissorRect.Right > RhiDraw.ScissorRect.Left &&
+                    RhiDraw.ScissorRect.Bottom > RhiDraw.ScissorRect.Top)
+                {
+                    if (RhiDrawElementIndex < SlateRhiDrawElements.Num())
+                    {
+                        UpdateRmlUiSlateRhiDraw(SlateRhiDrawElements[RhiDrawElementIndex], MoveTemp(RhiDraw));
+                    }
+                    else
+                    {
+                        SlateRhiDrawElements.Add(CreateRmlUiSlateRhiDraw(MoveTemp(RhiDraw)));
+                    }
+                    FSlateDrawElement::MakeCustom(Elements, LayerId++, SlateRhiDrawElements[RhiDrawElementIndex]);
+                    ++RhiDrawElementIndex;
+                    ++SlateRhiDrawCount;
+                }
+                continue;
+            }
+
             if (!Brush) Brush = FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
             TArray<FSlateVertex> Vertices;
             Vertices.Reserve(GeometryResource->Vertices.Num() / 8);
@@ -577,8 +674,15 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 const FVector2D BottomRight = Geometry.LocalToAbsolute(FVector2D(Draw.Scissor.Right, Draw.Scissor.Bottom) / PixelScale);
                 Elements.PushClip(FSlateClippingZone(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y)));
             }
-            FSlateDrawElement::MakeCustomVerts(Elements, LayerId++, FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices, nullptr, 0, 0);
+            FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
+                FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
+                nullptr, 0, 0, ESlateDrawEffect::None, ESlateBatchDrawFlag::PreMultipliedAlpha);
+            ++SlateFallbackDrawCount;
             if (Draw.bScissor) Elements.PopClip();
+        }
+        for (int32 Index = RhiDrawElementIndex; Index < SlateRhiDrawElements.Num(); ++Index)
+        {
+            ResetRmlUiSlateRhiDraw(SlateRhiDrawElements[Index]);
         }
     }
     if (TextureBrush.IsValid())

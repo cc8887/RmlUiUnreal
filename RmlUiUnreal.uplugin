@@ -10,7 +10,7 @@
   "Installed": false,
   "SupportedTargetPlatforms": ["Win64"],
   "Modules": [
-    {"Name": "RmlUiUnreal", "Type": "Runtime", "LoadingPhase": "PreDefault"},
+    {"Name": "RmlUiUnreal", "Type": "Runtime", "LoadingPhase": "PostConfigInit"},
     {"Name": "RmlUiUnrealEditor", "Type": "Editor", "LoadingPhase": "Default"}
   ]
 }

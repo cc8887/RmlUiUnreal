@@ -1,6 +1,7 @@
 #include "RmlUiWidget.h"
 
 #include "SRmlUiWidget.h"
+#include "MaterialDomain.h"
 #include "RmlUiBridge.h"
 #include "RmlUiUnrealModule.h"
 #include "Materials/Material.h"

@@ -10,6 +10,8 @@
 #include "RmlUiBridge.h"
 #include "RmlUiResourceRegistry.h"
 #include "SRmlUiWidget.h"
+#include "ShaderCore.h"
+#include "RenderingThread.h"
 
 DEFINE_LOG_CATEGORY(LogRmlUiUnreal);
 IMPLEMENT_MODULE(FRmlUiUnrealModule, RmlUiUnreal)
@@ -110,6 +112,7 @@ void FRmlUiUnrealModule::StartupModule()
         return;
     }
     PluginRoot = FPaths::ConvertRelativePathToFull(Plugin->GetBaseDir());
+    AddShaderSourceDirectoryMapping(TEXT("/Plugin/RmlUiUnreal"), FPaths::Combine(PluginRoot, TEXT("Shaders")));
     const FString DllPath = FPaths::Combine(PluginRoot, TEXT("Binaries/ThirdParty/Win64/RmlUiBridge.dll"));
     BridgeDll = FPlatformProcess::GetDllHandle(*DllPath);
     if (!BridgeDll)
@@ -154,6 +157,7 @@ void FRmlUiUnrealModule::ShutdownModule()
         }
     }
     Widgets.Empty();
+    FlushRenderingCommands();
     if (bInitialized)
     {
         RmlUE_Shutdown();

@@ -19,6 +19,13 @@ enum class ERmlUiResourceAction : uint8
     Destroyed = 3
 };
 
+enum class ERmlUiResourceState : uint8
+{
+    PendingCreate,
+    Live,
+    PendingDestroy
+};
+
 enum class ERmlUiResourceType : int32
 {
     View = 1,
@@ -29,14 +36,17 @@ enum class ERmlUiResourceType : int32
     MaterialBinding = 6,
     UnrealTexture = 100,
     SlateMaterialBrush = 101,
-    SlateGeometryCache = 102
+    SlateGeometryCache = 102,
+    SlateVertexBuffer = 103,
+    SlateIndexBuffer = 104
 };
 
 enum class ERmlUiResourceBackend : int32
 {
     Shared = 0,
     DX11 = 1,
-    Slate = 2
+    Slate = 2,
+    RHI = 3
 };
 
 struct RMLUIUNREAL_API FRmlUiResourceInfo
@@ -48,6 +58,7 @@ struct RMLUIUNREAL_API FRmlUiResourceInfo
     ERmlUiResourceDomain Domain = ERmlUiResourceDomain::Native;
     ERmlUiResourceType Type = ERmlUiResourceType::View;
     ERmlUiResourceBackend Backend = ERmlUiResourceBackend::Shared;
+    ERmlUiResourceState State = ERmlUiResourceState::Live;
     FString Name;
     TWeakObjectPtr<UObject> Object;
 };
@@ -58,13 +69,17 @@ public:
     static FRmlUiResourceRegistry& Get();
 
     uint64 RegisterUnreal(ERmlUiResourceType Type, ERmlUiResourceBackend Backend, uint64 OwnerId,
-        uint64 EstimatedBytes, FString Name, UObject* Object = nullptr);
+        uint64 EstimatedBytes, FString Name, UObject* Object = nullptr,
+        ERmlUiResourceState State = ERmlUiResourceState::Live);
     void UpdateUnreal(uint64 Id, uint64 EstimatedBytes);
+    void SetUnrealState(uint64 Id, ERmlUiResourceState State);
     void UnregisterUnreal(uint64 Id);
     void ApplyNativeEvent(int32 Action, const RmlUE_ResourceRecord& Record);
 
     TArray<FRmlUiResourceInfo> Snapshot() const;
+    TArray<FRmlUiResourceInfo> SnapshotOwnedBy(uint64 OwnerId, bool bRecursive = true) const;
     void Visit(TFunctionRef<void(const FRmlUiResourceInfo&)> Visitor) const;
+    void VisitOwnedBy(uint64 OwnerId, bool bRecursive, TFunctionRef<void(const FRmlUiResourceInfo&)> Visitor) const;
 
 private:
     void Trace(ERmlUiResourceAction Action, const FRmlUiResourceInfo& Info) const;

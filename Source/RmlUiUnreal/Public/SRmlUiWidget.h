@@ -52,6 +52,9 @@ public:
     uint64 GetFrameNumber() const { return FrameNumber; }
     uint64 GetResolvedMaterialDrawCount() const { return ResolvedMaterialDrawCount; }
     uint64 GetResolvedMaterialDrawCount(int32 MaterialSlot) const;
+    uint64 GetSlateRhiDrawCount() const { return SlateRhiDrawCount; }
+    uint64 GetSlateFallbackDrawCount() const { return SlateFallbackDrawCount; }
+    int32 GetReadySlateRhiGeometryCount() const;
     bool IsUsingSlateRenderer() const { return bUseSlateRenderer; }
     FOnRmlUiBeforeRender OnBeforeRender;
     FOnRmlUiNativeShutdown OnNativeShutdown;
@@ -92,6 +95,9 @@ private:
         TArray<float> Vertices;
         TArray<uint32> Indices;
         uint64 RegistryId = 0;
+        uint64 VertexBufferRegistryId = 0;
+        uint64 IndexBufferRegistryId = 0;
+        TSharedPtr<class FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> RhiGeometry;
     };
     struct FTextureResource {
         TObjectPtr<UTexture2D> Texture = nullptr;
@@ -133,6 +139,7 @@ private:
     TMap<int32, FVector2D> ActiveTouches;
     TSet<int32> PressedMouseButtons;
     TArray<FNativeDraw> NativeDraws;
+    mutable TArray<TSharedPtr<class FRmlUiSlateRhiDraw, ESPMode::ThreadSafe>> SlateRhiDrawElements;
     TMap<uint64, FGeometryResource> NativeGeometries;
     TMap<uint64, FTextureResource> NativeTextures;
     TMap<uint64, FNativeMaterialResource> NativeMaterialResources;
@@ -141,5 +148,7 @@ private:
     uint32 UnsupportedSlateFeatures = 0;
     mutable uint64 ResolvedMaterialDrawCount = 0;
     mutable uint64 ResolvedMaterialDrawCounts[3] = {};
+    mutable uint64 SlateRhiDrawCount = 0;
+    mutable uint64 SlateFallbackDrawCount = 0;
     bool bNativeShutdown = false;
 };

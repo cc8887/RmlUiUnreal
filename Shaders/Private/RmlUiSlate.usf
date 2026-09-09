@@ -1,0 +1,37 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/GammaCorrectionCommon.ush"
+
+float4x4 ViewProjection;
+float2 Origin;
+float2 AxisX;
+float2 AxisY;
+Texture2D InTexture;
+SamplerState TextureSampler;
+
+struct FRmlUiSlateVertexOutput
+{
+    float4 Position : SV_POSITION;
+    float2 TexCoord : TEXCOORD0;
+    half4 Color : COLOR0;
+};
+
+FRmlUiSlateVertexOutput MainVS(
+    float2 InPosition : ATTRIBUTE0,
+    float2 InTexCoord : ATTRIBUTE1,
+    half4 InColor : ATTRIBUTE2)
+{
+    FRmlUiSlateVertexOutput Output;
+    const float2 WindowPosition = Origin + AxisX * InPosition.x + AxisY * InPosition.y;
+    Output.Position = mul(float4(WindowPosition, 0.0f, 1.0f), ViewProjection);
+    Output.TexCoord = InTexCoord;
+    Output.Color = InColor FCOLOR_COMPONENT_SWIZZLE;
+    Output.Color.rgb = sRGBToLinear(Output.Color.rgb);
+    return Output;
+}
+
+float4 MainPS(FRmlUiSlateVertexOutput Input) : SV_TARGET0
+{
+    float4 Output = Input.Color * InTexture.Sample(TextureSampler, Input.TexCoord);
+    Output.rgb = LinearToSrgb(Output.rgb);
+    return Output;
+}

@@ -69,6 +69,11 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     if (!TestNotNull(TEXT("Registry test UObject"), Object)) return false;
     const uint64 UnrealId = Registry.RegisterUnreal(ERmlUiResourceType::UnrealTexture, ERmlUiResourceBackend::Slate,
         77, 4096, TEXT("Registry test texture"), Object);
+    const uint64 ChildId = Registry.RegisterUnreal(ERmlUiResourceType::SlateVertexBuffer,
+        ERmlUiResourceBackend::RHI, UnrealId, 128, TEXT("Registry test child"), nullptr,
+        ERmlUiResourceState::PendingCreate);
+    const uint64 GrandchildId = Registry.RegisterUnreal(ERmlUiResourceType::SlateIndexBuffer,
+        ERmlUiResourceBackend::RHI, ChildId, 64, TEXT("Registry test grandchild"));
 
     bool bFoundUnreal = false;
     bool bVisitorCouldSnapshot = false;
@@ -82,12 +87,30 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     });
     TestTrue(TEXT("Unreal resource exposes metadata and a non-owning UObject reference"), bFoundUnreal);
     TestTrue(TEXT("Visitor executes outside the registry lock"), bVisitorCouldSnapshot);
+    TestEqual(TEXT("Direct owner traversal excludes descendants"), Registry.SnapshotOwnedBy(77, false).Num(), 1);
+    TestEqual(TEXT("Recursive owner traversal includes descendants"), Registry.SnapshotOwnedBy(77, true).Num(), 3);
+    int32 VisitedDescendants = 0;
+    bool bOwnedVisitorCouldSnapshot = false;
+    Registry.VisitOwnedBy(UnrealId, true, [&](const FRmlUiResourceInfo&)
+    {
+        ++VisitedDescendants;
+        bOwnedVisitorCouldSnapshot = !Registry.Snapshot().IsEmpty();
+    });
+    TestEqual(TEXT("Owner visitor walks child and grandchild"), VisitedDescendants, 2);
+    TestTrue(TEXT("Owner visitor executes outside the registry lock"), bOwnedVisitorCouldSnapshot);
+    Registry.SetUnrealState(ChildId, ERmlUiResourceState::Live);
+    const FRmlUiResourceInfo* ChildInfo = Registry.Snapshot().FindByPredicate(
+        [ChildId](const FRmlUiResourceInfo& Info) { return Info.Id == ChildId; });
+    TestTrue(TEXT("Resource lifecycle state can be updated"),
+        ChildInfo && ChildInfo->State == ERmlUiResourceState::Live);
 
     Registry.UpdateUnreal(UnrealId, 8192);
     const TArray<FRmlUiResourceInfo> Updated = Registry.Snapshot();
     const FRmlUiResourceInfo* UpdatedInfo = Updated.FindByPredicate(
         [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; });
     TestTrue(TEXT("Resource estimate can be updated"), UpdatedInfo && UpdatedInfo->EstimatedBytes == 8192);
+    Registry.UnregisterUnreal(GrandchildId);
+    Registry.UnregisterUnreal(ChildId);
     Registry.UnregisterUnreal(UnrealId);
     TestFalse(TEXT("Unregistered Unreal resource is absent"), Registry.Snapshot().ContainsByPredicate(
         [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; }));
@@ -124,6 +147,22 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
             Info.OwnerId == SlateOwnerId && Info.Backend == ERmlUiResourceBackend::DX11);
     }
     TestTrue(TEXT("UE registers geometry created by the incremental ABI"), FirstGeometryCacheIds.Num() > 0);
+    FlushRenderingCommands();
+    const TArray<FRmlUiResourceInfo> OwnedSlateResources = Registry.SnapshotOwnedBy(SlateOwnerId, true);
+    TestTrue(TEXT("Geometry cache owns live RHI vertex buffers"), OwnedSlateResources.ContainsByPredicate(
+        [](const FRmlUiResourceInfo& Info)
+        {
+            return Info.Type == ERmlUiResourceType::SlateVertexBuffer &&
+                Info.Backend == ERmlUiResourceBackend::RHI && Info.State == ERmlUiResourceState::Live;
+        }));
+    TestTrue(TEXT("Geometry cache owns live RHI index buffers"), OwnedSlateResources.ContainsByPredicate(
+        [](const FRmlUiResourceInfo& Info)
+        {
+            return Info.Type == ERmlUiResourceType::SlateIndexBuffer &&
+                Info.Backend == ERmlUiResourceBackend::RHI && Info.State == ERmlUiResourceState::Live;
+        }));
+    TestTrue(TEXT("Slate geometry reports ready after render-thread initialization"),
+        SlateWidget->GetReadySlateRhiGeometryCount() > 0);
     TestTrue(TEXT("Slate cache unchanged frame"), SlateWidget->RenderFrame(96, 64));
     int32 CachedGeometryCount = 0;
     for (const FRmlUiResourceInfo& Info : Registry.Snapshot())
@@ -133,6 +172,7 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     TestTrue(TEXT("Replace incremental Slate document"),
         SlateWidget->LoadDocument(RmlUiTests::ContentPath(TEXT("Grid.html"))));
     TestTrue(TEXT("Render replacement through cache deltas"), SlateWidget->RenderFrame(96, 64));
+    FlushRenderingCommands();
     const TArray<FRmlUiResourceInfo> ReplacedResources = Registry.Snapshot();
     for (uint64 OldId : FirstGeometryCacheIds)
         TestFalse(TEXT("Replacement removes stale UE geometry cache entries"), ReplacedResources.ContainsByPredicate(
@@ -143,8 +183,9 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
             return Info.OwnerId == SlateOwnerId && Info.Type == ERmlUiResourceType::SlateGeometryCache;
         }));
     SlateWidget->ShutdownNative();
-    TestFalse(TEXT("Slate shutdown removes all resources owned by its view"), Registry.Snapshot().ContainsByPredicate(
-        [SlateOwnerId](const FRmlUiResourceInfo& Info) { return Info.OwnerId == SlateOwnerId; }));
+    FlushRenderingCommands();
+    TestTrue(TEXT("Slate shutdown removes its complete resource tree"),
+        Registry.SnapshotOwnedBy(SlateOwnerId, true).IsEmpty());
     return true;
 }
 
@@ -362,6 +403,111 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiGridSlateTest, "RmlUiUnreal.Slate.Grid",
 bool FRmlUiGridSlateTest::RunTest(const FString&)
 {
     AddCommand(new FRmlUiSlateCapture(this, true));
+    return true;
+}
+
+class FRmlUiSlateRhiCapture final : public IAutomationLatentCommand
+{
+public:
+    explicit FRmlUiSlateRhiCapture(FAutomationTestBase* InTest) : Test(InTest) {}
+
+    virtual bool Update() override
+    {
+        if (!Window.IsValid())
+        {
+            const FString Document = TEXT(R"RML(
+<rml><head><style>
+body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
+#warm { display: block; position: absolute; left: 36px; top: 32px; width: 220px; height: 136px; background-color: #e84a44; }
+#cool { display: block; position: absolute; left: 184px; top: 118px; width: 244px; height: 150px; background-color: #2cb891; }
+#alpha { display: block; position: absolute; left: 356px; top: 32px; width: 84px; height: 62px; background-color: rgba(255, 255, 255, 128); }
+</style></head><body><div id="warm"></div><div id="cool"></div><div id="alpha"></div></body></rml>
+)RML");
+            Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
+                .SourcePath(TEXT("/slate-rhi-direct.rml")).DesiredSize(FVector2D(480, 320));
+            Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi Slate RHI verification")))
+                .ClientSize(FVector2D(480, 320)).UseOSWindowBorder(false).CreateTitleBar(false)
+                .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
+                .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[Widget.ToSharedRef()];
+            FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+            OwnerId = RmlUE_GetViewResourceId(Widget->GetNativeView());
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+        if (FPlatformTime::Seconds() - Start < 2.0) return false;
+
+        FlushRenderingCommands();
+        Test->TestTrue(TEXT("Slate RHI fixture rendered frames"), Widget->GetFrameNumber() > 0);
+        Test->TestTrue(TEXT("Slate RHI geometry initialized"), Widget->GetReadySlateRhiGeometryCount() > 0);
+        RmlUE_Rect WarmRect{}, CoolRect{};
+        Test->TestTrue(TEXT("Warm fixture element has layout"),
+            RmlUE_GetElementRect(Widget->GetNativeView(), "warm", &WarmRect) != 0 && WarmRect.Width > 100);
+        Test->TestTrue(TEXT("Cool fixture element has layout"),
+            RmlUE_GetElementRect(Widget->GetNativeView(), "cool", &CoolRect) != 0 && CoolRect.Width > 100);
+        const TArray<FRmlUiResourceInfo> OwnedResources =
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true);
+        Test->TestTrue(TEXT("Direct fixture has live RHI buffers"), OwnedResources.ContainsByPredicate(
+            [](const FRmlUiResourceInfo& Info)
+            {
+                return Info.Backend == ERmlUiResourceBackend::RHI && Info.State == ERmlUiResourceState::Live;
+            }));
+
+        TArray<FColor> Pixels;
+        FIntVector Size = FIntVector::ZeroValue;
+        const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Widget.ToSharedRef(), Pixels, Size);
+        Test->TestTrue(TEXT("Capture direct Slate RHI output"), bCaptured && Pixels.Num() > 0);
+        Test->TestTrue(TEXT("Pure CSS fixture submits persistent RHI draws"), Widget->GetSlateRhiDrawCount() > 0);
+        Test->TestTrue(TEXT("Pure CSS fixture needs no transient Slate vertex fallback"),
+            Widget->GetSlateFallbackDrawCount() == 0);
+        if (bCaptured && Pixels.Num() > 0)
+        {
+            const auto PixelAt = [&](int32 X, int32 Y) { return Pixels[Y * Size.X + X]; };
+            const auto NearRgb = [](FColor Actual, FColor Expected, int32 Tolerance)
+            {
+                return FMath::Abs(int32(Actual.R) - Expected.R) <= Tolerance &&
+                    FMath::Abs(int32(Actual.G) - Expected.G) <= Tolerance &&
+                    FMath::Abs(int32(Actual.B) - Expected.B) <= Tolerance;
+            };
+            Test->TestTrue(TEXT("Direct shader preserves CSS background color space"),
+                NearRgb(PixelAt(10, 10), FColor(22, 34, 49), 4));
+            Test->TestTrue(TEXT("Direct shader preserves warm CSS color"),
+                NearRgb(PixelAt(60, 60), FColor(232, 74, 68), 4));
+            Test->TestTrue(TEXT("Direct shader preserves cool CSS color"),
+                NearRgb(PixelAt(300, 200), FColor(44, 184, 145), 4));
+            Test->TestTrue(TEXT("Premultiplied alpha composites over the CSS background"),
+                NearRgb(PixelAt(380, 60), FColor(139, 145, 152), 6));
+            TArray64<uint8> Png;
+            FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
+                TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+            Test->TestTrue(TEXT("Save direct Slate RHI screenshot"), FFileHelper::SaveArrayToFile(Png,
+                *RmlUiTests::ArtifactPath(TEXT("slate-rhi-direct.png"))));
+        }
+
+        Widget->ShutdownNative();
+        FlushRenderingCommands();
+        Test->TestTrue(TEXT("Direct fixture releases its complete resource tree"),
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true).IsEmpty());
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        Widget.Reset();
+        Window.Reset();
+        return true;
+    }
+
+private:
+    FAutomationTestBase* Test;
+    TSharedPtr<SWindow> Window;
+    TSharedPtr<SRmlUiWidget> Widget;
+    uint64 OwnerId = 0;
+    double Start = 0;
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateRhiTest, "RmlUiUnreal.Slate.RhiDirectRendering",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiSlateRhiTest::RunTest(const FString&)
+{
+    AddCommand(new FRmlUiSlateRhiCapture(this));
     return true;
 }
 
