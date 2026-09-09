@@ -3,15 +3,27 @@
 #include "SRmlUiWidget.h"
 #include "RmlUiBridge.h"
 #include "RmlUiUnrealModule.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 TSharedRef<SWidget> URmlUiWidget::RebuildWidget()
 {
+    FString PreparedDocument = InlineDocument;
+    FString PreparedDocumentPath = DocumentPath;
+    if (!InlineDocument.IsEmpty() && !PrepareDocumentMarkup(InlineDocument, InlineSourcePath, PreparedDocument))
+    {
+        UE_LOG(LogRmlUiUnreal, Warning, TEXT("Could not prepare inline RmlUi document; the widget will remain empty."));
+        PreparedDocument.Reset();
+        PreparedDocumentPath.Reset();
+    }
     MyRmlWidget = SNew(SRmlUiWidget)
-        .DocumentPath(DocumentPath)
-        .InlineDocument(InlineDocument)
+        .DocumentPath(PreparedDocumentPath)
+        .InlineDocument(PreparedDocument)
         .SourcePath(InlineSourcePath)
         .DesiredSize(DesiredSize)
         .MaxTextureDimension(MaxTextureDimension)
+        .UseSlateRenderer(bUseSlateRenderer)
+        .BaseStyleSheet(GetBaseStyleSheet())
         .OnDocumentEvent(FOnSlateRmlUiDocumentEvent::CreateUObject(this, &URmlUiWidget::HandleDocumentEvent));
     return MyRmlWidget.ToSharedRef();
 }
@@ -23,8 +35,16 @@ void URmlUiWidget::SynchronizeProperties()
     {
         MyRmlWidget->SetDesiredSize(DesiredSize);
         MyRmlWidget->SetMaxTextureDimension(MaxTextureDimension);
+        MyRmlWidget->SetUseSlateRenderer(bUseSlateRenderer);
+        for (const auto& Pair : MaterialInstances) MyRmlWidget->RegisterMaterial(Pair.Key, Pair.Value);
+        MyRmlWidget->SetBaseStyleSheet(GetBaseStyleSheet());
         if (InlineDocument.IsEmpty()) MyRmlWidget->LoadDocument(DocumentPath);
-        else MyRmlWidget->LoadDocumentFromString(InlineDocument, InlineSourcePath);
+        else
+        {
+            FString PreparedDocument;
+            if (PrepareDocumentMarkup(InlineDocument, InlineSourcePath, PreparedDocument))
+                MyRmlWidget->LoadDocumentFromString(PreparedDocument, InlineSourcePath);
+        }
     }
 }
 
@@ -45,11 +65,13 @@ bool URmlUiWidget::LoadDocument(const FString& Path)
 
 bool URmlUiWidget::LoadDocumentFromString(const FString& Markup, const FString& SourcePath)
 {
+    FString PreparedDocument;
+    if (!PrepareDocumentMarkup(Markup, SourcePath, PreparedDocument)) return false;
     InlineDocument = Markup;
     InlineSourcePath = SourcePath;
     DocumentPath.Reset();
     TakeWidget();
-    return MyRmlWidget.IsValid() && MyRmlWidget->LoadDocumentFromString(Markup, SourcePath);
+    return MyRmlWidget.IsValid() && MyRmlWidget->LoadDocumentFromString(PreparedDocument, SourcePath);
 }
 
 bool URmlUiWidget::ReloadDocument()
@@ -105,6 +127,56 @@ bool URmlUiWidget::LoadFontFace(const FString& FontPath, bool bFallback)
         return false;
     }
     return true;
+}
+
+bool URmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
+{
+    if (Alias.IsNone() || !Material || !Material->GetMaterial() || Material->GetMaterial()->MaterialDomain != MD_UI)
+    {
+        UE_LOG(LogRmlUiUnreal, Warning, TEXT("RmlUi material '%s' must be a valid User Interface domain material."), *Alias.ToString());
+        return false;
+    }
+    UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(Material, this);
+    if (!Instance) return false;
+    MaterialInstances.Add(Alias, Instance);
+    TakeWidget();
+    return MyRmlWidget.IsValid() && MyRmlWidget->RegisterMaterial(Alias, Instance);
+}
+
+void URmlUiWidget::UnregisterMaterial(FName Alias)
+{
+    MaterialInstances.Remove(Alias);
+    if (MyRmlWidget) MyRmlWidget->UnregisterMaterial(Alias);
+}
+
+bool URmlUiWidget::SetMaterialScalar(FName Alias, FName Parameter, float Value)
+{
+    if (TObjectPtr<UMaterialInstanceDynamic>* Instance = MaterialInstances.Find(Alias))
+    {
+        (*Instance)->SetScalarParameterValue(Parameter, Value);
+        return true;
+    }
+    return false;
+}
+
+bool URmlUiWidget::SetMaterialVector(FName Alias, FName Parameter, FLinearColor Value)
+{
+    if (TObjectPtr<UMaterialInstanceDynamic>* Instance = MaterialInstances.Find(Alias))
+    {
+        (*Instance)->SetVectorParameterValue(Parameter, Value);
+        return true;
+    }
+    return false;
+}
+
+bool URmlUiWidget::SetMaterialTexture(FName Alias, FName Parameter, UTexture* Value)
+{
+    if (TObjectPtr<UMaterialInstanceDynamic>* Instance = MaterialInstances.Find(Alias))
+    {
+        (*Instance)->SetTextureParameterValue(Parameter, Value);
+        return true;
+    }
+    return false;
 }
 
 FString URmlUiWidget::GetLastError() const

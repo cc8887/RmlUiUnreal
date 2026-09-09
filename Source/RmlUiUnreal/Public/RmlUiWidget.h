@@ -5,6 +5,10 @@
 #include "RmlUiWidget.generated.h"
 
 class SRmlUiWidget;
+class UMaterialInterface;
+class UMaterialInstanceDynamic;
+class UTexture;
+struct RmlUE_StyleSheet;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnRmlUiDocumentEvent,
     const FString&, Type, const FString&, ElementId, const FString&, Value);
@@ -32,6 +36,10 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RmlUi", meta = (ClampMin = "64", ClampMax = "4096"))
     int32 MaxTextureDimension = 2048;
+
+    /** Experimental direct Slate replay. Enable for basic geometry/material pages; advanced effects still need the compatibility renderer. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RmlUi|Rendering")
+    bool bUseSlateRenderer = false;
 
     UPROPERTY(BlueprintAssignable, Category = "RmlUi")
     FOnRmlUiDocumentEvent OnDocumentEvent;
@@ -67,6 +75,22 @@ public:
     UFUNCTION(BlueprintCallable, Category = "RmlUi")
     bool LoadFontFace(const FString& FontPath, bool bFallback = true);
 
+    /** Registers a trusted host material. Only materials in the User Interface domain are accepted. */
+    UFUNCTION(BlueprintCallable, Category = "RmlUi|Rendering")
+    bool RegisterMaterial(FName Alias, UMaterialInterface* Material);
+
+    UFUNCTION(BlueprintCallable, Category = "RmlUi|Rendering")
+    void UnregisterMaterial(FName Alias);
+
+    UFUNCTION(BlueprintCallable, Category = "RmlUi|Rendering")
+    bool SetMaterialScalar(FName Alias, FName Parameter, float Value);
+
+    UFUNCTION(BlueprintCallable, Category = "RmlUi|Rendering")
+    bool SetMaterialVector(FName Alias, FName Parameter, FLinearColor Value);
+
+    UFUNCTION(BlueprintCallable, Category = "RmlUi|Rendering")
+    bool SetMaterialTexture(FName Alias, FName Parameter, UTexture* Value);
+
     UFUNCTION(BlueprintPure, Category = "RmlUi")
     FString GetLastError() const;
 
@@ -80,8 +104,18 @@ public:
 
 protected:
     virtual TSharedRef<SWidget> RebuildWidget() override;
+    /** Optional extension point. Core RmlUi widgets return null and retain raw RmlUi behavior. */
+    virtual RmlUE_StyleSheet* GetBaseStyleSheet() const { return nullptr; }
+    /** Optional extension point for derived widgets that prepare in-memory markup before RmlUi parses it. */
+    virtual bool PrepareDocumentMarkup(const FString& Markup, const FString& SourcePath, FString& OutMarkup)
+    {
+        OutMarkup = Markup;
+        return true;
+    }
 
 private:
     void HandleDocumentEvent(const FString& Type, const FString& ElementId, const FString& Value);
     TSharedPtr<SRmlUiWidget> MyRmlWidget;
+    UPROPERTY(Transient)
+    TMap<FName, TObjectPtr<UMaterialInstanceDynamic>> MaterialInstances;
 };

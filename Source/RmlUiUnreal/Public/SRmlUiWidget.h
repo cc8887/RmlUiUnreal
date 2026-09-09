@@ -4,21 +4,27 @@
 #include "Widgets/SLeafWidget.h"
 
 class FDeferredCleanupSlateBrush;
+class UMaterialInterface;
 class UTexture2D;
 struct RmlUE_View;
+struct RmlUE_StyleSheet;
 
 DECLARE_DELEGATE_ThreeParams(FOnSlateRmlUiDocumentEvent, const FString&, const FString&, const FString&);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnRmlUiBeforeRender, float);
+DECLARE_MULTICAST_DELEGATE(FOnRmlUiNativeShutdown);
 
 class RMLUIUNREAL_API SRmlUiWidget : public SLeafWidget
 {
 public:
     SLATE_BEGIN_ARGS(SRmlUiWidget)
-        : _DesiredSize(1280.0, 720.0), _MaxTextureDimension(2048) {}
+        : _DesiredSize(1280.0, 720.0), _MaxTextureDimension(2048), _UseSlateRenderer(false), _BaseStyleSheet(nullptr) {}
         SLATE_ARGUMENT(FString, DocumentPath)
         SLATE_ARGUMENT(FString, InlineDocument)
         SLATE_ARGUMENT(FString, SourcePath)
         SLATE_ARGUMENT(FVector2D, DesiredSize)
         SLATE_ARGUMENT(int32, MaxTextureDimension)
+        SLATE_ARGUMENT(bool, UseSlateRenderer)
+        SLATE_ARGUMENT(RmlUE_StyleSheet*, BaseStyleSheet)
         SLATE_EVENT(FOnSlateRmlUiDocumentEvent, OnDocumentEvent)
     SLATE_END_ARGS()
 
@@ -35,11 +41,20 @@ public:
     void SetDebuggerVisible(bool bVisible);
     void SetDesiredSize(FVector2D InSize);
     void SetMaxTextureDimension(int32 InMaximum);
+    void SetUseSlateRenderer(bool bInUseSlateRenderer);
+    bool RegisterMaterial(FName Alias, UMaterialInterface* Material);
+    void UnregisterMaterial(FName Alias);
+    void SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet);
     void ShutdownNative();
     bool RenderFrame(int32 Width, int32 Height, float DpRatio = 1.0f);
     RmlUE_View* GetNativeView() const { return NativeView; }
     FString GetLastError() const { return DocumentError.IsEmpty() ? LastError : DocumentError; }
     uint64 GetFrameNumber() const { return FrameNumber; }
+    uint64 GetResolvedMaterialDrawCount() const { return ResolvedMaterialDrawCount; }
+    bool IsUsingSlateRenderer() const { return bUseSlateRenderer; }
+    FOnRmlUiBeforeRender OnBeforeRender;
+    FOnRmlUiNativeShutdown OnNativeShutdown;
+    RmlUE_View* ExchangeNativeView(RmlUE_View* Replacement);
 
     virtual void Tick(const FGeometry& AllottedGeometry, double InCurrentTime, float InDeltaTime) override;
     virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
@@ -62,6 +77,18 @@ public:
     virtual FReply OnTouchEnded(const FGeometry& Geometry, const FPointerEvent& Event) override;
 
 private:
+    struct FNativeDraw {
+        TArray<float> Vertices;
+        TArray<uint32> Indices;
+        uint64 TextureId = 0;
+        FVector2f Translation = FVector2f::ZeroVector;
+        FSlateRect Scissor;
+        bool bScissor = false;
+    };
+    struct FTextureResource {
+        TObjectPtr<UTexture2D> Texture = nullptr;
+        TSharedPtr<FDeferredCleanupSlateBrush> Brush;
+    };
     bool EnsureNativeView();
     bool CheckResult(int Result);
     void UpdateMousePosition(const FGeometry& Geometry, const FPointerEvent& Event);
@@ -69,6 +96,7 @@ private:
     void DispatchEvents();
 
     RmlUE_View* NativeView = nullptr;
+    RmlUE_StyleSheet* BaseStyleSheet = nullptr;
     UTexture2D* Texture = nullptr;
     TSharedPtr<FDeferredCleanupSlateBrush> TextureBrush;
     FOnSlateRmlUiDocumentEvent OnDocumentEvent;
@@ -85,5 +113,12 @@ private:
     TCHAR PendingHighSurrogate = 0;
     TMap<int32, FVector2D> ActiveTouches;
     TSet<int32> PressedMouseButtons;
+    TArray<FNativeDraw> NativeDraws;
+    TMap<uint64, FTextureResource> NativeTextures;
+    TMap<uint64, FName> NativeMaterialAliases;
+    TMap<FName, TSharedPtr<FDeferredCleanupSlateBrush>> Materials;
+    bool bUseSlateRenderer = false;
+    uint32 UnsupportedSlateFeatures = 0;
+    mutable uint64 ResolvedMaterialDrawCount = 0;
     bool bNativeShutdown = false;
 };

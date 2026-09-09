@@ -43,6 +43,11 @@ static void Click(RmlUE_View* View, const char* Id)
     RmlUE_MouseButton(View, 0, 1, 0);
     RmlUE_MouseButton(View, 0, 0, 0);
 }
+static int Brightness(const RmlUE_Frame& Frame, int X, int Y)
+{
+    const auto* Pixel = Frame.Pixels + (Y * Frame.Width + X) * 4;
+    return int(Pixel[0]) + int(Pixel[1]) + int(Pixel[2]);
+}
 int main(int Count, char** Arguments)
 {
     Require(Count >= 2, "font path argument");
@@ -119,6 +124,46 @@ img { position: absolute; left: 180px; top: 70px; width: 40px; height: 40px; }
     Require(RmlUE_Render(View, &Frame) != 0, "switch back to first view");
     RmlUE_FocusLost(View);
     RmlUE_DestroyView(Second);
+
+    auto* SlateView = RmlUE_CreateSlateView(128, 64, 1);
+    const char* SlateMarkup = R"(<rml><head><style>
+body { margin: 0; } #panel { width: 80px; height: 40px; background-color: #234; decorator: ue-material(panel.energy); }
+</style></head><body><div id="panel"/></body></rml>)";
+    Require(SlateView != nullptr && RmlUE_LoadDocumentFromMemory(SlateView, SlateMarkup, "slate.rml") != 0, "Slate command document");
+    RmlUE_SlateFrame SlateFrame{};
+    Require(RmlUE_RenderSlate(SlateView, &SlateFrame) != 0 && SlateFrame.AbiVersion == RMLUE_SLATE_ABI_VERSION && SlateFrame.DrawCount > 0, "Slate command render");
+    bool FoundMaterial = false;
+    for (uint32_t Index = 0; Index < SlateFrame.TextureCount; ++Index)
+        FoundMaterial |= SlateFrame.Textures[Index].Kind == 1 && SlateFrame.Textures[Index].MaterialAlias &&
+            std::strcmp(SlateFrame.Textures[Index].MaterialAlias, "panel.energy") == 0;
+    Require(FoundMaterial, "Slate frame carries the registered material alias");
+    Require(RmlUE_Render(SlateView, &Frame) == 0, "Slate view rejects legacy frame readback");
+    RmlUE_DestroyView(SlateView);
+
+    const char* FlowMarkup = R"(<html><head><style>
+body { margin: 0; font-family: LatoLatin; font-size: 16px; }
+#first, #second { width: 40px; height: 20px; }
+</style></head><body><div id="first">one</div><div id="second">two</div></body></html>)";
+    auto* FlowView = RmlUE_CreateView(160, 120, 1);
+    Require(FlowView != nullptr && RmlUE_LoadDocumentFromMemory(FlowView, FlowMarkup, "flow.html") != 0, "raw flow document");
+    RmlUE_Rect First{}, RawSecond{}, CompatibleSecond{}, RestoredSecond{};
+    Require(RmlUE_GetElementRect(FlowView, "first", &First) != 0 && RmlUE_GetElementRect(FlowView, "second", &RawSecond) != 0,
+        "raw inline element rectangles");
+    Require(std::fabs(RawSecond.Y - First.Y) < 1.0f, "raw RmlUi keeps generic div elements inline");
+    auto* BaseStyle = RmlUE_CreateStyleSheet("div { display: block; } * { box-sizing: border-box; }");
+    Require(BaseStyle != nullptr, "parse reusable base style sheet");
+    Require(RmlUE_CreateStyleSheet("button { color: inherit; }") == nullptr,
+        "strict base style parsing rejects unsupported declarations");
+    RmlUE_RetainStyleSheet(BaseStyle);
+    RmlUE_ReleaseStyleSheet(BaseStyle);
+    Require(RmlUE_SetBaseStyleSheet(FlowView, BaseStyle) != 0, "attach reusable base style sheet");
+    Require(RmlUE_GetElementRect(FlowView, "second", &CompatibleSecond) != 0 && CompatibleSecond.Y > First.Y + 10.0f,
+        "base style sheet supplies block flow without reparsing the document");
+    Require(RmlUE_SetBaseStyleSheet(FlowView, nullptr) != 0, "detach base style sheet");
+    Require(RmlUE_GetElementRect(FlowView, "second", &RestoredSecond) != 0 && std::fabs(RestoredSecond.Y - RawSecond.Y) < 1.0f,
+        "detaching base style restores raw author styles");
+    RmlUE_ReleaseStyleSheet(BaseStyle);
+    RmlUE_DestroyView(FlowView);
     RmlUE_DestroyView(View);
     if (Count >= 3)
     {
@@ -146,10 +191,58 @@ img { position: absolute; left: 180px; top: 70px; width: 40px; height: 40px; }
         }
         Require(After.Y < Before.Y, "wheel fixture content moves");
         RmlUE_DestroyView(WheelView);
+
+        const auto MotionPath = Count >= 4
+            ? std::filesystem::u8path(Arguments[3]).u8string()
+            : (std::filesystem::u8path(Arguments[2]).parent_path() / "web-motion-libraries.html").u8string();
+        auto* MotionView = RmlUE_CreateView(800, 480, 1);
+        Require(MotionView != nullptr && RmlUE_LoadDocument(MotionView, MotionPath.c_str()) != 0, "web motion library fixture");
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "web motion first frame");
+        const int PopupEarly = Brightness(Frame, 215, 205);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "web motion settled frame");
+        const int PopupSettled = Brightness(Frame, 215, 205);
+        std::printf("Magic.css popup brightness early=%d settled=%d source=%s\n", PopupEarly, PopupSettled, MotionPath.c_str());
+        std::fflush(stdout);
+        Require(PopupSettled > PopupEarly + 120, "Magic.css puffIn popup animates across rendered frames");
+
+        // The upstream classes use browser longhands that RmlUi 6.3 does not register.
+        Require(RmlUE_SetProperty(MotionView, "magic-popup", "animation-name", "magic-puff-in") == 0,
+            "Magic.css animation-name requires RCSS shorthand adaptation");
+        Require(RmlUE_SetProperty(MotionView, "magic-popup", "animation-duration", "0.6s") == 0,
+            "Magic.css animation-duration requires RCSS shorthand adaptation");
+        Require(RmlUE_SetProperty(MotionView, "hover-grow", "transition-duration", "0.3s") == 0,
+            "Hover.css transition-duration requires RCSS shorthand adaptation");
+        Require(RmlUE_SetProperty(MotionView, "hover-grow", "transition-property", "transform") == 0,
+            "Hover.css transition-property requires RCSS shorthand adaptation");
+        Require(RmlUE_SetProperty(MotionView, "hover-grow", "transition", "transform 0.3s cubic-out") != 0,
+            "RmlUi accepts adapted Hover.css transition shorthand");
+
+        RmlUE_FocusLost(MotionView);
+        RmlUE_MouseMove(MotionView, 790, 470, 0);
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Hover.css reset frame");
+        std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Hover.css settled reset frame");
+        RmlUE_Rect Button{};
+        Require(RmlUE_GetElementRect(MotionView, "hover-grow", &Button) != 0, "Hover.css button layout");
+        const int ProbeX = int(Button.X) - 5;
+        const int ProbeY = int(Button.Y + Button.Height * 0.5f);
+        const int ButtonBefore = Brightness(Frame, ProbeX, ProbeY);
+        RmlUE_MouseMove(MotionView, int(Button.X + Button.Width * 0.5f), ProbeY, 0);
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Hover.css transition start frame");
+        const int ButtonStart = Brightness(Frame, ProbeX, ProbeY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(180));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Hover.css transition middle frame");
+        const int ButtonMiddle = Brightness(Frame, ProbeX, ProbeY);
+        std::printf("Hover.css edge brightness before=%d start=%d middle=%d\n", ButtonBefore, ButtonStart, ButtonMiddle);
+        std::fflush(stdout);
+        Require(std::abs(ButtonStart - ButtonBefore) < 24, "Hover.css adapted Grow does not jump on hover");
+        Require(ButtonMiddle > ButtonStart + 80, "Hover.css adapted Grow expands smoothly across rendered frames");
+        RmlUE_DestroyView(MotionView);
     }
     RmlUE_Shutdown();
     Require(RmlUE_Initialize(&Host) != 0, "reinitialize");
     RmlUE_Shutdown();
-    std::puts("PASS: RmlUi native bridge rendering, alpha, effects, input, reload, resize, multiple contexts and reinitialization.");
+    std::puts("PASS: RmlUi native bridge rendering, web motion libraries, alpha, effects, input, reload, resize, multiple contexts and reinitialization.");
     return 0;
 }

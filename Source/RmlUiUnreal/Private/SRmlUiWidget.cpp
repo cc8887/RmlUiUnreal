@@ -5,11 +5,14 @@
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "InputCoreTypes.h"
+#include "Materials/MaterialInterface.h"
+#include "Misc/App.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
 #include "RmlUiBridge.h"
 #include "RmlUiUnrealModule.h"
 #include "Slate/DeferredCleanupSlateBrush.h"
+#include "SlateMaterialBrush.h"
 #include "Styling/CoreStyle.h"
 
 namespace
@@ -58,7 +61,9 @@ void SRmlUiWidget::Construct(const FArguments& InArgs)
 {
     DesiredSize = InArgs._DesiredSize;
     MaxTextureDimension = FMath::Clamp(InArgs._MaxTextureDimension, 64, 4096);
+    bUseSlateRenderer = InArgs._UseSlateRenderer;
     OnDocumentEvent = InArgs._OnDocumentEvent;
+    SetBaseStyleSheet(InArgs._BaseStyleSheet);
     SetCanTick(true);
     ForceVolatile(true);
     SetClipping(EWidgetClipping::ClipToBounds);
@@ -82,14 +87,41 @@ void SRmlUiWidget::ShutdownNative()
 {
     if (NativeView)
     {
+        OnNativeShutdown.Broadcast();
         RmlUE_DestroyView(NativeView);
         NativeView = nullptr;
+    }
+    if (BaseStyleSheet)
+    {
+        RmlUE_ReleaseStyleSheet(BaseStyleSheet);
+        BaseStyleSheet = nullptr;
     }
     bNativeShutdown = true;
     ActiveTouches.Empty();
     PressedMouseButtons.Empty();
     Texture = nullptr;
     TextureBrush.Reset();
+    NativeDraws.Reset();
+    NativeTextures.Reset();
+    NativeMaterialAliases.Reset();
+}
+
+RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
+{
+    check(IsInGameThread() && Replacement);
+    if (BaseStyleSheet && !RmlUE_SetBaseStyleSheet(Replacement, BaseStyleSheet))
+    {
+        UE_LOG(LogRmlUiUnreal, Warning, TEXT("Could not attach the base style sheet to a replacement view: %s"), UTF8_TO_TCHAR(RmlUE_GetLastError()));
+    }
+    RmlUE_View* Previous = NativeView;
+    NativeView = Replacement;
+    bNativeShutdown = false;
+    DocumentError.Reset();
+    LastError.Reset();
+    FrameNumber = 0;
+    ActiveTouches.Empty();
+    PressedMouseButtons.Empty();
+    return Previous;
 }
 
 bool SRmlUiWidget::EnsureNativeView()
@@ -102,9 +134,11 @@ bool SRmlUiWidget::EnsureNativeView()
         LastError = Module.GetInitializationError();
         return false;
     }
-    NativeView = RmlUE_CreateView(FMath::Clamp(FMath::RoundToInt(DesiredSize.X), 1, MaxTextureDimension),
-        FMath::Clamp(FMath::RoundToInt(DesiredSize.Y), 1, MaxTextureDimension), 1.0f);
-    return CheckResult(NativeView != nullptr);
+    const int32 Width = FMath::Clamp(FMath::RoundToInt(DesiredSize.X), 1, MaxTextureDimension);
+    const int32 Height = FMath::Clamp(FMath::RoundToInt(DesiredSize.Y), 1, MaxTextureDimension);
+    NativeView = bUseSlateRenderer ? RmlUE_CreateSlateView(Width, Height, 1.0f) : RmlUE_CreateView(Width, Height, 1.0f);
+    if (!CheckResult(NativeView != nullptr)) return false;
+    return !BaseStyleSheet || CheckResult(RmlUE_SetBaseStyleSheet(NativeView, BaseStyleSheet));
 }
 
 bool SRmlUiWidget::CheckResult(int Result)
@@ -200,6 +234,47 @@ void SRmlUiWidget::SetMaxTextureDimension(int32 InMaximum)
     MaxTextureDimension = FMath::Clamp(InMaximum, 64, 4096);
 }
 
+void SRmlUiWidget::SetUseSlateRenderer(bool bInUseSlateRenderer)
+{
+    if (bUseSlateRenderer == bInUseSlateRenderer) return;
+    bUseSlateRenderer = bInUseSlateRenderer;
+    if (!NativeView) return;
+    OnNativeShutdown.Broadcast();
+    RmlUE_DestroyView(NativeView);
+    NativeView = nullptr;
+    bNativeShutdown = false;
+    Texture = nullptr;
+    TextureBrush.Reset();
+    NativeDraws.Reset();
+    NativeTextures.Reset();
+    NativeMaterialAliases.Reset();
+    ReloadDocument();
+}
+
+bool SRmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
+{
+    if (Alias.IsNone() || !Material) return false;
+    const FSlateMaterialBrush MaterialBrush(*Material, FVector2D(1.0, 1.0));
+    Materials.Add(Alias, FDeferredCleanupSlateBrush::CreateBrush(MaterialBrush));
+    Invalidate(EInvalidateWidgetReason::Paint);
+    return true;
+}
+
+void SRmlUiWidget::UnregisterMaterial(FName Alias)
+{
+    Materials.Remove(Alias);
+    Invalidate(EInvalidateWidgetReason::Paint);
+}
+
+void SRmlUiWidget::SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet)
+{
+    if (BaseStyleSheet == InStyleSheet) return;
+    if (InStyleSheet) RmlUE_RetainStyleSheet(InStyleSheet);
+    if (BaseStyleSheet) RmlUE_ReleaseStyleSheet(BaseStyleSheet);
+    BaseStyleSheet = InStyleSheet;
+    if (NativeView) CheckResult(RmlUE_SetBaseStyleSheet(NativeView, BaseStyleSheet));
+}
+
 void SRmlUiWidget::Tick(const FGeometry& Geometry, double InCurrentTime, float InDeltaTime)
 {
     SLeafWidget::Tick(Geometry, InCurrentTime, InDeltaTime);
@@ -219,6 +294,85 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
     Height = FMath::Clamp(Height, 1, MaxTextureDimension);
     PixelScale = FMath::Max(0.01f, DpRatio);
     if (!CheckResult(RmlUE_Resize(NativeView, Width, Height, PixelScale))) return false;
+    RmlUE_View* BeforeScript = NativeView;
+    OnBeforeRender.Broadcast(FApp::GetDeltaTime());
+    if (!NativeView) return false;
+    if (BeforeScript != NativeView && !CheckResult(RmlUE_Resize(NativeView, Width, Height, PixelScale))) return false;
+    if (bUseSlateRenderer)
+    {
+        RmlUE_SlateFrame SlateFrame{};
+        if (!CheckResult(RmlUE_RenderSlate(NativeView, &SlateFrame))) return false;
+        if (SlateFrame.AbiVersion != RMLUE_SLATE_ABI_VERSION)
+        {
+            LastError = TEXT("RmlUi Slate command ABI version mismatch.");
+            return false;
+        }
+        NativeDraws.Reset(SlateFrame.DrawCount);
+        NativeMaterialAliases.Reset();
+        TSet<uint64> LiveTextures;
+        for (uint32 Index = 0; Index < SlateFrame.TextureCount; ++Index)
+        {
+            const RmlUE_SlateTexture& Source = SlateFrame.Textures[Index];
+            LiveTextures.Add(Source.Id);
+            if (Source.Kind == 1)
+            {
+                NativeMaterialAliases.Add(Source.Id, FName(UTF8_TO_TCHAR(Source.MaterialAlias ? Source.MaterialAlias : "")));
+                continue;
+            }
+            if (NativeTextures.Contains(Source.Id) || !Source.PremultipliedRGBA || Source.Width <= 0 || Source.Height <= 0) continue;
+            UTexture2D* NewTexture = UTexture2D::CreateTransient(Source.Width, Source.Height, PF_B8G8R8A8);
+            if (!NewTexture) continue;
+            NewTexture->NeverStream = true;
+            NewTexture->SRGB = true;
+            NewTexture->Filter = TF_Bilinear;
+            NewTexture->LODGroup = TEXTUREGROUP_UI;
+            NewTexture->UpdateResource();
+            const SIZE_T ByteCount = static_cast<SIZE_T>(Source.Width) * Source.Height * 4;
+            uint8* Pixels = static_cast<uint8*>(FMemory::Malloc(ByteCount));
+            for (SIZE_T Pixel = 0; Pixel < ByteCount; Pixel += 4)
+            {
+                const uint32 Alpha = Source.PremultipliedRGBA[Pixel + 3];
+                Pixels[Pixel + 0] = Alpha ? static_cast<uint8>(FMath::Min(255u, (Source.PremultipliedRGBA[Pixel + 2] * 255u + Alpha / 2) / Alpha)) : 0;
+                Pixels[Pixel + 1] = Alpha ? static_cast<uint8>(FMath::Min(255u, (Source.PremultipliedRGBA[Pixel + 1] * 255u + Alpha / 2) / Alpha)) : 0;
+                Pixels[Pixel + 2] = Alpha ? static_cast<uint8>(FMath::Min(255u, (Source.PremultipliedRGBA[Pixel + 0] * 255u + Alpha / 2) / Alpha)) : 0;
+                Pixels[Pixel + 3] = static_cast<uint8>(Alpha);
+            }
+            FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Source.Width, Source.Height);
+            NewTexture->UpdateTextureRegions(0, 1, Region, Source.Width * 4, 4, Pixels,
+                [](uint8* Data, const FUpdateTextureRegion2D* Regions) { FMemory::Free(Data); delete Regions; });
+            FTextureResource Resource;
+            Resource.Texture = NewTexture;
+            Resource.Brush = FDeferredCleanupSlateBrush::CreateBrush(NewTexture);
+            NativeTextures.Add(Source.Id, MoveTemp(Resource));
+        }
+        for (auto It = NativeTextures.CreateIterator(); It; ++It) if (!LiveTextures.Contains(It.Key())) It.RemoveCurrent();
+        for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
+        {
+            const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
+            FNativeDraw& Draw = NativeDraws.AddDefaulted_GetRef();
+            Draw.Vertices.Reserve(Source.VertexCount * 8);
+            for (uint32 VertexIndex = 0; VertexIndex < Source.VertexCount; ++VertexIndex)
+            {
+                const RmlUE_SlateVertex& Vertex = Source.Vertices[VertexIndex];
+                Draw.Vertices.Append({Vertex.X, Vertex.Y, Vertex.U, Vertex.V,
+                    static_cast<float>(Vertex.R), static_cast<float>(Vertex.G), static_cast<float>(Vertex.B), static_cast<float>(Vertex.A)});
+            }
+            Draw.Indices.Append(Source.Indices, Source.IndexCount);
+            Draw.TextureId = Source.Texture;
+            Draw.Translation = FVector2f(Source.TranslateX, Source.TranslateY);
+            Draw.bScissor = Source.ScissorEnabled != 0;
+            Draw.Scissor = FSlateRect(Source.ScissorX, Source.ScissorY, Source.ScissorX + Source.ScissorWidth, Source.ScissorY + Source.ScissorHeight);
+        }
+        if (SlateFrame.UnsupportedFeatures && SlateFrame.UnsupportedFeatures != UnsupportedSlateFeatures)
+        {
+            UE_LOG(LogRmlUiUnreal, Warning, TEXT("The experimental Slate renderer omitted RmlUi advanced feature mask 0x%X. Use the DX11 compatibility renderer for visual parity."), SlateFrame.UnsupportedFeatures);
+        }
+        UnsupportedSlateFeatures = SlateFrame.UnsupportedFeatures;
+        FrameNumber = SlateFrame.Number;
+        Invalidate(EInvalidateWidgetReason::Paint);
+        DispatchEvents();
+        return true;
+    }
     RmlUE_Frame Frame{};
     if (!CheckResult(RmlUE_Render(NativeView, &Frame)) || !Frame.Pixels || Frame.Width != Width || Frame.Height != Height)
     {
@@ -279,6 +433,48 @@ FVector2D SRmlUiWidget::ComputeDesiredSize(float) const
 int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect&,
     FSlateWindowElementList& Elements, int32 LayerId, const FWidgetStyle& Style, bool bParentEnabled) const
 {
+    if (bUseSlateRenderer && NativeDraws.Num() > 0)
+    {
+        const FSlateRenderTransform Transform = Geometry.GetAccumulatedRenderTransform();
+        for (const FNativeDraw& Draw : NativeDraws)
+        {
+            const FSlateBrush* Brush = nullptr;
+            if (const FName* Alias = NativeMaterialAliases.Find(Draw.TextureId))
+            {
+                if (const TSharedPtr<FDeferredCleanupSlateBrush>* Material = Materials.Find(*Alias))
+                    if (Material->IsValid())
+                    {
+                        Brush = (*Material)->GetSlateBrush();
+                        ++ResolvedMaterialDrawCount;
+                    }
+            }
+            else if (const FTextureResource* Resource = NativeTextures.Find(Draw.TextureId))
+            {
+                if (Resource->Brush.IsValid()) Brush = Resource->Brush->GetSlateBrush();
+            }
+            if (!Brush) Brush = FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
+            TArray<FSlateVertex> Vertices;
+            Vertices.Reserve(Draw.Vertices.Num() / 8);
+            for (int32 Offset = 0; Offset < Draw.Vertices.Num(); Offset += 8)
+            {
+                const FVector2f Position = (FVector2f(Draw.Vertices[Offset], Draw.Vertices[Offset + 1]) + Draw.Translation) / PixelScale;
+                const FColor Color(static_cast<uint8>(Draw.Vertices[Offset + 4]), static_cast<uint8>(Draw.Vertices[Offset + 5]),
+                    static_cast<uint8>(Draw.Vertices[Offset + 6]), static_cast<uint8>(Draw.Vertices[Offset + 7]));
+                Vertices.Add(FSlateVertex::Make(Transform, Position, FVector2f(Draw.Vertices[Offset + 2], Draw.Vertices[Offset + 3]), Color));
+            }
+            TArray<SlateIndex> Indices;
+            Indices.Reserve(Draw.Indices.Num());
+            for (uint32 Index : Draw.Indices) Indices.Add(static_cast<SlateIndex>(Index));
+            if (Draw.bScissor)
+            {
+                const FVector2D TopLeft = Geometry.LocalToAbsolute(FVector2D(Draw.Scissor.Left, Draw.Scissor.Top) / PixelScale);
+                const FVector2D BottomRight = Geometry.LocalToAbsolute(FVector2D(Draw.Scissor.Right, Draw.Scissor.Bottom) / PixelScale);
+                Elements.PushClip(FSlateClippingZone(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y)));
+            }
+            FSlateDrawElement::MakeCustomVerts(Elements, LayerId++, FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices, nullptr, 0, 0);
+            if (Draw.bScissor) Elements.PopClip();
+        }
+    }
     if (TextureBrush.IsValid())
     {
         FSlateDrawElement::MakeBox(Elements, LayerId, Geometry.ToPaintGeometry(), TextureBrush->GetSlateBrush(),
