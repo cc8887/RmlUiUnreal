@@ -123,6 +123,8 @@ void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
     Texture = nullptr;
     TextureBrush.Reset();
     TextureSize = FIntPoint::ZeroValue;
+    for (const auto& Pair : NativeGeometries) Registry.UnregisterUnreal(Pair.Value.RegistryId);
+    NativeGeometries.Reset();
     for (const auto& Pair : NativeTextures) Registry.UnregisterUnreal(Pair.Value.RegistryId);
     NativeTextures.Reset();
     if (bIncludeMaterials)
@@ -343,21 +345,75 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             return false;
         }
         NativeDraws.Reset(SlateFrame.DrawCount);
-        NativeMaterialResources.Reset();
-        TSet<uint64> LiveTextures;
+        for (uint32 Index = 0; Index < SlateFrame.GeometryDeltaCount; ++Index)
+        {
+            const RmlUE_SlateGeometryDelta& Source = SlateFrame.GeometryDeltas[Index];
+            if (Source.Action == RMLUE_SLATE_RESOURCE_DESTROY)
+            {
+                if (const FGeometryResource* Existing = NativeGeometries.Find(Source.Id))
+                    FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
+                NativeGeometries.Remove(Source.Id);
+                continue;
+            }
+            if (Source.Action != RMLUE_SLATE_RESOURCE_CREATE ||
+                (Source.VertexCount > 0 && !Source.Vertices) || (Source.IndexCount > 0 && !Source.Indices))
+            {
+                LastError = TEXT("Invalid Slate geometry resource delta.");
+                return false;
+            }
+            if (const FGeometryResource* Existing = NativeGeometries.Find(Source.Id))
+                FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
+            FGeometryResource Resource;
+            Resource.Vertices.Reserve(Source.VertexCount * 8);
+            for (uint32 VertexIndex = 0; VertexIndex < Source.VertexCount; ++VertexIndex)
+            {
+                const RmlUE_SlateVertex& Vertex = Source.Vertices[VertexIndex];
+                Resource.Vertices.Append({Vertex.X, Vertex.Y, Vertex.U, Vertex.V,
+                    static_cast<float>(Vertex.R), static_cast<float>(Vertex.G), static_cast<float>(Vertex.B), static_cast<float>(Vertex.A)});
+            }
+            if (Source.IndexCount > 0) Resource.Indices.Append(Source.Indices, Source.IndexCount);
+            const uint64 EstimatedBytes = static_cast<uint64>(Source.VertexCount) * sizeof(RmlUE_SlateVertex) +
+                static_cast<uint64>(Source.IndexCount) * sizeof(uint32);
+            Resource.RegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(ERmlUiResourceType::SlateGeometryCache,
+                ERmlUiResourceBackend::Slate, RmlUE_GetViewResourceId(NativeView), EstimatedBytes,
+                FString::Printf(TEXT("Slate geometry cache %llu"), Source.Id));
+            NativeGeometries.Add(Source.Id, MoveTemp(Resource));
+        }
         for (uint32 Index = 0; Index < SlateFrame.TextureCount; ++Index)
         {
             const RmlUE_SlateTexture& Source = SlateFrame.Textures[Index];
-            LiveTextures.Add(Source.Id);
+            if (Source.Action == RMLUE_SLATE_RESOURCE_DESTROY)
+            {
+                NativeMaterialResources.Remove(Source.Id);
+                if (const FTextureResource* Existing = NativeTextures.Find(Source.Id))
+                    FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
+                NativeTextures.Remove(Source.Id);
+                continue;
+            }
+            if (Source.Action != RMLUE_SLATE_RESOURCE_CREATE)
+            {
+                LastError = TEXT("Invalid Slate texture resource delta.");
+                return false;
+            }
             if (Source.Kind == 1)
             {
                 NativeMaterialResources.Add(Source.Id,
                     {FName(UTF8_TO_TCHAR(Source.MaterialAlias ? Source.MaterialAlias : "")), Source.MaterialSlot});
                 continue;
             }
-            if (NativeTextures.Contains(Source.Id) || !Source.PremultipliedRGBA || Source.Width <= 0 || Source.Height <= 0) continue;
+            if (!Source.PremultipliedRGBA || Source.Width <= 0 || Source.Height <= 0)
+            {
+                LastError = TEXT("Invalid Slate texture create payload.");
+                return false;
+            }
+            if (const FTextureResource* Existing = NativeTextures.Find(Source.Id))
+                FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
             UTexture2D* NewTexture = UTexture2D::CreateTransient(Source.Width, Source.Height, PF_B8G8R8A8);
-            if (!NewTexture) continue;
+            if (!NewTexture)
+            {
+                LastError = TEXT("Could not allocate a Slate resource texture.");
+                return false;
+            }
             NewTexture->NeverStream = true;
             NewTexture->SRGB = true;
             NewTexture->Filter = TF_Bilinear;
@@ -384,26 +440,16 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
                 FString::Printf(TEXT("Slate texture %llu"), Source.Id), NewTexture);
             NativeTextures.Add(Source.Id, MoveTemp(Resource));
         }
-        for (auto It = NativeTextures.CreateIterator(); It; ++It)
-        {
-            if (!LiveTextures.Contains(It.Key()))
-            {
-                FRmlUiResourceRegistry::Get().UnregisterUnreal(It.Value().RegistryId);
-                It.RemoveCurrent();
-            }
-        }
         for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
         {
             const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
-            FNativeDraw& Draw = NativeDraws.AddDefaulted_GetRef();
-            Draw.Vertices.Reserve(Source.VertexCount * 8);
-            for (uint32 VertexIndex = 0; VertexIndex < Source.VertexCount; ++VertexIndex)
+            if (!NativeGeometries.Contains(Source.GeometryId))
             {
-                const RmlUE_SlateVertex& Vertex = Source.Vertices[VertexIndex];
-                Draw.Vertices.Append({Vertex.X, Vertex.Y, Vertex.U, Vertex.V,
-                    static_cast<float>(Vertex.R), static_cast<float>(Vertex.G), static_cast<float>(Vertex.B), static_cast<float>(Vertex.A)});
+                LastError = FString::Printf(TEXT("Slate draw references missing geometry cache %llu."), Source.GeometryId);
+                return false;
             }
-            Draw.Indices.Append(Source.Indices, Source.IndexCount);
+            FNativeDraw& Draw = NativeDraws.AddDefaulted_GetRef();
+            Draw.GeometryId = Source.GeometryId;
             Draw.TextureId = Source.Texture;
             Draw.Translation = FVector2f(Source.TranslateX, Source.TranslateY);
             Draw.bTransform = Source.TransformEnabled != 0;
@@ -491,6 +537,8 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
         const FSlateRenderTransform Transform = Geometry.GetAccumulatedRenderTransform();
         for (const FNativeDraw& Draw : NativeDraws)
         {
+            const FGeometryResource* GeometryResource = NativeGeometries.Find(Draw.GeometryId);
+            if (!GeometryResource) continue;
             const FSlateBrush* Brush = nullptr;
             if (const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId))
             {
@@ -509,19 +557,20 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             }
             if (!Brush) Brush = FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
             TArray<FSlateVertex> Vertices;
-            Vertices.Reserve(Draw.Vertices.Num() / 8);
-            for (int32 Offset = 0; Offset < Draw.Vertices.Num(); Offset += 8)
+            Vertices.Reserve(GeometryResource->Vertices.Num() / 8);
+            for (int32 Offset = 0; Offset < GeometryResource->Vertices.Num(); Offset += 8)
             {
-                FVector2f Position = FVector2f(Draw.Vertices[Offset], Draw.Vertices[Offset + 1]) + Draw.Translation;
+                FVector2f Position = FVector2f(GeometryResource->Vertices[Offset], GeometryResource->Vertices[Offset + 1]) + Draw.Translation;
                 if (Draw.bTransform) Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
                 Position /= PixelScale;
-                const FColor Color(static_cast<uint8>(Draw.Vertices[Offset + 4]), static_cast<uint8>(Draw.Vertices[Offset + 5]),
-                    static_cast<uint8>(Draw.Vertices[Offset + 6]), static_cast<uint8>(Draw.Vertices[Offset + 7]));
-                Vertices.Add(FSlateVertex::Make(Transform, Position, FVector2f(Draw.Vertices[Offset + 2], Draw.Vertices[Offset + 3]), Color));
+                const FColor Color(static_cast<uint8>(GeometryResource->Vertices[Offset + 4]), static_cast<uint8>(GeometryResource->Vertices[Offset + 5]),
+                    static_cast<uint8>(GeometryResource->Vertices[Offset + 6]), static_cast<uint8>(GeometryResource->Vertices[Offset + 7]));
+                Vertices.Add(FSlateVertex::Make(Transform, Position,
+                    FVector2f(GeometryResource->Vertices[Offset + 2], GeometryResource->Vertices[Offset + 3]), Color));
             }
             TArray<SlateIndex> Indices;
-            Indices.Reserve(Draw.Indices.Num());
-            for (uint32 Index : Draw.Indices) Indices.Add(static_cast<SlateIndex>(Index));
+            Indices.Reserve(GeometryResource->Indices.Num());
+            for (uint32 Index : GeometryResource->Indices) Indices.Add(static_cast<SlateIndex>(Index));
             if (Draw.bScissor)
             {
                 const FVector2D TopLeft = Geometry.LocalToAbsolute(FVector2D(Draw.Scissor.Left, Draw.Scissor.Top) / PixelScale);

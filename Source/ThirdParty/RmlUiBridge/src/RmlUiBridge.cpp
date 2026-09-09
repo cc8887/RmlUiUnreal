@@ -238,19 +238,23 @@ public:
 
 class SlateCommandRenderer final : public Rml::RenderInterface {
     struct GeometryData {
+        uint64_t Id = 0;
         uint64_t ResourceId = 0;
+        bool Published = false;
         std::vector<RmlUE_SlateVertex> Vertices;
         std::vector<uint32_t> Indices;
     };
     struct TextureData {
         uint64_t Id = 0;
         uint64_t ResourceId = 0;
+        bool Published = false;
         int Kind = 0;
         int MaterialSlot = RMLUE_MATERIAL_SLOT_NONE;
         int Width = 0, Height = 0;
         std::vector<unsigned char> Pixels;
         std::string Alias;
     };
+    uint64_t NextGeometry = 0;
     uint64_t NextTexture = 0;
     uint64_t OwnerResourceId = 0;
     bool ScissorEnabled = false;
@@ -259,12 +263,21 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
     float TransformM00 = 1.f, TransformM01 = 0.f, TransformM10 = 0.f, TransformM11 = 1.f, TransformX = 0.f, TransformY = 0.f;
 public:
     std::vector<RmlUE_SlateDraw> Draws;
+    std::unordered_map<uint64_t, GeometryData*> GeometryDataById;
     std::unordered_map<uint64_t, TextureData> TextureDataById;
+    std::vector<uint64_t> ReleasedGeometryIds;
+    std::vector<uint64_t> ReleasedTextureIds;
+    std::vector<RmlUE_SlateGeometryDelta> PublicGeometryDeltas;
     std::vector<RmlUE_SlateTexture> PublicTextures;
     uint32_t UnsupportedFeatures = 0;
 
     ~SlateCommandRenderer() override
     {
+        for (const auto& Pair : GeometryDataById)
+        {
+            UnregisterResource(Pair.second->ResourceId);
+            delete Pair.second;
+        }
         for (const auto& Pair : TextureDataById) UnregisterResource(Pair.second.ResourceId);
     }
 
@@ -273,6 +286,7 @@ public:
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices) override
     {
         auto Geometry = std::make_unique<GeometryData>();
+        Geometry->Id = ++NextGeometry;
         Geometry->Vertices.reserve(Vertices.size());
         for (const Rml::Vertex& Vertex : Vertices)
             Geometry->Vertices.push_back({Vertex.position.x, Vertex.position.y, Vertex.tex_coord.x, Vertex.tex_coord.y,
@@ -281,15 +295,16 @@ public:
         for (int Index : Indices) Geometry->Indices.push_back(static_cast<uint32_t>(Index));
         Geometry->ResourceId = RegisterResource(RMLUE_RESOURCE_GEOMETRY, RMLUE_RESOURCE_BACKEND_SLATE, OwnerResourceId,
             Geometry->Vertices.size() * sizeof(RmlUE_SlateVertex) + Geometry->Indices.size() * sizeof(uint32_t), "Slate compiled geometry");
-        return reinterpret_cast<Rml::CompiledGeometryHandle>(Geometry.release());
+        GeometryData* Result = Geometry.release();
+        GeometryDataById.emplace(Result->Id, Result);
+        return reinterpret_cast<Rml::CompiledGeometryHandle>(Result);
     }
     void RenderGeometry(Rml::CompiledGeometryHandle Handle, Rml::Vector2f Translation, Rml::TextureHandle Texture) override
     {
         const auto* Geometry = reinterpret_cast<const GeometryData*>(Handle);
         if (!Geometry) return;
         const Rml::Rectanglei Region = Scissor;
-        Draws.push_back({Geometry->Vertices.data(), static_cast<uint32_t>(Geometry->Vertices.size()), Geometry->Indices.data(),
-            static_cast<uint32_t>(Geometry->Indices.size()), static_cast<uint64_t>(Texture), Translation.x, Translation.y,
+        Draws.push_back({Geometry->Id, static_cast<uint64_t>(Texture), Translation.x, Translation.y,
             TransformEnabled ? 1 : 0, TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY,
             ScissorEnabled ? 1 : 0, static_cast<float>(Region.Left()), static_cast<float>(Region.Top()),
             static_cast<float>(Region.Width()), static_cast<float>(Region.Height())});
@@ -298,7 +313,12 @@ public:
     void ReleaseGeometry(Rml::CompiledGeometryHandle Handle) override
     {
         auto* Geometry = reinterpret_cast<GeometryData*>(Handle);
-        if (Geometry) UnregisterResource(Geometry->ResourceId);
+        if (Geometry)
+        {
+            if (Geometry->Published) ReleasedGeometryIds.push_back(Geometry->Id);
+            GeometryDataById.erase(Geometry->Id);
+            UnregisterResource(Geometry->ResourceId);
+        }
         delete Geometry;
     }
     Rml::TextureHandle LoadTexture(Rml::Vector2i& Dimensions, const Rml::String& Source) override
@@ -368,6 +388,7 @@ public:
     {
         const auto Found = TextureDataById.find(static_cast<uint64_t>(Texture));
         if (Found == TextureDataById.end()) return;
+        if (Found->second.Published) ReleasedTextureIds.push_back(Found->second.Id);
         UnregisterResource(Found->second.ResourceId);
         TextureDataById.erase(Found);
     }
@@ -413,17 +434,43 @@ public:
     void BeginFrame()
     {
         Draws.clear();
+        PublicGeometryDeltas.clear();
         PublicTextures.clear();
         UnsupportedFeatures = 0;
     }
     void EndFrame()
     {
-        PublicTextures.reserve(TextureDataById.size());
-        for (const auto& Pair : TextureDataById)
+        std::sort(ReleasedGeometryIds.begin(), ReleasedGeometryIds.end());
+        for (uint64_t Id : ReleasedGeometryIds)
+            PublicGeometryDeltas.push_back({Id, RMLUE_SLATE_RESOURCE_DESTROY, nullptr, 0, nullptr, 0});
+        ReleasedGeometryIds.clear();
+        std::vector<uint64_t> GeometryIds;
+        GeometryIds.reserve(GeometryDataById.size());
+        for (const auto& Pair : GeometryDataById) if (!Pair.second->Published) GeometryIds.push_back(Pair.first);
+        std::sort(GeometryIds.begin(), GeometryIds.end());
+        for (uint64_t Id : GeometryIds)
         {
-            const TextureData& Texture = Pair.second;
-            PublicTextures.push_back({Texture.Id, Texture.Kind, Texture.MaterialSlot, Texture.Pixels.empty() ? nullptr : Texture.Pixels.data(),
+            GeometryData& Geometry = *GeometryDataById.at(Id);
+            PublicGeometryDeltas.push_back({Geometry.Id, RMLUE_SLATE_RESOURCE_CREATE, Geometry.Vertices.data(),
+                static_cast<uint32_t>(Geometry.Vertices.size()), Geometry.Indices.data(), static_cast<uint32_t>(Geometry.Indices.size())});
+            Geometry.Published = true;
+        }
+
+        std::sort(ReleasedTextureIds.begin(), ReleasedTextureIds.end());
+        for (uint64_t Id : ReleasedTextureIds)
+            PublicTextures.push_back({Id, RMLUE_SLATE_RESOURCE_DESTROY, 0, RMLUE_MATERIAL_SLOT_NONE, nullptr, 0, 0, nullptr});
+        ReleasedTextureIds.clear();
+        std::vector<uint64_t> TextureIds;
+        TextureIds.reserve(TextureDataById.size());
+        for (const auto& Pair : TextureDataById) if (!Pair.second.Published) TextureIds.push_back(Pair.first);
+        std::sort(TextureIds.begin(), TextureIds.end());
+        for (uint64_t Id : TextureIds)
+        {
+            TextureData& Texture = TextureDataById.at(Id);
+            PublicTextures.push_back({Texture.Id, RMLUE_SLATE_RESOURCE_CREATE, Texture.Kind, Texture.MaterialSlot,
+                Texture.Pixels.empty() ? nullptr : Texture.Pixels.data(),
                 Texture.Width, Texture.Height, Texture.Alias.empty() ? nullptr : Texture.Alias.c_str()});
+            Texture.Published = true;
         }
     }
 };
@@ -1035,6 +1082,7 @@ int RmlUE_RenderSlate(RmlUE_View* View, RmlUE_SlateFrame* Frame)
     View->SlateRenderer->EndFrame();
     ++View->FrameNumber;
     *Frame = {RMLUE_SLATE_ABI_VERSION, View->SlateRenderer->Draws.data(), static_cast<uint32_t>(View->SlateRenderer->Draws.size()),
+        View->SlateRenderer->PublicGeometryDeltas.data(), static_cast<uint32_t>(View->SlateRenderer->PublicGeometryDeltas.size()),
         View->SlateRenderer->PublicTextures.data(), static_cast<uint32_t>(View->SlateRenderer->PublicTextures.size()),
         View->FrameNumber, View->SlateRenderer->UnsupportedFeatures};
     return 1;

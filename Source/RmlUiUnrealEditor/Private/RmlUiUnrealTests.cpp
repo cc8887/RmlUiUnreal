@@ -110,6 +110,41 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     }
     TestFalse(TEXT("Native destroy event removes the view"), Registry.Snapshot().ContainsByPredicate(
         [NativeId](const FRmlUiResourceInfo& Info) { return Info.Id == NativeId; }));
+
+    TSharedRef<SRmlUiWidget> SlateWidget = SNew(SRmlUiWidget).UseSlateRenderer(true)
+        .DocumentPath(RmlUiTests::ContentPath(TEXT("Grid.html")));
+    if (!TestTrue(TEXT("Slate cache first frame"), SlateWidget->RenderFrame(96, 64))) return false;
+    const uint64 SlateOwnerId = RmlUE_GetViewResourceId(SlateWidget->GetNativeView());
+    TArray<uint64> FirstGeometryCacheIds;
+    for (const FRmlUiResourceInfo& Info : Registry.Snapshot())
+    {
+        if (Info.OwnerId == SlateOwnerId && Info.Type == ERmlUiResourceType::SlateGeometryCache)
+            FirstGeometryCacheIds.Add(Info.Id);
+        TestFalse(TEXT("Slate view has no legacy DX11-owned resources"),
+            Info.OwnerId == SlateOwnerId && Info.Backend == ERmlUiResourceBackend::DX11);
+    }
+    TestTrue(TEXT("UE registers geometry created by the incremental ABI"), FirstGeometryCacheIds.Num() > 0);
+    TestTrue(TEXT("Slate cache unchanged frame"), SlateWidget->RenderFrame(96, 64));
+    int32 CachedGeometryCount = 0;
+    for (const FRmlUiResourceInfo& Info : Registry.Snapshot())
+        if (Info.OwnerId == SlateOwnerId && Info.Type == ERmlUiResourceType::SlateGeometryCache) ++CachedGeometryCount;
+    TestEqual(TEXT("Unchanged frame retains the same UE geometry cache"), CachedGeometryCount, FirstGeometryCacheIds.Num());
+
+    TestTrue(TEXT("Replace incremental Slate document"),
+        SlateWidget->LoadDocument(RmlUiTests::ContentPath(TEXT("Grid.html"))));
+    TestTrue(TEXT("Render replacement through cache deltas"), SlateWidget->RenderFrame(96, 64));
+    const TArray<FRmlUiResourceInfo> ReplacedResources = Registry.Snapshot();
+    for (uint64 OldId : FirstGeometryCacheIds)
+        TestFalse(TEXT("Replacement removes stale UE geometry cache entries"), ReplacedResources.ContainsByPredicate(
+            [OldId](const FRmlUiResourceInfo& Info) { return Info.Id == OldId; }));
+    TestTrue(TEXT("Replacement registers new UE geometry cache entries"), ReplacedResources.ContainsByPredicate(
+        [SlateOwnerId](const FRmlUiResourceInfo& Info)
+        {
+            return Info.OwnerId == SlateOwnerId && Info.Type == ERmlUiResourceType::SlateGeometryCache;
+        }));
+    SlateWidget->ShutdownNative();
+    TestFalse(TEXT("Slate shutdown removes all resources owned by its view"), Registry.Snapshot().ContainsByPredicate(
+        [SlateOwnerId](const FRmlUiResourceInfo& Info) { return Info.OwnerId == SlateOwnerId; }));
     return true;
 }
 

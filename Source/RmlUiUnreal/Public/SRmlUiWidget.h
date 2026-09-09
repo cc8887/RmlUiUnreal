@@ -79,8 +79,7 @@ public:
 
 private:
     struct FNativeDraw {
-        TArray<float> Vertices;
-        TArray<uint32> Indices;
+        uint64 GeometryId = 0;
         uint64 TextureId = 0;
         FVector2f Translation = FVector2f::ZeroVector;
         FMatrix2x2 Transform;
@@ -88,6 +87,11 @@ private:
         FSlateRect Scissor;
         bool bTransform = false;
         bool bScissor = false;
+    };
+    struct FGeometryResource {
+        TArray<float> Vertices;
+        TArray<uint32> Indices;
+        uint64 RegistryId = 0;
     };
     struct FTextureResource {
         TObjectPtr<UTexture2D> Texture = nullptr;
@@ -129,6 +133,7 @@ private:
     TMap<int32, FVector2D> ActiveTouches;
     TSet<int32> PressedMouseButtons;
     TArray<FNativeDraw> NativeDraws;
+    TMap<uint64, FGeometryResource> NativeGeometries;
     TMap<uint64, FTextureResource> NativeTextures;
     TMap<uint64, FNativeMaterialResource> NativeMaterialResources;
     TMap<FName, FMaterialResource> Materials;

@@ -28,7 +28,8 @@ enum class ERmlUiResourceType : int32
     FrameBuffer = 5,
     MaterialBinding = 6,
     UnrealTexture = 100,
-    SlateMaterialBrush = 101
+    SlateMaterialBrush = 101,
+    SlateGeometryCache = 102
 };
 
 enum class ERmlUiResourceBackend : int32

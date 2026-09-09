@@ -63,6 +63,13 @@ static int Brightness(const RmlUE_Frame& Frame, int X, int Y)
     const auto* Pixel = Frame.Pixels + (Y * Frame.Width + X) * 4;
     return int(Pixel[0]) + int(Pixel[1]) + int(Pixel[2]);
 }
+static const RmlUE_SlateGeometryDelta* FindCreatedGeometry(const RmlUE_SlateFrame& Frame, uint64_t Id)
+{
+    for (uint32_t Index = 0; Index < Frame.GeometryDeltaCount; ++Index)
+        if (Frame.GeometryDeltas[Index].Id == Id && Frame.GeometryDeltas[Index].Action == RMLUE_SLATE_RESOURCE_CREATE)
+            return &Frame.GeometryDeltas[Index];
+    return nullptr;
+}
 int main(int Count, char** Arguments)
 {
     Require(Count >= 2, "font path argument");
@@ -177,9 +184,11 @@ body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height:
     for (uint32_t Index = 0; Index < SlateFrame.TextureCount; ++Index)
     {
         const RmlUE_SlateTexture& Texture = SlateFrame.Textures[Index];
-        FoundBackgroundMaterial |= Texture.Kind == 1 && Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BACKGROUND && Texture.MaterialAlias &&
+        FoundBackgroundMaterial |= Texture.Action == RMLUE_SLATE_RESOURCE_CREATE && Texture.Kind == 1 &&
+            Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BACKGROUND && Texture.MaterialAlias &&
             std::strcmp(Texture.MaterialAlias, "panel.energy") == 0;
-        if (Texture.Kind == 1 && Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BORDER && Texture.MaterialAlias &&
+        if (Texture.Action == RMLUE_SLATE_RESOURCE_CREATE && Texture.Kind == 1 &&
+            Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BORDER && Texture.MaterialAlias &&
             std::strcmp(Texture.MaterialAlias, "panel.frame") == 0)
         {
             FoundBorderMaterial = true;
@@ -192,15 +201,17 @@ body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height:
     for (uint32_t Index = 0; Index < SlateFrame.DrawCount; ++Index)
     {
         const RmlUE_SlateDraw& Draw = SlateFrame.Draws[Index];
+        const RmlUE_SlateGeometryDelta* Geometry = FindCreatedGeometry(SlateFrame, Draw.GeometryId);
+        Require(Geometry != nullptr, "first Slate frame creates every referenced geometry cache entry");
         if (Draw.Texture == BorderTexture)
         {
-            FoundBorderRing = Draw.VertexCount > 4 && Draw.IndexCount >= 24;
+            FoundBorderRing = Geometry->VertexCount > 4 && Geometry->IndexCount >= 24;
             bool FoundNonZeroUv = false;
-            for (uint32_t VertexIndex = 0; VertexIndex < Draw.VertexCount; ++VertexIndex)
-                FoundNonZeroUv |= Draw.Vertices[VertexIndex].U > 0.01f || Draw.Vertices[VertexIndex].V > 0.01f;
+            for (uint32_t VertexIndex = 0; VertexIndex < Geometry->VertexCount; ++VertexIndex)
+                FoundNonZeroUv |= Geometry->Vertices[VertexIndex].U > 0.01f || Geometry->Vertices[VertexIndex].V > 0.01f;
             FoundBorderRing &= FoundNonZeroUv;
         }
-        if (Draw.VertexCount > 0 && Draw.Vertices[0].R > 240 && Draw.Vertices[0].G < 10 && Draw.Vertices[0].B < 10)
+        if (Geometry->VertexCount > 0 && Geometry->Vertices[0].R > 240 && Geometry->Vertices[0].G < 10 && Geometry->Vertices[0].B < 10)
             FoundTransformedDraw = Draw.TransformEnabled != 0 && std::fabs(Draw.TransformM01) > 0.01f;
     }
     Require(FoundBorderRing, "Border material uses textured ring geometry rather than a content-covering quad");
@@ -215,9 +226,35 @@ body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height:
         {
             FoundGeometry |= Record.Type == RMLUE_RESOURCE_GEOMETRY && Record.OwnerId == SlateViewResourceId && Record.EstimatedBytes > 0;
             FoundMaterialBinding |= Record.Type == RMLUE_RESOURCE_MATERIAL_BINDING && Record.OwnerId == SlateViewResourceId;
+            Require(!(Record.Type == RMLUE_RESOURCE_FRAME_BUFFER && Record.OwnerId == SlateViewResourceId),
+                "Slate view does not allocate a legacy DX11 frame buffer");
         }
         Require(FoundGeometry && FoundMaterialBinding, "Slate resources are registered under their owning view");
     }
+    RmlUE_SlateFrame CachedSlateFrame{};
+    Require(RmlUE_RenderSlate(SlateView, &CachedSlateFrame) != 0 && CachedSlateFrame.DrawCount > 0 &&
+        CachedSlateFrame.GeometryDeltaCount == 0 && CachedSlateFrame.TextureCount == 0,
+        "unchanged Slate frame reuses host geometry and texture caches without resending resources");
+    Require(RmlUE_LoadDocumentFromMemory(SlateView,
+        "<rml><head><style>body{margin:0}#replacement{display:block;width:20px;height:20px;background-color:#0f0}</style></head><body><div id='replacement'></div></body></rml>",
+        "slate-replacement.rml") != 0, "replace cached Slate document");
+    RmlUE_SlateFrame ReplacedSlateFrame{};
+    Require(RmlUE_RenderSlate(SlateView, &ReplacedSlateFrame) != 0, "render replaced cached Slate document");
+    bool FoundGeometryDestroy = false, FoundGeometryCreate = false, FoundTextureDestroy = false;
+    for (uint32_t Index = 0; Index < ReplacedSlateFrame.GeometryDeltaCount; ++Index)
+    {
+        FoundGeometryDestroy |= ReplacedSlateFrame.GeometryDeltas[Index].Action == RMLUE_SLATE_RESOURCE_DESTROY;
+        FoundGeometryCreate |= ReplacedSlateFrame.GeometryDeltas[Index].Action == RMLUE_SLATE_RESOURCE_CREATE;
+    }
+    for (uint32_t Index = 0; Index < ReplacedSlateFrame.TextureCount; ++Index)
+        FoundTextureDestroy |= ReplacedSlateFrame.Textures[Index].Action == RMLUE_SLATE_RESOURCE_DESTROY;
+    std::printf("Slate replacement deltas draws=%u geometry=%u destroy=%d create=%d texture=%u destroy=%d\n",
+        ReplacedSlateFrame.DrawCount,
+        ReplacedSlateFrame.GeometryDeltaCount, FoundGeometryDestroy, FoundGeometryCreate,
+        ReplacedSlateFrame.TextureCount, FoundTextureDestroy);
+    std::fflush(stdout);
+    Require(FoundGeometryDestroy && FoundGeometryCreate && FoundTextureDestroy,
+        "document replacement sends cache destroys before new geometry is drawn");
     Require(RmlUE_Render(SlateView, &Frame) == 0, "Slate view rejects legacy frame readback");
     RmlUE_DestroyView(SlateView);
 
@@ -237,9 +274,11 @@ body { margin: 0; }
     for (uint32_t Index = 0; Index < ClipFrame.DrawCount; ++Index)
     {
         const RmlUE_SlateDraw& Draw = ClipFrame.Draws[Index];
-        if (Draw.VertexCount > 0 && Draw.Vertices[0].G > 240 && Draw.Vertices[0].R < 10 && Draw.Vertices[0].B < 10)
+        const RmlUE_SlateGeometryDelta* Geometry = FindCreatedGeometry(ClipFrame, Draw.GeometryId);
+        Require(Geometry != nullptr, "clipping frame creates every referenced geometry cache entry");
+        if (Geometry->VertexCount > 0 && Geometry->Vertices[0].G > 240 && Geometry->Vertices[0].R < 10 && Geometry->Vertices[0].B < 10)
             FoundNestedClipDraw = Draw.ScissorEnabled != 0 && Draw.ScissorWidth <= 30.f && Draw.ScissorHeight <= 18.f;
-        if (Draw.VertexCount > 0 && Draw.Vertices[0].B > 240 && Draw.Vertices[0].R < 10 && Draw.Vertices[0].G < 10)
+        if (Geometry->VertexCount > 0 && Geometry->Vertices[0].B > 240 && Geometry->Vertices[0].R < 10 && Geometry->Vertices[0].G < 10)
             FoundUnclippedSiblingDraw = Draw.ScissorEnabled == 0;
     }
     Require(FoundNestedClipDraw, "Slate draw carries the nested rectangular clip intersection");

@@ -89,10 +89,7 @@ typedef struct RmlUE_SlateVertex {
 } RmlUE_SlateVertex;
 
 typedef struct RmlUE_SlateDraw {
-    const RmlUE_SlateVertex* Vertices;
-    uint32_t VertexCount;
-    const uint32_t* Indices;
-    uint32_t IndexCount;
+    uint64_t GeometryId;
     uint64_t Texture;
     float TranslateX, TranslateY;
     // Row-major 2D affine transform applied after geometry translation.
@@ -102,8 +99,18 @@ typedef struct RmlUE_SlateDraw {
     float ScissorX, ScissorY, ScissorWidth, ScissorHeight;
 } RmlUE_SlateDraw;
 
+typedef struct RmlUE_SlateGeometryDelta {
+    uint64_t Id;
+    int Action;
+    const RmlUE_SlateVertex* Vertices;
+    uint32_t VertexCount;
+    const uint32_t* Indices;
+    uint32_t IndexCount;
+} RmlUE_SlateGeometryDelta;
+
 typedef struct RmlUE_SlateTexture {
     uint64_t Id;
+    int Action;
     // 0 = generated/loaded RGBA texture, 1 = host-registered UE material alias.
     int Kind;
     // -1 = not a material, 0 = background, 1 = border, 2 = reserved foreground.
@@ -117,7 +124,11 @@ typedef struct RmlUE_SlateFrame {
     uint32_t AbiVersion;
     const RmlUE_SlateDraw* Draws;
     uint32_t DrawCount;
+    // Create/destroy deltas since the previous frame. Create payload pointers remain valid until the next render.
+    const RmlUE_SlateGeometryDelta* GeometryDeltas;
+    uint32_t GeometryDeltaCount;
     const RmlUE_SlateTexture* Textures;
+    // Texture entries are create/destroy deltas, not a complete live-resource snapshot.
     uint32_t TextureCount;
     uint64_t Number;
     // Nonzero when the document requested effects which need the legacy renderer.
@@ -128,12 +139,14 @@ typedef struct RmlUE_SlateFrame {
 #define RMLUE_MATERIAL_SLOT_BACKGROUND 0
 #define RMLUE_MATERIAL_SLOT_BORDER 1
 #define RMLUE_MATERIAL_SLOT_FOREGROUND 2
+#define RMLUE_SLATE_RESOURCE_CREATE 1
+#define RMLUE_SLATE_RESOURCE_DESTROY 2
 #define RMLUE_UNSUPPORTED_CLIP_MASK (1u << 0)
 #define RMLUE_UNSUPPORTED_TRANSFORM_3D (1u << 1)
 #define RMLUE_UNSUPPORTED_LAYER (1u << 2)
 #define RMLUE_UNSUPPORTED_FILTER (1u << 3)
 #define RMLUE_UNSUPPORTED_SHADER (1u << 4)
-#define RMLUE_SLATE_ABI_VERSION 3u
+#define RMLUE_SLATE_ABI_VERSION 4u
 
 typedef struct RmlUE_Event {
     char Type[32];
