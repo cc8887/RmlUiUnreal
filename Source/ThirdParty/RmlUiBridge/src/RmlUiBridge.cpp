@@ -37,6 +37,8 @@ std::string LastError;
 std::thread::id OwnerThread;
 bool Initialized = false;
 uint64_t NextView = 0;
+uint64_t NextResource = 0;
+uint64_t NextResourceSequence = 0;
 uint32_t NextNode = 0;
 RmlUE_Stats* ActiveStats = nullptr;
 bool CapturingStyleSheetDiagnostics = false;
@@ -46,6 +48,43 @@ ComPtr<ID3D11DeviceContext> DeviceContext;
 std::set<RmlUE_View*> Views;
 std::set<RmlUE_StyleSheet*> StyleSheets;
 RmlUE_View* DebuggerView = nullptr;
+std::unordered_map<uint64_t, RmlUE_ResourceRecord> Resources;
+RmlUE_ResourceEventCallback ResourceEventCallback = nullptr;
+void* ResourceEventUser = nullptr;
+void CopyString(char* Destination, size_t Capacity, const std::string& Source);
+
+uint64_t RegisterResource(int Type, int Backend, uint64_t OwnerId, uint64_t EstimatedBytes, const std::string& Name)
+{
+    RmlUE_ResourceRecord Record{};
+    Record.Id = ++NextResource;
+    Record.OwnerId = OwnerId;
+    Record.EstimatedBytes = EstimatedBytes;
+    Record.CreatedSequence = ++NextResourceSequence;
+    Record.Type = Type;
+    Record.Backend = Backend;
+    CopyString(Record.Name, sizeof(Record.Name), Name);
+    Resources.emplace(Record.Id, Record);
+    if (ResourceEventCallback) ResourceEventCallback(ResourceEventUser, RMLUE_RESOURCE_CREATED, &Record);
+    return Record.Id;
+}
+
+void UpdateResource(uint64_t Id, uint64_t EstimatedBytes)
+{
+    const auto Found = Resources.find(Id);
+    if (Found == Resources.end()) return;
+    Found->second.EstimatedBytes = EstimatedBytes;
+    const RmlUE_ResourceRecord Record = Found->second;
+    if (ResourceEventCallback) ResourceEventCallback(ResourceEventUser, RMLUE_RESOURCE_UPDATED, &Record);
+}
+
+void UnregisterResource(uint64_t Id)
+{
+    const auto Found = Resources.find(Id);
+    if (Found == Resources.end()) return;
+    const RmlUE_ResourceRecord Record = Found->second;
+    Resources.erase(Found);
+    if (ResourceEventCallback) ResourceEventCallback(ResourceEventUser, RMLUE_RESOURCE_DESTROYED, &Record);
+}
 
 int Fail(const std::string& Message)
 {
@@ -199,24 +238,37 @@ public:
 
 class SlateCommandRenderer final : public Rml::RenderInterface {
     struct GeometryData {
+        uint64_t ResourceId = 0;
         std::vector<RmlUE_SlateVertex> Vertices;
         std::vector<uint32_t> Indices;
     };
     struct TextureData {
         uint64_t Id = 0;
+        uint64_t ResourceId = 0;
         int Kind = 0;
+        int MaterialSlot = RMLUE_MATERIAL_SLOT_NONE;
         int Width = 0, Height = 0;
         std::vector<unsigned char> Pixels;
         std::string Alias;
     };
     uint64_t NextTexture = 0;
+    uint64_t OwnerResourceId = 0;
     bool ScissorEnabled = false;
     Rml::Rectanglei Scissor{};
+    bool TransformEnabled = false;
+    float TransformM00 = 1.f, TransformM01 = 0.f, TransformM10 = 0.f, TransformM11 = 1.f, TransformX = 0.f, TransformY = 0.f;
 public:
     std::vector<RmlUE_SlateDraw> Draws;
     std::unordered_map<uint64_t, TextureData> TextureDataById;
     std::vector<RmlUE_SlateTexture> PublicTextures;
     uint32_t UnsupportedFeatures = 0;
+
+    ~SlateCommandRenderer() override
+    {
+        for (const auto& Pair : TextureDataById) UnregisterResource(Pair.second.ResourceId);
+    }
+
+    void SetOwnerResourceId(uint64_t InOwnerResourceId) { OwnerResourceId = InOwnerResourceId; }
 
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> Vertices, Rml::Span<const int> Indices) override
     {
@@ -227,6 +279,8 @@ public:
                 Vertex.colour.red, Vertex.colour.green, Vertex.colour.blue, Vertex.colour.alpha});
         Geometry->Indices.reserve(Indices.size());
         for (int Index : Indices) Geometry->Indices.push_back(static_cast<uint32_t>(Index));
+        Geometry->ResourceId = RegisterResource(RMLUE_RESOURCE_GEOMETRY, RMLUE_RESOURCE_BACKEND_SLATE, OwnerResourceId,
+            Geometry->Vertices.size() * sizeof(RmlUE_SlateVertex) + Geometry->Indices.size() * sizeof(uint32_t), "Slate compiled geometry");
         return reinterpret_cast<Rml::CompiledGeometryHandle>(Geometry.release());
     }
     void RenderGeometry(Rml::CompiledGeometryHandle Handle, Rml::Vector2f Translation, Rml::TextureHandle Texture) override
@@ -236,21 +290,48 @@ public:
         const Rml::Rectanglei Region = Scissor;
         Draws.push_back({Geometry->Vertices.data(), static_cast<uint32_t>(Geometry->Vertices.size()), Geometry->Indices.data(),
             static_cast<uint32_t>(Geometry->Indices.size()), static_cast<uint64_t>(Texture), Translation.x, Translation.y,
+            TransformEnabled ? 1 : 0, TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY,
             ScissorEnabled ? 1 : 0, static_cast<float>(Region.Left()), static_cast<float>(Region.Top()),
             static_cast<float>(Region.Width()), static_cast<float>(Region.Height())});
         if (ActiveStats) ++ActiveStats->GeometryDraws;
     }
-    void ReleaseGeometry(Rml::CompiledGeometryHandle Handle) override { delete reinterpret_cast<GeometryData*>(Handle); }
+    void ReleaseGeometry(Rml::CompiledGeometryHandle Handle) override
+    {
+        auto* Geometry = reinterpret_cast<GeometryData*>(Handle);
+        if (Geometry) UnregisterResource(Geometry->ResourceId);
+        delete Geometry;
+    }
     Rml::TextureHandle LoadTexture(Rml::Vector2i& Dimensions, const Rml::String& Source) override
     {
-        static constexpr const char* MaterialPrefix = "ue-material://";
-        if (Source.rfind(MaterialPrefix, 0) == 0)
+        static constexpr const char* BackgroundPrefix = "ue-material://background/";
+        static constexpr const char* BorderPrefix = "ue-material://border/";
+        const char* MaterialPrefix = nullptr;
+        int MaterialSlot = RMLUE_MATERIAL_SLOT_NONE;
+        if (Source.rfind(BackgroundPrefix, 0) == 0)
+        {
+            MaterialPrefix = BackgroundPrefix;
+            MaterialSlot = RMLUE_MATERIAL_SLOT_BACKGROUND;
+        }
+        else if (Source.rfind(BorderPrefix, 0) == 0)
+        {
+            MaterialPrefix = BorderPrefix;
+            MaterialSlot = RMLUE_MATERIAL_SLOT_BORDER;
+        }
+        if (MaterialPrefix)
         {
             TextureData Texture;
             Texture.Id = ++NextTexture;
             Texture.Kind = 1;
+            Texture.MaterialSlot = MaterialSlot;
             Texture.Alias = Source.substr(std::strlen(MaterialPrefix));
+            if (Texture.Alias.empty())
+            {
+                Fail("UE material alias cannot be empty.");
+                return 0;
+            }
             Dimensions = {1, 1};
+            Texture.ResourceId = RegisterResource(RMLUE_RESOURCE_MATERIAL_BINDING, RMLUE_RESOURCE_BACKEND_SLATE,
+                OwnerResourceId, 0, Texture.Alias);
             TextureDataById.emplace(Texture.Id, std::move(Texture));
             return static_cast<Rml::TextureHandle>(NextTexture);
         }
@@ -278,22 +359,56 @@ public:
         Texture.Width = Dimensions.x;
         Texture.Height = Dimensions.y;
         Texture.Pixels.assign(Source.begin(), Source.end());
+        Texture.ResourceId = RegisterResource(RMLUE_RESOURCE_TEXTURE, RMLUE_RESOURCE_BACKEND_SLATE, OwnerResourceId,
+            Texture.Pixels.size(), "Slate texture");
         TextureDataById.emplace(Texture.Id, std::move(Texture));
         return static_cast<Rml::TextureHandle>(NextTexture);
     }
-    void ReleaseTexture(Rml::TextureHandle Texture) override { TextureDataById.erase(static_cast<uint64_t>(Texture)); }
+    void ReleaseTexture(Rml::TextureHandle Texture) override
+    {
+        const auto Found = TextureDataById.find(static_cast<uint64_t>(Texture));
+        if (Found == TextureDataById.end()) return;
+        UnregisterResource(Found->second.ResourceId);
+        TextureDataById.erase(Found);
+    }
     void EnableScissorRegion(bool Enable) override { ScissorEnabled = Enable; }
     void SetScissorRegion(Rml::Rectanglei Region) override { Scissor = Region; }
-    void EnableClipMask(bool) override { UnsupportedFeatures |= 1; }
-    void RenderToClipMask(Rml::ClipMaskOperation, Rml::CompiledGeometryHandle, Rml::Vector2f) override { UnsupportedFeatures |= 1; }
-    void SetTransform(const Rml::Matrix4f* Transform) override { if (Transform) UnsupportedFeatures |= 2; }
-    Rml::LayerHandle PushLayer() override { UnsupportedFeatures |= 4; return 0; }
-    void CompositeLayers(Rml::LayerHandle, Rml::LayerHandle, Rml::BlendMode, Rml::Span<const Rml::CompiledFilterHandle>) override { UnsupportedFeatures |= 4; }
+    void EnableClipMask(bool) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK; }
+    void RenderToClipMask(Rml::ClipMaskOperation, Rml::CompiledGeometryHandle, Rml::Vector2f) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK; }
+    void SetTransform(const Rml::Matrix4f* Transform) override
+    {
+        TransformEnabled = false;
+        TransformM00 = TransformM11 = 1.f;
+        TransformM01 = TransformM10 = TransformX = TransformY = 0.f;
+        if (!Transform) return;
+        const auto Row0 = Transform->GetRow(0);
+        const auto Row1 = Transform->GetRow(1);
+        const auto Row2 = Transform->GetRow(2);
+        const auto Row3 = Transform->GetRow(3);
+        const auto Near = [](float A, float B) { return std::abs(A - B) <= 0.0001f; };
+        const bool Is2DAffine = Near(Row0[2], 0.f) && Near(Row1[2], 0.f) &&
+            Near(Row2[0], 0.f) && Near(Row2[1], 0.f) && Near(Row2[2], 1.f) && Near(Row2[3], 0.f) &&
+            Near(Row3[0], 0.f) && Near(Row3[1], 0.f) && Near(Row3[2], 0.f) && Near(Row3[3], 1.f);
+        if (!Is2DAffine)
+        {
+            UnsupportedFeatures |= RMLUE_UNSUPPORTED_TRANSFORM_3D;
+            return;
+        }
+        TransformEnabled = true;
+        TransformM00 = Row0[0];
+        TransformM01 = Row0[1];
+        TransformM10 = Row1[0];
+        TransformM11 = Row1[1];
+        TransformX = Row0[3];
+        TransformY = Row1[3];
+    }
+    Rml::LayerHandle PushLayer() override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_LAYER; return 0; }
+    void CompositeLayers(Rml::LayerHandle, Rml::LayerHandle, Rml::BlendMode, Rml::Span<const Rml::CompiledFilterHandle>) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_LAYER; }
     void PopLayer() override {}
-    Rml::TextureHandle SaveLayerAsTexture() override { UnsupportedFeatures |= 4; return 0; }
-    Rml::CompiledFilterHandle SaveLayerAsMaskImage() override { UnsupportedFeatures |= 4; return 0; }
-    Rml::CompiledFilterHandle CompileFilter(const Rml::String&, const Rml::Dictionary&) override { UnsupportedFeatures |= 8; return 0; }
-    Rml::CompiledShaderHandle CompileShader(const Rml::String&, const Rml::Dictionary&) override { UnsupportedFeatures |= 16; return 0; }
+    Rml::TextureHandle SaveLayerAsTexture() override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_LAYER; return 0; }
+    Rml::CompiledFilterHandle SaveLayerAsMaskImage() override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_LAYER; return 0; }
+    Rml::CompiledFilterHandle CompileFilter(const Rml::String&, const Rml::Dictionary&) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_FILTER; return 0; }
+    Rml::CompiledShaderHandle CompileShader(const Rml::String&, const Rml::Dictionary&) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_SHADER; return 0; }
 
     void BeginFrame()
     {
@@ -307,7 +422,7 @@ public:
         for (const auto& Pair : TextureDataById)
         {
             const TextureData& Texture = Pair.second;
-            PublicTextures.push_back({Texture.Id, Texture.Kind, Texture.Pixels.empty() ? nullptr : Texture.Pixels.data(),
+            PublicTextures.push_back({Texture.Id, Texture.Kind, Texture.MaterialSlot, Texture.Pixels.empty() ? nullptr : Texture.Pixels.data(),
                 Texture.Width, Texture.Height, Texture.Alias.empty() ? nullptr : Texture.Alias.c_str()});
         }
     }
@@ -315,14 +430,48 @@ public:
 
 class UeMaterialDecorator final : public Rml::Decorator {
     int TextureIndex = -1;
+    int MaterialSlot = RMLUE_MATERIAL_SLOT_BACKGROUND;
 public:
-    bool Initialise(const Rml::Texture& Texture) { TextureIndex = AddTexture(Texture); return TextureIndex >= 0; }
+    bool Initialise(const Rml::Texture& Texture, int InMaterialSlot)
+    {
+        MaterialSlot = InMaterialSlot;
+        TextureIndex = AddTexture(Texture);
+        return TextureIndex >= 0;
+    }
     Rml::DecoratorDataHandle GenerateElementData(Rml::Element* Element, Rml::BoxArea PaintArea) const override
     {
         Rml::RenderManager* RenderManager = Element->GetRenderManager();
         if (!RenderManager) return INVALID_DECORATORDATAHANDLE;
         Rml::Mesh Mesh;
-        Rml::MeshUtilities::GenerateQuad(Mesh, {0.f, 0.f}, Element->GetBox().GetSize(PaintArea), Rml::ColourbPremultiplied(255));
+        for (int Index = 0; Index < Element->GetNumBoxes(); ++Index)
+        {
+            const Rml::RenderBox RenderBox = Element->GetRenderBox(PaintArea, Index);
+            if (MaterialSlot == RMLUE_MATERIAL_SLOT_BORDER)
+            {
+                const Rml::ColourbPremultiplied White(255);
+                const Rml::ColourbPremultiplied Transparent(0, 0, 0, 0);
+                const Rml::ColourbPremultiplied BorderColors[4] = {White, White, White, White};
+                Rml::MeshUtilities::GenerateBackgroundBorder(Mesh, RenderBox, Transparent, BorderColors);
+            }
+            else
+            {
+                Rml::MeshUtilities::GenerateBackground(Mesh, RenderBox, Rml::ColourbPremultiplied(255));
+            }
+        }
+        if (Mesh.vertices.empty()) return INVALID_DECORATORDATAHANDLE;
+        Rml::Vector2f Minimum = Mesh.vertices.front().position;
+        Rml::Vector2f Maximum = Minimum;
+        for (const Rml::Vertex& Vertex : Mesh.vertices)
+        {
+            Minimum.x = std::min(Minimum.x, Vertex.position.x);
+            Minimum.y = std::min(Minimum.y, Vertex.position.y);
+            Maximum.x = std::max(Maximum.x, Vertex.position.x);
+            Maximum.y = std::max(Maximum.y, Vertex.position.y);
+        }
+        const Rml::Vector2f Extent = Maximum - Minimum;
+        for (Rml::Vertex& Vertex : Mesh.vertices)
+            Vertex.tex_coord = {(Vertex.position.x - Minimum.x) / std::max(Extent.x, 1.f),
+                (Vertex.position.y - Minimum.y) / std::max(Extent.y, 1.f)};
         auto* Geometry = new Rml::Geometry(RenderManager->MakeGeometry(std::move(Mesh)));
         return reinterpret_cast<Rml::DecoratorDataHandle>(Geometry);
     }
@@ -330,14 +479,15 @@ public:
     void RenderElement(Rml::Element* Element, Rml::DecoratorDataHandle Data) const override
     {
         auto* Geometry = reinterpret_cast<Rml::Geometry*>(Data);
-        Geometry->Render(Element->GetAbsoluteOffset(Rml::BoxArea::Padding).Round(), GetTexture(TextureIndex));
+        Geometry->Render(Element->GetAbsoluteOffset(Rml::BoxArea::Border).Round(), GetTexture(TextureIndex));
     }
 };
 
 class UeMaterialDecoratorInstancer final : public Rml::DecoratorInstancer {
     Rml::PropertyId AliasId;
+    int MaterialSlot;
 public:
-    UeMaterialDecoratorInstancer()
+    explicit UeMaterialDecoratorInstancer(int InMaterialSlot) : MaterialSlot(InMaterialSlot)
     {
         AliasId = RegisterProperty("alias", "").AddParser("string").GetId();
         RegisterShorthand("decorator", "alias", Rml::ShorthandType::FallThrough);
@@ -345,10 +495,11 @@ public:
     Rml::SharedPtr<Rml::Decorator> InstanceDecorator(const Rml::String&, const Rml::PropertyDictionary& Properties,
         const Rml::DecoratorInstancerInterface& Interface) override
     {
-        const Rml::String Alias = Properties.GetProperty(AliasId)->Get<Rml::String>();
+        Rml::String Alias = Properties.GetProperty(AliasId)->Get<Rml::String>();
         if (Alias.empty()) return nullptr;
         auto Result = Rml::MakeShared<UeMaterialDecorator>();
-        return Result->Initialise(Interface.GetTexture("ue-material://" + Alias)) ? Result : nullptr;
+        const Rml::String SlotName = MaterialSlot == RMLUE_MATERIAL_SLOT_BORDER ? "border" : "background";
+        return Result->Initialise(Interface.GetTexture("ue-material://" + SlotName + "/" + Alias), MaterialSlot) ? Result : nullptr;
     }
 };
 
@@ -356,11 +507,13 @@ std::unique_ptr<BridgeFileInterface> FileInterface;
 std::unique_ptr<BridgeSystemInterface> SystemInterface;
 std::unique_ptr<BridgeRenderer> Renderer;
 std::unique_ptr<UeMaterialDecoratorInstancer> MaterialDecoratorInstancer;
+std::unique_ptr<UeMaterialDecoratorInstancer> MaterialBorderDecoratorInstancer;
 }
 
 struct RmlUE_StyleSheet final {
     Rml::SharedPtr<Rml::StyleSheetContainer> Container;
     uint32_t References = 1;
+    uint64_t ResourceId = 0;
 };
 
 struct RmlUE_View final : public Rml::EventListener {
@@ -383,6 +536,8 @@ struct RmlUE_View final : public Rml::EventListener {
         ~NodeListener() override { Detach(); }
     };
     Rml::Context* Context = nullptr;
+    uint64_t ResourceId = 0;
+    uint64_t FrameBufferResourceId = 0;
     std::unique_ptr<SlateCommandRenderer> SlateRenderer;
     Rml::ElementDocument* Document = nullptr;
     Rml::SharedPtr<Rml::StyleSheetContainer> AuthorStyleSheet;
@@ -646,8 +801,10 @@ int RmlUE_Initialize(const RmlUE_Host* InHost)
         Renderer = std::make_unique<BridgeRenderer>(Device.Get());
         Rml::SetRenderInterface(Renderer.get());
         if (!Rml::Initialise()) return InitializationFailure("RmlUi initialization failed: " + LastError);
-        MaterialDecoratorInstancer = std::make_unique<UeMaterialDecoratorInstancer>();
+        MaterialDecoratorInstancer = std::make_unique<UeMaterialDecoratorInstancer>(RMLUE_MATERIAL_SLOT_BACKGROUND);
+        MaterialBorderDecoratorInstancer = std::make_unique<UeMaterialDecoratorInstancer>(RMLUE_MATERIAL_SLOT_BORDER);
         Rml::Factory::RegisterDecoratorInstancer("ue-material", MaterialDecoratorInstancer.get());
+        Rml::Factory::RegisterDecoratorInstancer("ue-material-border", MaterialBorderDecoratorInstancer.get());
         Initialized = true;
         if (Host.Log) Host.Log(Host.User, 2, "RmlUi 6.3 initialized with the full upstream DX11 renderer and FreeType 2.14.3.");
         return 1;
@@ -663,12 +820,14 @@ void RmlUE_Shutdown()
     {
         auto* StyleSheet = *StyleSheets.begin();
         StyleSheets.erase(StyleSheets.begin());
+        UnregisterResource(StyleSheet->ResourceId);
         delete StyleSheet;
     }
     ActiveStats = nullptr;
     if (Initialized) Rml::Shutdown();
     Initialized = false;
     MaterialDecoratorInstancer.reset();
+    MaterialBorderDecoratorInstancer.reset();
     Renderer.reset();
     Rml::SetRenderInterface(nullptr);
     Rml::SetFileInterface(nullptr);
@@ -679,6 +838,9 @@ void RmlUE_Shutdown()
     DeviceContext.Reset();
     Device.Reset();
     Host = {};
+    while (!Resources.empty()) UnregisterResource(Resources.begin()->first);
+    ResourceEventCallback = nullptr;
+    ResourceEventUser = nullptr;
 }
 
 const char* RmlUE_GetLastError() { return LastError.c_str(); }
@@ -703,6 +865,7 @@ RmlUE_StyleSheet* RmlUE_CreateStyleSheet(const char* Rcss)
         return nullptr;
     }
     auto* StyleSheet = new RmlUE_StyleSheet{std::move(Container), 1};
+    StyleSheet->ResourceId = RegisterResource(RMLUE_RESOURCE_STYLE_SHEET, RMLUE_RESOURCE_BACKEND_SHARED, 0, 0, "Shared style sheet");
     StyleSheets.insert(StyleSheet);
     return StyleSheet;
 }
@@ -720,6 +883,7 @@ void RmlUE_ReleaseStyleSheet(RmlUE_StyleSheet* StyleSheet)
     if (--StyleSheet->References == 0)
     {
         StyleSheets.erase(StyleSheet);
+        UnregisterResource(StyleSheet->ResourceId);
         delete StyleSheet;
     }
 }
@@ -734,6 +898,9 @@ RmlUE_View* RmlUE_CreateView(int Width, int Height, float DpRatio)
     View->Context = Rml::CreateContext(View->Name, {Width, Height});
     if (!View->Context) { Fail("Could not create RmlUi context."); return nullptr; }
     View->Context->SetDensityIndependentPixelRatio(DpRatio);
+    View->ResourceId = RegisterResource(RMLUE_RESOURCE_VIEW, RMLUE_RESOURCE_BACKEND_DX11, 0, sizeof(RmlUE_View), View->Name);
+    View->FrameBufferResourceId = RegisterResource(RMLUE_RESOURCE_FRAME_BUFFER, RMLUE_RESOURCE_BACKEND_DX11,
+        View->ResourceId, static_cast<uint64_t>(Width) * Height * 12, "DX11 target, staging and CPU frame");
     Views.insert(View.get());
     return View.release();
 }
@@ -754,6 +921,8 @@ RmlUE_View* RmlUE_CreateSlateView(int Width, int Height, float DpRatio)
     View->Context = Rml::CreateContext(View->Name, {Width, Height}, View->SlateRenderer.get());
     if (!View->Context) { Fail("Could not create RmlUi Slate command context."); return nullptr; }
     View->Context->SetDensityIndependentPixelRatio(DpRatio);
+    View->ResourceId = RegisterResource(RMLUE_RESOURCE_VIEW, RMLUE_RESOURCE_BACKEND_SLATE, 0, sizeof(RmlUE_View), View->Name);
+    View->SlateRenderer->SetOwnerResourceId(View->ResourceId);
     Views.insert(View.get());
     return View.release();
 }
@@ -765,7 +934,13 @@ void RmlUE_DestroyView(RmlUE_View* View)
     if (DebuggerView == View) { Rml::Debugger::Shutdown(); DebuggerView = nullptr; }
     View->ClearNodes();
     Rml::RemoveContext(View->Name);
-    if (View->SlateRenderer) Rml::ReleaseRenderManagers();
+    if (View->SlateRenderer)
+    {
+        Rml::ReleaseRenderManagers();
+        View->SlateRenderer.reset();
+    }
+    UnregisterResource(View->FrameBufferResourceId);
+    UnregisterResource(View->ResourceId);
     Views.erase(View);
     ActiveStats = nullptr;
     delete View;
@@ -806,6 +981,8 @@ int RmlUE_Resize(RmlUE_View* View, int Width, int Height, float DpRatio)
     {
         if (View->SlateRenderer) { View->Width = Width; View->Height = Height; }
         else if (!CreateTargets(*View, Width, Height)) return 0;
+        if (View->FrameBufferResourceId)
+            UpdateResource(View->FrameBufferResourceId, static_cast<uint64_t>(Width) * Height * 12);
     }
     View->DpRatio = DpRatio;
     View->Context->SetDimensions({Width, Height});
@@ -1074,6 +1251,34 @@ int RmlUE_GetElementRect(RmlUE_View* View, const char* Id, RmlUE_Rect* Rect)
     *Rect = {Offset.x, Offset.y, Size.x, Size.y}; return 1;
 }
 void RmlUE_GetStats(RmlUE_View* View, RmlUE_Stats* Stats) { if (Stats) *Stats = ValidView(View) ? View->Stats : RmlUE_Stats{}; }
+size_t RmlUE_GetResourceSnapshot(RmlUE_ResourceRecord* Records, size_t Capacity)
+{
+    if (!Initialized || !OnOwnerThread()) return 0;
+    std::vector<RmlUE_ResourceRecord> Snapshot;
+    Snapshot.reserve(Resources.size());
+    for (const auto& Pair : Resources) Snapshot.push_back(Pair.second);
+    std::sort(Snapshot.begin(), Snapshot.end(), [](const auto& A, const auto& B) { return A.Id < B.Id; });
+    const size_t CopyCount = std::min(Capacity, Snapshot.size());
+    if (Records && CopyCount) std::copy_n(Snapshot.begin(), CopyCount, Records);
+    return Snapshot.size();
+}
+
+void RmlUE_SetResourceEventCallback(RmlUE_ResourceEventCallback Callback, void* User)
+{
+    if (OwnerThread != std::this_thread::get_id())
+    {
+        Fail("Resource event callback must be changed on the bridge owner thread.");
+        return;
+    }
+    ResourceEventCallback = Callback;
+    ResourceEventUser = Callback ? User : nullptr;
+}
+
+uint64_t RmlUE_GetViewResourceId(RmlUE_View* View)
+{
+    return ValidView(View) ? View->ResourceId : 0;
+}
+
 void RmlUE_SetDebuggerVisible(RmlUE_View* View, int Visible)
 {
     if (!ValidView(View)) return;

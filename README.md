@@ -18,6 +18,10 @@ The plugin accepts supported `<html>` or `<rml>` documents with linked `.css` or
 
 The official full DX11 renderer runs on a private device and supplies pixels to an Unreal texture, so UE may run on DX11 or DX12. Filters, clipping, transforms, layers, masks, shadows and gradients use the upstream renderer. The transport reads pixels to CPU memory and uploads them every frame. This is a functional evaluation backend, not a zero-copy RHI renderer.
 
+The opt-in Slate command renderer avoids the full-view render target and replays strict 2D affine transforms and the final intersection of nested rectangular scissor regions. Perspective/3D transforms, rounded or non-rectangular clip masks, layers, filters and shaders remain unsupported on that path and are reported through the frame feature mask.
+
+`FRmlUiResourceRegistry` exposes a stable-ID snapshot and visitor API for native and Unreal-side resource diagnostics. Native View, shared style sheet, Slate geometry/texture/material binding and legacy frame-buffer records are correlated by owner ID; Unreal upload textures and material brushes carry non-owning `TWeakObjectPtr` references. Visitors run on a copied snapshot outside the registry lock. Enable `-trace=RmlUiResources` to record create/update/destroy lifecycle events in Unreal Insights; the channel emits no per-frame events. The upstream DX11 renderer's private internal geometry and texture objects are not individually enumerated yet.
+
 Relative resource paths search `Project/Content/RmlUi`, then this plugin's `Content/RmlUi`. Plugin data is staged as UFS. After adding/moving resource files, rebuild with `-NoUBTMakefiles` before packaging so Unreal refreshes wildcard runtime dependencies. Add host project data to Packaging's Additional Non-Asset Directories to Package.
 
 `LoadFontFace` loads custom fonts and optional Unicode fallback fonts. Bundled fonts are Latin; native IME composition and complex-script shaping are not implemented. SVG/Lottie and Lua extensions are not compiled.

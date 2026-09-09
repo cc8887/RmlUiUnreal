@@ -11,6 +11,21 @@
 #include <chrono>
 #include <vector>
 
+struct ResourceEvents
+{
+    int Created = 0;
+    int Updated = 0;
+    int Destroyed = 0;
+};
+
+static void ResourceEvent(void* User, int Action, const RmlUE_ResourceRecord*)
+{
+    auto& Events = *static_cast<ResourceEvents*>(User);
+    if (Action == RMLUE_RESOURCE_CREATED) ++Events.Created;
+    else if (Action == RMLUE_RESOURCE_UPDATED) ++Events.Updated;
+    else if (Action == RMLUE_RESOURCE_DESTROYED) ++Events.Destroyed;
+}
+
 static int ReadFile(void*, const char* Path, unsigned char** Buffer, size_t* Size)
 {
     std::ifstream Input(std::filesystem::u8path(Path), std::ios::binary);
@@ -54,11 +69,29 @@ int main(int Count, char** Arguments)
     RmlUE_Host Host{};
     Host.ReadFile = ReadFile; Host.LoadImage = LoadImage; Host.FreeBuffer = FreeBuffer; Host.Log = Log;
     Require(RmlUE_Initialize(&Host) != 0, "initialize");
+    ResourceEvents Events;
+    RmlUE_SetResourceEventCallback(ResourceEvent, &Events);
+    Require(RmlUE_GetResourceSnapshot(nullptr, 0) == 0, "resource registry starts empty");
     Require(RmlUE_LoadFont(Arguments[1], 0) != 0, "font");
     Require(RmlUE_CreateView(0, 256, 1) == nullptr, "reject zero dimensions");
     Require(RmlUE_CreateView(256, 256, NAN) == nullptr, "reject NaN DPR");
     auto* View = RmlUE_CreateView(256, 256, 1);
     Require(View != nullptr, "view");
+    const uint64_t ViewResourceId = RmlUE_GetViewResourceId(View);
+    Require(ViewResourceId != 0, "view exposes a stable diagnostic resource id");
+    {
+        const size_t Count = RmlUE_GetResourceSnapshot(nullptr, 0);
+        Require(Count == 2, "legacy view registers view and frame buffer resources");
+        std::vector<RmlUE_ResourceRecord> Records(Count);
+        Require(RmlUE_GetResourceSnapshot(Records.data(), Records.size()) == Count, "resource snapshot two-pass query");
+        bool FoundView = false, FoundFrameBuffer = false;
+        for (const auto& Record : Records)
+        {
+            FoundView |= Record.Id == ViewResourceId && Record.Type == RMLUE_RESOURCE_VIEW && Record.Backend == RMLUE_RESOURCE_BACKEND_DX11;
+            FoundFrameBuffer |= Record.Type == RMLUE_RESOURCE_FRAME_BUFFER && Record.OwnerId == ViewResourceId && Record.EstimatedBytes == 256ull * 256 * 12;
+        }
+        Require(FoundView && FoundFrameBuffer, "resource snapshot preserves type, backend, owner and estimated bytes");
+    }
     const char* Markup = R"(<rml><head><style>
 body { margin: 0; font-family: LatoLatin; font-size: 18px; }
 #alpha { position: absolute; left: 0; top: 0; width: 32px; height: 32px; background-color: #ff000080; }
@@ -115,6 +148,7 @@ img { position: absolute; left: 180px; top: 70px; width: 40px; height: 40px; }
     RmlUE_Rect PreservedRect{};
     Require(RmlUE_GetElementRect(View, "button", &PreservedRect) != 0, "preserve old document after failed reload");
     Require(RmlUE_Resize(View, 320, 240, 1.25f) != 0, "resize");
+    Require(Events.Updated > 0, "frame buffer resize emits a resource update");
     Require(RmlUE_Render(View, &Frame) != 0 && Frame.Width == 320 && Frame.Height == 240, "resized frame");
     auto* Second = RmlUE_CreateView(64, 64, 1);
     Require(Second != nullptr, "second context");
@@ -126,19 +160,103 @@ img { position: absolute; left: 180px; top: 70px; width: 40px; height: 40px; }
     RmlUE_DestroyView(Second);
 
     auto* SlateView = RmlUE_CreateSlateView(128, 64, 1);
+    const uint64_t SlateViewResourceId = RmlUE_GetViewResourceId(SlateView);
     const char* SlateMarkup = R"(<rml><head><style>
-body { margin: 0; } #panel { width: 80px; height: 40px; background-color: #234; decorator: ue-material(panel.energy); }
-</style></head><body><div id="panel"/></body></rml>)";
+body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height: 40px; }
+#panel { background-color: #234; decorator: ue-material(panel.energy); }
+#frame { border: 6px #fff; border-radius: 10px; decorator: ue-material-border(panel.frame); }
+#transformed { position: absolute; left: 58px; top: 28px; width: 28px; height: 14px; background-color: #f00; transform-origin: 0px 0px; transform: translate(8px, 3px) rotate(12deg); }
+</style></head><body><div id="panel"></div><div id="frame"></div><div id="transformed"></div></body></rml>)";
     Require(SlateView != nullptr && RmlUE_LoadDocumentFromMemory(SlateView, SlateMarkup, "slate.rml") != 0, "Slate command document");
     RmlUE_SlateFrame SlateFrame{};
     Require(RmlUE_RenderSlate(SlateView, &SlateFrame) != 0 && SlateFrame.AbiVersion == RMLUE_SLATE_ABI_VERSION && SlateFrame.DrawCount > 0, "Slate command render");
-    bool FoundMaterial = false;
+    bool FoundBackgroundMaterial = false;
+    bool FoundBorderMaterial = false;
+    bool FoundTransformedDraw = false;
+    uint64_t BorderTexture = 0;
     for (uint32_t Index = 0; Index < SlateFrame.TextureCount; ++Index)
-        FoundMaterial |= SlateFrame.Textures[Index].Kind == 1 && SlateFrame.Textures[Index].MaterialAlias &&
-            std::strcmp(SlateFrame.Textures[Index].MaterialAlias, "panel.energy") == 0;
-    Require(FoundMaterial, "Slate frame carries the registered material alias");
+    {
+        const RmlUE_SlateTexture& Texture = SlateFrame.Textures[Index];
+        FoundBackgroundMaterial |= Texture.Kind == 1 && Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BACKGROUND && Texture.MaterialAlias &&
+            std::strcmp(Texture.MaterialAlias, "panel.energy") == 0;
+        if (Texture.Kind == 1 && Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BORDER && Texture.MaterialAlias &&
+            std::strcmp(Texture.MaterialAlias, "panel.frame") == 0)
+        {
+            FoundBorderMaterial = true;
+            BorderTexture = Texture.Id;
+        }
+    }
+    Require(FoundBackgroundMaterial, "Slate frame carries the background material slot and alias");
+    Require(FoundBorderMaterial, "Slate frame carries the border material slot and alias");
+    bool FoundBorderRing = false;
+    for (uint32_t Index = 0; Index < SlateFrame.DrawCount; ++Index)
+    {
+        const RmlUE_SlateDraw& Draw = SlateFrame.Draws[Index];
+        if (Draw.Texture == BorderTexture)
+        {
+            FoundBorderRing = Draw.VertexCount > 4 && Draw.IndexCount >= 24;
+            bool FoundNonZeroUv = false;
+            for (uint32_t VertexIndex = 0; VertexIndex < Draw.VertexCount; ++VertexIndex)
+                FoundNonZeroUv |= Draw.Vertices[VertexIndex].U > 0.01f || Draw.Vertices[VertexIndex].V > 0.01f;
+            FoundBorderRing &= FoundNonZeroUv;
+        }
+        if (Draw.VertexCount > 0 && Draw.Vertices[0].R > 240 && Draw.Vertices[0].G < 10 && Draw.Vertices[0].B < 10)
+            FoundTransformedDraw = Draw.TransformEnabled != 0 && std::fabs(Draw.TransformM01) > 0.01f;
+    }
+    Require(FoundBorderRing, "Border material uses textured ring geometry rather than a content-covering quad");
+    Require(FoundTransformedDraw, "Slate draw carries a 2D affine transform");
+    Require((SlateFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_TRANSFORM_3D) == 0, "Supported 2D transforms do not set the unsupported feature bit");
+    {
+        const size_t Count = RmlUE_GetResourceSnapshot(nullptr, 0);
+        std::vector<RmlUE_ResourceRecord> Records(Count);
+        RmlUE_GetResourceSnapshot(Records.data(), Records.size());
+        bool FoundGeometry = false, FoundMaterialBinding = false;
+        for (const auto& Record : Records)
+        {
+            FoundGeometry |= Record.Type == RMLUE_RESOURCE_GEOMETRY && Record.OwnerId == SlateViewResourceId && Record.EstimatedBytes > 0;
+            FoundMaterialBinding |= Record.Type == RMLUE_RESOURCE_MATERIAL_BINDING && Record.OwnerId == SlateViewResourceId;
+        }
+        Require(FoundGeometry && FoundMaterialBinding, "Slate resources are registered under their owning view");
+    }
     Require(RmlUE_Render(SlateView, &Frame) == 0, "Slate view rejects legacy frame readback");
     RmlUE_DestroyView(SlateView);
+
+    auto* ClipView = RmlUE_CreateSlateView(128, 64, 1);
+    const char* ClipMarkup = R"(<rml><head><style>
+body { margin: 0; }
+#outer { display: block; position: absolute; left: 4px; top: 4px; width: 38px; height: 24px; overflow: hidden; }
+#inner { display: block; position: relative; left: 6px; top: 5px; width: 30px; height: 18px; overflow: hidden; }
+#clipped { display: block; width: 50px; height: 30px; background-color: #0f0; }
+#unclipped { display: block; position: absolute; left: 110px; top: 0; width: 10px; height: 10px; background-color: #00f; }
+</style></head><body><div id="outer"><div id="inner"><div id="clipped"></div></div></div><div id="unclipped"></div></body></rml>)";
+    Require(ClipView != nullptr && RmlUE_LoadDocumentFromMemory(ClipView, ClipMarkup, "slate-clip.rml") != 0, "Slate clipping document");
+    RmlUE_SlateFrame ClipFrame{};
+    Require(RmlUE_RenderSlate(ClipView, &ClipFrame) != 0, "Slate clipping render");
+    bool FoundNestedClipDraw = false;
+    bool FoundUnclippedSiblingDraw = false;
+    for (uint32_t Index = 0; Index < ClipFrame.DrawCount; ++Index)
+    {
+        const RmlUE_SlateDraw& Draw = ClipFrame.Draws[Index];
+        if (Draw.VertexCount > 0 && Draw.Vertices[0].G > 240 && Draw.Vertices[0].R < 10 && Draw.Vertices[0].B < 10)
+            FoundNestedClipDraw = Draw.ScissorEnabled != 0 && Draw.ScissorWidth <= 30.f && Draw.ScissorHeight <= 18.f;
+        if (Draw.VertexCount > 0 && Draw.Vertices[0].B > 240 && Draw.Vertices[0].R < 10 && Draw.Vertices[0].G < 10)
+            FoundUnclippedSiblingDraw = Draw.ScissorEnabled == 0;
+    }
+    Require(FoundNestedClipDraw, "Slate draw carries the nested rectangular clip intersection");
+    Require(FoundUnclippedSiblingDraw, "Slate rectangular clip state is restored after leaving the clipped subtree");
+    RmlUE_DestroyView(ClipView);
+
+    auto* Transform3DView = RmlUE_CreateSlateView(64, 64, 1);
+    const char* Transform3DMarkup = R"(<rml><head><style>
+body { margin: 0; } #probe { display: block; width: 20px; height: 20px; background-color: #fff; transform: translateZ(4px); }
+</style></head><body><div id="probe"></div></body></rml>)";
+    Require(Transform3DView != nullptr && RmlUE_LoadDocumentFromMemory(Transform3DView, Transform3DMarkup, "slate-transform-3d.rml") != 0,
+        "Slate unsupported 3D transform document");
+    RmlUE_SlateFrame Transform3DFrame{};
+    Require(RmlUE_RenderSlate(Transform3DView, &Transform3DFrame) != 0 &&
+        (Transform3DFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_TRANSFORM_3D) != 0,
+        "Slate reports unsupported 3D transforms instead of silently treating them as 2D");
+    RmlUE_DestroyView(Transform3DView);
 
     const char* FlowMarkup = R"(<html><head><style>
 body { margin: 0; font-family: LatoLatin; font-size: 16px; }
@@ -240,6 +358,9 @@ body { margin: 0; font-family: LatoLatin; font-size: 16px; }
         Require(ButtonMiddle > ButtonStart + 80, "Hover.css adapted Grow expands smoothly across rendered frames");
         RmlUE_DestroyView(MotionView);
     }
+    Require(RmlUE_GetResourceSnapshot(nullptr, 0) == 0, "all explicitly released resources leave the registry");
+    Require(Events.Created == Events.Destroyed, "resource create and destroy events are balanced");
+    RmlUE_SetResourceEventCallback(nullptr, nullptr);
     RmlUE_Shutdown();
     Require(RmlUE_Initialize(&Host) != 0, "reinitialize");
     RmlUE_Shutdown();

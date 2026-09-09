@@ -95,6 +95,9 @@ typedef struct RmlUE_SlateDraw {
     uint32_t IndexCount;
     uint64_t Texture;
     float TranslateX, TranslateY;
+    // Row-major 2D affine transform applied after geometry translation.
+    int TransformEnabled;
+    float TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY;
     int ScissorEnabled;
     float ScissorX, ScissorY, ScissorWidth, ScissorHeight;
 } RmlUE_SlateDraw;
@@ -103,6 +106,8 @@ typedef struct RmlUE_SlateTexture {
     uint64_t Id;
     // 0 = generated/loaded RGBA texture, 1 = host-registered UE material alias.
     int Kind;
+    // -1 = not a material, 0 = background, 1 = border, 2 = reserved foreground.
+    int MaterialSlot;
     const unsigned char* PremultipliedRGBA;
     int Width, Height;
     const char* MaterialAlias;
@@ -119,7 +124,16 @@ typedef struct RmlUE_SlateFrame {
     uint32_t UnsupportedFeatures;
 } RmlUE_SlateFrame;
 
-#define RMLUE_SLATE_ABI_VERSION 1u
+#define RMLUE_MATERIAL_SLOT_NONE (-1)
+#define RMLUE_MATERIAL_SLOT_BACKGROUND 0
+#define RMLUE_MATERIAL_SLOT_BORDER 1
+#define RMLUE_MATERIAL_SLOT_FOREGROUND 2
+#define RMLUE_UNSUPPORTED_CLIP_MASK (1u << 0)
+#define RMLUE_UNSUPPORTED_TRANSFORM_3D (1u << 1)
+#define RMLUE_UNSUPPORTED_LAYER (1u << 2)
+#define RMLUE_UNSUPPORTED_FILTER (1u << 3)
+#define RMLUE_UNSUPPORTED_SHADER (1u << 4)
+#define RMLUE_SLATE_ABI_VERSION 3u
 
 typedef struct RmlUE_Event {
     char Type[32];
@@ -136,6 +150,30 @@ typedef struct RmlUE_Stats {
     uint64_t Shaders;
     uint64_t LoadedTextures;
 } RmlUE_Stats;
+
+typedef struct RmlUE_ResourceRecord {
+    uint64_t Id;
+    uint64_t OwnerId;
+    uint64_t EstimatedBytes;
+    uint64_t CreatedSequence;
+    int Type;
+    int Backend;
+    char Name[96];
+} RmlUE_ResourceRecord;
+
+#define RMLUE_RESOURCE_VIEW 1
+#define RMLUE_RESOURCE_STYLE_SHEET 2
+#define RMLUE_RESOURCE_GEOMETRY 3
+#define RMLUE_RESOURCE_TEXTURE 4
+#define RMLUE_RESOURCE_FRAME_BUFFER 5
+#define RMLUE_RESOURCE_MATERIAL_BINDING 6
+#define RMLUE_RESOURCE_BACKEND_SHARED 0
+#define RMLUE_RESOURCE_BACKEND_DX11 1
+#define RMLUE_RESOURCE_BACKEND_SLATE 2
+#define RMLUE_RESOURCE_CREATED 1
+#define RMLUE_RESOURCE_UPDATED 2
+#define RMLUE_RESOURCE_DESTROYED 3
+typedef void (*RmlUE_ResourceEventCallback)(void* User, int Action, const RmlUE_ResourceRecord* Record);
 
 RMLUE_API int RmlUE_Initialize(const RmlUE_Host* Host);
 RMLUE_API void RmlUE_Shutdown(void);
@@ -168,6 +206,11 @@ RMLUE_API int RmlUE_SetAttribute(RmlUE_View* View, const char* Id, const char* A
 RMLUE_API int RmlUE_GetAttribute(RmlUE_View* View, const char* Id, const char* Attribute, char* Value, size_t Capacity);
 RMLUE_API int RmlUE_GetElementRect(RmlUE_View* View, const char* Id, RmlUE_Rect* Rect);
 RMLUE_API void RmlUE_GetStats(RmlUE_View* View, RmlUE_Stats* Stats);
+// Owner-thread diagnostic API. Returns the total record count and copies at most Capacity records.
+// Records contain stable IDs and metadata, never native object pointers.
+RMLUE_API size_t RmlUE_GetResourceSnapshot(RmlUE_ResourceRecord* Records, size_t Capacity);
+RMLUE_API void RmlUE_SetResourceEventCallback(RmlUE_ResourceEventCallback Callback, void* User);
+RMLUE_API uint64_t RmlUE_GetViewResourceId(RmlUE_View* View);
 RMLUE_API void RmlUE_SetDebuggerVisible(RmlUE_View* View, int Visible);
 
 // Modifiers use Win32-like flags: shift=1, ctrl=2, alt=4, caps=8, num=16, meta=32.

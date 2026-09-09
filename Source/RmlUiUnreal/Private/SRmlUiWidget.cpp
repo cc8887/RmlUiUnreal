@@ -10,6 +10,7 @@
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
 #include "RmlUiBridge.h"
+#include "RmlUiResourceRegistry.h"
 #include "RmlUiUnrealModule.h"
 #include "Slate/DeferredCleanupSlateBrush.h"
 #include "SlateMaterialBrush.h"
@@ -83,11 +84,22 @@ SRmlUiWidget::~SRmlUiWidget()
     ShutdownNative();
 }
 
+uint64 SRmlUiWidget::GetResolvedMaterialDrawCount(int32 MaterialSlot) const
+{
+    return MaterialSlot >= 0 && MaterialSlot < UE_ARRAY_COUNT(ResolvedMaterialDrawCounts)
+        ? ResolvedMaterialDrawCounts[MaterialSlot]
+        : 0;
+}
+
 void SRmlUiWidget::ShutdownNative()
 {
     if (NativeView)
     {
         OnNativeShutdown.Broadcast();
+    }
+    ReleaseUnrealRenderResources(true);
+    if (NativeView)
+    {
         RmlUE_DestroyView(NativeView);
         NativeView = nullptr;
     }
@@ -99,11 +111,25 @@ void SRmlUiWidget::ShutdownNative()
     bNativeShutdown = true;
     ActiveTouches.Empty();
     PressedMouseButtons.Empty();
+    NativeDraws.Reset();
+    NativeMaterialResources.Reset();
+}
+
+void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
+{
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    Registry.UnregisterUnreal(TextureRegistryId);
+    TextureRegistryId = 0;
     Texture = nullptr;
     TextureBrush.Reset();
-    NativeDraws.Reset();
+    TextureSize = FIntPoint::ZeroValue;
+    for (const auto& Pair : NativeTextures) Registry.UnregisterUnreal(Pair.Value.RegistryId);
     NativeTextures.Reset();
-    NativeMaterialAliases.Reset();
+    if (bIncludeMaterials)
+    {
+        for (const auto& Pair : Materials) Registry.UnregisterUnreal(Pair.Value.RegistryId);
+        Materials.Reset();
+    }
 }
 
 RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
@@ -114,6 +140,9 @@ RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
         UE_LOG(LogRmlUiUnreal, Warning, TEXT("Could not attach the base style sheet to a replacement view: %s"), UTF8_TO_TCHAR(RmlUE_GetLastError()));
     }
     RmlUE_View* Previous = NativeView;
+    ReleaseUnrealRenderResources(false);
+    NativeDraws.Reset();
+    NativeMaterialResources.Reset();
     NativeView = Replacement;
     bNativeShutdown = false;
     DocumentError.Reset();
@@ -240,28 +269,34 @@ void SRmlUiWidget::SetUseSlateRenderer(bool bInUseSlateRenderer)
     bUseSlateRenderer = bInUseSlateRenderer;
     if (!NativeView) return;
     OnNativeShutdown.Broadcast();
+    ReleaseUnrealRenderResources(false);
     RmlUE_DestroyView(NativeView);
     NativeView = nullptr;
     bNativeShutdown = false;
-    Texture = nullptr;
-    TextureBrush.Reset();
     NativeDraws.Reset();
-    NativeTextures.Reset();
-    NativeMaterialAliases.Reset();
+    NativeMaterialResources.Reset();
     ReloadDocument();
 }
 
 bool SRmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
 {
     if (Alias.IsNone() || !Material) return false;
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    if (const FMaterialResource* Existing = Materials.Find(Alias)) Registry.UnregisterUnreal(Existing->RegistryId);
     const FSlateMaterialBrush MaterialBrush(*Material, FVector2D(1.0, 1.0));
-    Materials.Add(Alias, FDeferredCleanupSlateBrush::CreateBrush(MaterialBrush));
+    FMaterialResource Resource;
+    Resource.Brush = FDeferredCleanupSlateBrush::CreateBrush(MaterialBrush);
+    Resource.RegistryId = Registry.RegisterUnreal(ERmlUiResourceType::SlateMaterialBrush, ERmlUiResourceBackend::Slate,
+        0, 0, FString::Printf(TEXT("Material alias: %s"), *Alias.ToString()), Material);
+    Materials.Add(Alias, MoveTemp(Resource));
     Invalidate(EInvalidateWidgetReason::Paint);
     return true;
 }
 
 void SRmlUiWidget::UnregisterMaterial(FName Alias)
 {
+    if (const FMaterialResource* Existing = Materials.Find(Alias))
+        FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
     Materials.Remove(Alias);
     Invalidate(EInvalidateWidgetReason::Paint);
 }
@@ -308,7 +343,7 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             return false;
         }
         NativeDraws.Reset(SlateFrame.DrawCount);
-        NativeMaterialAliases.Reset();
+        NativeMaterialResources.Reset();
         TSet<uint64> LiveTextures;
         for (uint32 Index = 0; Index < SlateFrame.TextureCount; ++Index)
         {
@@ -316,7 +351,8 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             LiveTextures.Add(Source.Id);
             if (Source.Kind == 1)
             {
-                NativeMaterialAliases.Add(Source.Id, FName(UTF8_TO_TCHAR(Source.MaterialAlias ? Source.MaterialAlias : "")));
+                NativeMaterialResources.Add(Source.Id,
+                    {FName(UTF8_TO_TCHAR(Source.MaterialAlias ? Source.MaterialAlias : "")), Source.MaterialSlot});
                 continue;
             }
             if (NativeTextures.Contains(Source.Id) || !Source.PremultipliedRGBA || Source.Width <= 0 || Source.Height <= 0) continue;
@@ -343,9 +379,19 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             FTextureResource Resource;
             Resource.Texture = NewTexture;
             Resource.Brush = FDeferredCleanupSlateBrush::CreateBrush(NewTexture);
+            Resource.RegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(ERmlUiResourceType::UnrealTexture,
+                ERmlUiResourceBackend::Slate, RmlUE_GetViewResourceId(NativeView), ByteCount,
+                FString::Printf(TEXT("Slate texture %llu"), Source.Id), NewTexture);
             NativeTextures.Add(Source.Id, MoveTemp(Resource));
         }
-        for (auto It = NativeTextures.CreateIterator(); It; ++It) if (!LiveTextures.Contains(It.Key())) It.RemoveCurrent();
+        for (auto It = NativeTextures.CreateIterator(); It; ++It)
+        {
+            if (!LiveTextures.Contains(It.Key()))
+            {
+                FRmlUiResourceRegistry::Get().UnregisterUnreal(It.Value().RegistryId);
+                It.RemoveCurrent();
+            }
+        }
         for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
         {
             const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
@@ -360,6 +406,9 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             Draw.Indices.Append(Source.Indices, Source.IndexCount);
             Draw.TextureId = Source.Texture;
             Draw.Translation = FVector2f(Source.TranslateX, Source.TranslateY);
+            Draw.bTransform = Source.TransformEnabled != 0;
+            Draw.Transform = FMatrix2x2(Source.TransformM00, Source.TransformM10, Source.TransformM01, Source.TransformM11);
+            Draw.TransformTranslation = FVector2f(Source.TransformX, Source.TransformY);
             Draw.bScissor = Source.ScissorEnabled != 0;
             Draw.Scissor = FSlateRect(Source.ScissorX, Source.ScissorY, Source.ScissorX + Source.ScissorWidth, Source.ScissorY + Source.ScissorHeight);
         }
@@ -393,9 +442,13 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
         NewTexture->AddressY = TA_Clamp;
         NewTexture->LODGroup = TEXTUREGROUP_UI;
         NewTexture->UpdateResource();
+        FRmlUiResourceRegistry::Get().UnregisterUnreal(TextureRegistryId);
         TextureBrush = FDeferredCleanupSlateBrush::CreateBrush(NewTexture);
         Texture = NewTexture;
         TextureSize = FIntPoint(Width, Height);
+        TextureRegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(ERmlUiResourceType::UnrealTexture,
+            ERmlUiResourceBackend::DX11, RmlUE_GetViewResourceId(NativeView), static_cast<uint64>(Width) * Height * 4,
+            TEXT("DX11 display upload texture"), NewTexture);
     }
     if (!Texture->GetResource()) return false;
 
@@ -439,13 +492,15 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
         for (const FNativeDraw& Draw : NativeDraws)
         {
             const FSlateBrush* Brush = nullptr;
-            if (const FName* Alias = NativeMaterialAliases.Find(Draw.TextureId))
+            if (const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId))
             {
-                if (const TSharedPtr<FDeferredCleanupSlateBrush>* Material = Materials.Find(*Alias))
-                    if (Material->IsValid())
+                if (const FMaterialResource* Material = Materials.Find(NativeMaterial->Alias))
+                    if (Material->Brush.IsValid())
                     {
-                        Brush = (*Material)->GetSlateBrush();
+                        Brush = Material->Brush->GetSlateBrush();
                         ++ResolvedMaterialDrawCount;
+                        if (NativeMaterial->Slot >= 0 && NativeMaterial->Slot < UE_ARRAY_COUNT(ResolvedMaterialDrawCounts))
+                            ++ResolvedMaterialDrawCounts[NativeMaterial->Slot];
                     }
             }
             else if (const FTextureResource* Resource = NativeTextures.Find(Draw.TextureId))
@@ -457,7 +512,9 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             Vertices.Reserve(Draw.Vertices.Num() / 8);
             for (int32 Offset = 0; Offset < Draw.Vertices.Num(); Offset += 8)
             {
-                const FVector2f Position = (FVector2f(Draw.Vertices[Offset], Draw.Vertices[Offset + 1]) + Draw.Translation) / PixelScale;
+                FVector2f Position = FVector2f(Draw.Vertices[Offset], Draw.Vertices[Offset + 1]) + Draw.Translation;
+                if (Draw.bTransform) Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
+                Position /= PixelScale;
                 const FColor Color(static_cast<uint8>(Draw.Vertices[Offset + 4]), static_cast<uint8>(Draw.Vertices[Offset + 5]),
                     static_cast<uint8>(Draw.Vertices[Offset + 6]), static_cast<uint8>(Draw.Vertices[Offset + 7]));
                 Vertices.Add(FSlateVertex::Make(Transform, Position, FVector2f(Draw.Vertices[Offset + 2], Draw.Vertices[Offset + 3]), Color));

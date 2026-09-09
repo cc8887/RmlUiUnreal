@@ -3,8 +3,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "RmlUiBridge.h"
+#include "RmlUiResourceRegistry.h"
 #include "RmlUiUnrealModule.h"
 #include "SRmlUiWidget.h"
+#include "Engine/Texture2D.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
@@ -54,6 +56,61 @@ static void Click(RmlUE_View* View, const RmlUE_Rect& Rect)
     RmlUE_MouseButton(View, 0, 1, 0);
     RmlUE_MouseButton(View, 0, 0, 0);
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiResourceRegistryTest, "RmlUiUnreal.Resources.Registry",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiResourceRegistryTest::RunTest(const FString&)
+{
+    FModuleManager::LoadModuleChecked<FRmlUiUnrealModule>(TEXT("RmlUiUnreal"));
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    UTexture2D* Object = UTexture2D::CreateTransient(1, 1, PF_B8G8R8A8);
+    if (!TestNotNull(TEXT("Registry test UObject"), Object)) return false;
+    const uint64 UnrealId = Registry.RegisterUnreal(ERmlUiResourceType::UnrealTexture, ERmlUiResourceBackend::Slate,
+        77, 4096, TEXT("Registry test texture"), Object);
+
+    bool bFoundUnreal = false;
+    bool bVisitorCouldSnapshot = false;
+    Registry.Visit([&](const FRmlUiResourceInfo& Info)
+    {
+        if (Info.Id != UnrealId) return;
+        bFoundUnreal = Info.Domain == ERmlUiResourceDomain::Unreal && Info.OwnerId == 77 &&
+            Info.EstimatedBytes == 4096 && Info.Object.Get() == Object;
+        bVisitorCouldSnapshot = Registry.Snapshot().ContainsByPredicate(
+            [UnrealId](const FRmlUiResourceInfo& Item) { return Item.Id == UnrealId; });
+    });
+    TestTrue(TEXT("Unreal resource exposes metadata and a non-owning UObject reference"), bFoundUnreal);
+    TestTrue(TEXT("Visitor executes outside the registry lock"), bVisitorCouldSnapshot);
+
+    Registry.UpdateUnreal(UnrealId, 8192);
+    const TArray<FRmlUiResourceInfo> Updated = Registry.Snapshot();
+    const FRmlUiResourceInfo* UpdatedInfo = Updated.FindByPredicate(
+        [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; });
+    TestTrue(TEXT("Resource estimate can be updated"), UpdatedInfo && UpdatedInfo->EstimatedBytes == 8192);
+    Registry.UnregisterUnreal(UnrealId);
+    TestFalse(TEXT("Unregistered Unreal resource is absent"), Registry.Snapshot().ContainsByPredicate(
+        [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; }));
+
+    uint64 NativeId = 0;
+    {
+        RmlUiTests::FView View(80, 60);
+        if (!TestNotNull(TEXT("Native registry view"), View.Handle)) return false;
+        NativeId = RmlUE_GetViewResourceId(View.Handle);
+        const TArray<FRmlUiResourceInfo> NativeSnapshot = Registry.Snapshot();
+        const FRmlUiResourceInfo* NativeInfo = NativeSnapshot.FindByPredicate(
+            [NativeId](const FRmlUiResourceInfo& Info) { return Info.Id == NativeId; });
+        TestTrue(TEXT("Native bridge events enter the unified registry"), NativeInfo &&
+            NativeInfo->Domain == ERmlUiResourceDomain::Native && NativeInfo->Backend == ERmlUiResourceBackend::DX11);
+        TestTrue(TEXT("Native frame buffer is linked to its view"), NativeSnapshot.ContainsByPredicate(
+            [NativeId](const FRmlUiResourceInfo& Info)
+            {
+                return Info.Type == ERmlUiResourceType::FrameBuffer && Info.OwnerId == NativeId && Info.EstimatedBytes == 80ull * 60 * 12;
+            }));
+    }
+    TestFalse(TEXT("Native destroy event removes the view"), Registry.Snapshot().ContainsByPredicate(
+        [NativeId](const FRmlUiResourceInfo& Info) { return Info.Id == NativeId; }));
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiRenderTest, "RmlUiUnreal.Native.HtmlCssEffects",

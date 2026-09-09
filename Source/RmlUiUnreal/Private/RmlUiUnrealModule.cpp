@@ -8,6 +8,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RmlUiBridge.h"
+#include "RmlUiResourceRegistry.h"
 #include "SRmlUiWidget.h"
 
 DEFINE_LOG_CATEGORY(LogRmlUiUnreal);
@@ -73,6 +74,11 @@ void NativeLog(void*, int Level, const char* Message)
     }
 }
 
+void NativeResourceEvent(void*, int Action, const RmlUE_ResourceRecord* Record)
+{
+    if (Record) FRmlUiResourceRegistry::Get().ApplyNativeEvent(Action, *Record);
+}
+
 void SetClipboard(void*, const char* Text)
 {
     FPlatformApplicationMisc::ClipboardCopy(UTF8_TO_TCHAR(Text ? Text : ""));
@@ -126,6 +132,7 @@ void FRmlUiUnrealModule::StartupModule()
         UE_LOG(LogRmlUiUnreal, Error, TEXT("RmlUi initialization failed: %s"), *InitializationError);
         return;
     }
+    RmlUE_SetResourceEventCallback(NativeResourceEvent, nullptr);
     for (const TCHAR* Font : { TEXT("LatoLatin-Regular.ttf"), TEXT("LatoLatin-Bold.ttf"), TEXT("RobotoMono-Regular.ttf") })
     {
         const FString FontPath = FPaths::Combine(GetContentRoot(), TEXT("Fonts"), Font);
@@ -150,6 +157,7 @@ void FRmlUiUnrealModule::ShutdownModule()
     if (bInitialized)
     {
         RmlUE_Shutdown();
+        RmlUE_SetResourceEventCallback(nullptr, nullptr);
         bInitialized = false;
     }
     if (BridgeDll)

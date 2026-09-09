@@ -51,6 +51,7 @@ public:
     FString GetLastError() const { return DocumentError.IsEmpty() ? LastError : DocumentError; }
     uint64 GetFrameNumber() const { return FrameNumber; }
     uint64 GetResolvedMaterialDrawCount() const { return ResolvedMaterialDrawCount; }
+    uint64 GetResolvedMaterialDrawCount(int32 MaterialSlot) const;
     bool IsUsingSlateRenderer() const { return bUseSlateRenderer; }
     FOnRmlUiBeforeRender OnBeforeRender;
     FOnRmlUiNativeShutdown OnNativeShutdown;
@@ -82,23 +83,37 @@ private:
         TArray<uint32> Indices;
         uint64 TextureId = 0;
         FVector2f Translation = FVector2f::ZeroVector;
+        FMatrix2x2 Transform;
+        FVector2f TransformTranslation = FVector2f::ZeroVector;
         FSlateRect Scissor;
+        bool bTransform = false;
         bool bScissor = false;
     };
     struct FTextureResource {
         TObjectPtr<UTexture2D> Texture = nullptr;
         TSharedPtr<FDeferredCleanupSlateBrush> Brush;
+        uint64 RegistryId = 0;
+    };
+    struct FMaterialResource {
+        TSharedPtr<FDeferredCleanupSlateBrush> Brush;
+        uint64 RegistryId = 0;
+    };
+    struct FNativeMaterialResource {
+        FName Alias;
+        int32 Slot = -1;
     };
     bool EnsureNativeView();
     bool CheckResult(int Result);
     void UpdateMousePosition(const FGeometry& Geometry, const FPointerEvent& Event);
     FReply ForwardTouch(const FGeometry& Geometry, const FPointerEvent& Event, int32 Phase);
     void DispatchEvents();
+    void ReleaseUnrealRenderResources(bool bIncludeMaterials);
 
     RmlUE_View* NativeView = nullptr;
     RmlUE_StyleSheet* BaseStyleSheet = nullptr;
     UTexture2D* Texture = nullptr;
     TSharedPtr<FDeferredCleanupSlateBrush> TextureBrush;
+    uint64 TextureRegistryId = 0;
     FOnSlateRmlUiDocumentEvent OnDocumentEvent;
     FString DocumentPath;
     FString InlineDocument;
@@ -115,10 +130,11 @@ private:
     TSet<int32> PressedMouseButtons;
     TArray<FNativeDraw> NativeDraws;
     TMap<uint64, FTextureResource> NativeTextures;
-    TMap<uint64, FName> NativeMaterialAliases;
-    TMap<FName, TSharedPtr<FDeferredCleanupSlateBrush>> Materials;
+    TMap<uint64, FNativeMaterialResource> NativeMaterialResources;
+    TMap<FName, FMaterialResource> Materials;
     bool bUseSlateRenderer = false;
     uint32 UnsupportedSlateFeatures = 0;
     mutable uint64 ResolvedMaterialDrawCount = 0;
+    mutable uint64 ResolvedMaterialDrawCounts[3] = {};
     bool bNativeShutdown = false;
 };

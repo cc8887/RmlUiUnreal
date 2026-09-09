@@ -1,0 +1,86 @@
+/*
+ * Compatibility fixture derived from:
+ * Magic.css 1.4.8 puffIn, commit f26d3c3beaf3017c90fb27ac6f67168fac26de06.
+ * Hover.css 2.1.1 Grow, commit 7b2597e011c3495511f93cbca4e148308e0df1c7.
+ * Both sources are MIT licensed; see web-motion-libraries.LICENSES.txt.
+ *
+ * RmlUi supports the animation and transition shorthand properties, but not
+ * the browser longhands used by the upstream classes. The keyframes and final
+ * transforms are retained while those declarations are expressed as RCSS.
+ */
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    font-family: LatoLatin;
+    font-size: 16px;
+    color: #172327;
+    background-color: #182326;
+}
+
+#scrim {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 430px;
+    height: 480px;
+    background-color: #0b1113b8;
+}
+
+#magic-popup {
+    position: absolute;
+    left: 70px;
+    top: 112px;
+    width: 290px;
+    height: 190px;
+    padding: 25px;
+    border-radius: 6px;
+    background-color: #f5f8f7;
+    box-shadow: 0 14px 30px #0008;
+}
+
+.popup-title { font-size: 23px; font-weight: bold; }
+.popup-copy { margin-top: 15px; color: #526267; }
+.popup-actions { margin-top: 31px; text-align: right; }
+button {
+    height: 42px;
+    padding: 9px 18px;
+    border: 0;
+    border-radius: 4px;
+    font-family: LatoLatin;
+    font-size: 15px;
+    color: #eaf7f3;
+    background-color: #168a70;
+}
+.secondary { margin-right: 8px; color: #344448; background-color: #dfe7e5; }
+
+/* Magic.css puffIn, with its longhands replaced by RmlUi's shorthand. */
+.magic-puff-in { animation: 0.6s cubic-out magic-puff-in; }
+@keyframes magic-puff-in {
+    0% {
+        opacity: 0;
+        transform-origin: 50% 50%;
+        transform: scale(2, 2);
+        filter: blur(2px);
+    }
+    100% {
+        opacity: 1;
+        transform-origin: 50% 50%;
+        transform: scale(1, 1);
+        filter: blur(0px);
+    }
+}
+
+/* Hover.css Grow, with transition longhands replaced by RmlUi's shorthand. */
+#hover-grow {
+    position: absolute;
+    left: 525px;
+    top: 194px;
+    width: 180px;
+    height: 56px;
+    transform: scale(1);
+    transition: transform 0.3s cubic-out;
+}
+#hover-grow:hover, #hover-grow:focus, #hover-grow:active { transform: scale(1.1); }
+.caption { position: absolute; left: 493px; top: 274px; width: 245px; text-align: center; color: #a9babd; }
