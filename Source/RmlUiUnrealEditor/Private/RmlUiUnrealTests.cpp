@@ -5,6 +5,7 @@
 #include "RmlUiBridge.h"
 #include "RmlUiResourceRegistry.h"
 #include "RmlUiUnrealModule.h"
+#include "RmlUiWidget.h"
 #include "SRmlUiWidget.h"
 #include "Engine/Texture2D.h"
 #include "Framework/Application/SlateApplication.h"
@@ -12,10 +13,12 @@
 #include "ImageUtils.h"
 #include "Interfaces/IPluginManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RenderingThread.h"
+#include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/SWindow.h"
 
@@ -67,6 +70,67 @@ static TWeakObjectPtr<UObject> FindOwnedObject(uint64 OwnerId, ERmlUiResourceTyp
         if (Info.Type == Type) return Info.Object;
     }
     return nullptr;
+}
+
+static bool NearRgb(FColor Actual, FColor Expected, int32 Tolerance)
+{
+    return FMath::Abs(int32(Actual.R) - Expected.R) <= Tolerance &&
+        FMath::Abs(int32(Actual.G) - Expected.G) <= Tolerance &&
+        FMath::Abs(int32(Actual.B) - Expected.B) <= Tolerance;
+}
+
+static FColor CompositeEncodedPremultiplied(FColor Source, FColor Background)
+{
+    const int32 InverseAlpha = 255 - Source.A;
+    const auto Channel = [InverseAlpha](uint8 SourceChannel, uint8 BackgroundChannel)
+    {
+        const int32 Premultiplied = (int32(SourceChannel) * (255 - InverseAlpha) + 127) / 255;
+        const int32 BackgroundContribution = (int32(BackgroundChannel) * InverseAlpha + 127) / 255;
+        return static_cast<uint8>(FMath::Clamp(Premultiplied + BackgroundContribution, 0, 255));
+    };
+    return FColor(Channel(Source.R, Background.R), Channel(Source.G, Background.G),
+        Channel(Source.B, Background.B), 255);
+}
+
+static bool SaveSdrColorContractTexture(const FString& Path)
+{
+    constexpr int32 Width = 128;
+    constexpr int32 Height = 64;
+    TArray<FColor> Pixels;
+    Pixels.SetNumUninitialized(Width * Height);
+    for (int32 Y = 0; Y < Height; ++Y)
+    {
+        for (int32 X = 0; X < Width; ++X)
+        {
+            FColor Value;
+            if (X < 32) Value = FColor(128, 128, 128, 255);
+            else if (X < 64) Value = FColor(192, 64, 128, 255);
+            else if (X < 96) Value = FColor(192, 64, 128, 128);
+            else Value = FColor(255, 0, 255, 0);
+            Pixels[Y * Width + X] = Value;
+        }
+    }
+    TArray64<uint8> Png;
+    FImageUtils::PNGCompressImageArray(Width, Height,
+        TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+    return FFileHelper::SaveArrayToFile(Png, *Path);
+}
+
+static UMaterial* CreateParameterizedUiMaterial()
+{
+    UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+    Material->MaterialDomain = MD_UI;
+    Material->BlendMode = BLEND_Translucent;
+    UMaterialExpressionVectorParameter* Tint = NewObject<UMaterialExpressionVectorParameter>(Material);
+    Tint->ParameterName = TEXT("Tint");
+    Tint->DefaultValue = FLinearColor::Black;
+    Material->GetExpressionCollection().AddExpression(Tint);
+    UMaterialEditorOnlyData* EditorOnly = Material->GetEditorOnlyData();
+    EditorOnly->EmissiveColor.Expression = Tint;
+    EditorOnly->Opacity.UseConstant = true;
+    EditorOnly->Opacity.Constant = 1.0f;
+    Material->PostEditChange();
+    return Material;
 }
 }
 
@@ -712,6 +776,150 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateRhiTest, "RmlUiUnreal.Slate.RhiDirec
 bool FRmlUiSlateRhiTest::RunTest(const FString&)
 {
     AddCommand(new FRmlUiSlateRhiCapture(this));
+    return true;
+}
+
+class FRmlUiSlateSdrColorCapture final : public IAutomationLatentCommand
+{
+public:
+    explicit FRmlUiSlateSdrColorCapture(FAutomationTestBase* InTest) : Test(InTest) {}
+
+    virtual bool Update() override
+    {
+        if (!Window.IsValid())
+        {
+            TexturePath = RmlUiTests::ArtifactPath(TEXT("slate-sdr-color-contract-input.png"));
+            if (!Test->TestTrue(TEXT("Save deterministic SDR input texture"),
+                RmlUiTests::SaveSdrColorContractTexture(TexturePath)))
+            {
+                return true;
+            }
+            FPaths::MakeStandardFilename(TexturePath);
+            const FString Document = FString::Printf(TEXT(R"RML(
+<rml><head><style>
+html, body { display: block; width: 640px; height: 320px; margin: 0; background-color: #102030; }
+img { display: block; position: absolute; top: 24px; width: 256px; height: 128px; }
+#source { left: 24px; image-color: #ffffff; }
+#tinted { left: 344px; image-color: #80c0ff; }
+#alpha-panel { display: block; position: absolute; left: 24px; top: 192px; width: 128px; height: 80px; background-color: rgba(64, 192, 96, 128); }
+#material-panel { display: block; position: absolute; left: 344px; top: 192px; width: 128px; height: 80px; decorator: ue-material(color.parameter); }
+</style></head><body><img id="source" src="%s"/><img id="tinted" src="%s"/><div id="alpha-panel"></div><div id="material-panel"></div></body></rml>
+)RML"), *TexturePath, *TexturePath);
+
+            Widget.Reset(NewObject<URmlUiWidget>());
+            Widget->DesiredSize = FVector2D(640, 320);
+            Widget->bUseSlateRenderer = true;
+            Widget->InlineSourcePath = TEXT("F://RmlUiTests/slate-sdr-color-contract.rml");
+            Widget->InlineDocument = Document;
+            Material.Reset(RmlUiTests::CreateParameterizedUiMaterial());
+            Test->TestNotNull(TEXT("Create parameterized User Interface material"), Material.Get());
+            Test->TestTrue(TEXT("Register color-contract material alias"),
+                Material.IsValid() && Widget->RegisterMaterial(TEXT("color.parameter"), Material.Get()));
+            Test->TestTrue(TEXT("Set MID vector parameter with a linear UE color"),
+                Widget->SetMaterialVector(TEXT("color.parameter"), TEXT("Tint"), MaterialLinearColor));
+
+            SlateRoot = Widget->TakeWidget();
+            const TSharedPtr<SRmlUiWidget> SlateWidget = Widget->GetSlateRmlWidget();
+            Test->TestTrue(TEXT("Create native Slate widget for SDR color contract"), SlateWidget.IsValid());
+            if (!SlateWidget.IsValid()) return true;
+            OwnerId = RmlUE_GetViewResourceId(SlateWidget->GetNativeView());
+            Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi SDR color contract")))
+                .ClientSize(FVector2D(640, 320)).UseOSWindowBorder(false).CreateTitleBar(false)
+                .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
+                .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[SlateRoot.ToSharedRef()];
+            FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+            Started = FPlatformTime::Seconds();
+            return false;
+        }
+
+        if (FPlatformTime::Seconds() - Started < 2.0) return false;
+        const TSharedPtr<SRmlUiWidget> SlateWidget = Widget->GetSlateRmlWidget();
+        Test->TestTrue(TEXT("SDR color fixture rendered without document errors"),
+            SlateWidget.IsValid() && SlateWidget->GetFrameNumber() > 0 && SlateWidget->GetLastError().IsEmpty());
+        Test->TestTrue(TEXT("SDR color fixture resolves the parameterized UE material"),
+            SlateWidget.IsValid() && SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) > 0);
+
+        FlushRenderingCommands();
+        UTexture2D* UploadedTexture = Cast<UTexture2D>(
+            RmlUiTests::FindOwnedObject(OwnerId, ERmlUiResourceType::UnrealTexture).Get());
+        Test->TestNotNull(TEXT("Generated PNG is represented by a UE texture resource"), UploadedTexture);
+        if (UploadedTexture)
+        {
+            Test->TestTrue(TEXT("Generated color texture is sampled as sRGB"), UploadedTexture->SRGB);
+            Test->TestTrue(TEXT("Generated color texture uses the declared BGRA8 upload format"),
+                UploadedTexture->GetPlatformData() && UploadedTexture->GetPlatformData()->PixelFormat == PF_B8G8R8A8);
+        }
+
+        TArray<FColor> Pixels;
+        FIntVector Size = FIntVector::ZeroValue;
+        const bool bCaptured = FSlateApplication::Get().TakeScreenshot(SlateRoot.ToSharedRef(), Pixels, Size);
+        Test->TestTrue(TEXT("Capture SDR color-contract output"),
+            bCaptured && Size.X == 640 && Size.Y == 320 && Pixels.Num() == Size.X * Size.Y);
+        if (bCaptured && Pixels.Num() == Size.X * Size.Y)
+        {
+            const auto PixelAt = [&](int32 X, int32 Y) { return Pixels[Y * Size.X + X]; };
+            const FColor Background(16, 32, 48, 255);
+            Test->TestTrue(TEXT("Opaque middle gray survives one sRGB decode and encode"),
+                RmlUiTests::NearRgb(PixelAt(56, 88), FColor(128, 128, 128), 4));
+            Test->TestTrue(TEXT("Opaque generated texture preserves nonlinear sRGB bytes"),
+                RmlUiTests::NearRgb(PixelAt(120, 88), FColor(192, 64, 128), 4));
+            Test->TestTrue(TEXT("Encoded premultiplied texture alpha follows the declared SDR blend contract"),
+                RmlUiTests::NearRgb(PixelAt(184, 88),
+                    RmlUiTests::CompositeEncodedPremultiplied(FColor(192, 64, 128, 128), Background), 5));
+            Test->TestTrue(TEXT("Transparent source RGB cannot bleed through generated texture upload"),
+                RmlUiTests::NearRgb(PixelAt(248, 88), Background, 4));
+
+            const FLinearColor TextureLinear = FLinearColor::FromSRGBColor(FColor(192, 64, 128));
+            const FLinearColor TintLinear = FLinearColor::FromSRGBColor(FColor(128, 192, 255));
+            const FColor ExpectedTinted = (TextureLinear * TintLinear).ToFColorSRGB();
+            Test->TestTrue(TEXT("CSS image-color multiplies the sRGB texture in linear shader space"),
+                RmlUiTests::NearRgb(PixelAt(440, 88), ExpectedTinted, 5));
+            Test->TestTrue(TEXT("CSS alpha uses the same encoded premultiplied SDR contract"),
+                RmlUiTests::NearRgb(PixelAt(88, 232),
+                    RmlUiTests::CompositeEncodedPremultiplied(FColor(64, 192, 96, 128), Background), 5));
+            Test->TestTrue(TEXT("UE material FLinearColor parameter reaches the SDR output without double gamma"),
+                RmlUiTests::NearRgb(PixelAt(408, 232), MaterialLinearColor.ToFColorSRGB(), 12));
+
+            TArray64<uint8> Png;
+            FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
+                TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+            Test->TestTrue(TEXT("Save SDR color-contract screenshot"), FFileHelper::SaveArrayToFile(Png,
+                *RmlUiTests::ArtifactPath(TEXT("slate-sdr-color-contract.png"))));
+        }
+
+        Widget->UnregisterMaterial(TEXT("color.parameter"));
+        if (SlateWidget.IsValid()) SlateWidget->ShutdownNative();
+        FlushRenderingCommands();
+        Test->TestTrue(TEXT("SDR color fixture releases its complete resource tree"),
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true).IsEmpty());
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        SlateRoot.Reset();
+        Window.Reset();
+        Widget.Reset();
+        Material.Reset();
+        CollectGarbage(RF_NoFlags, true);
+        return true;
+    }
+
+private:
+    FAutomationTestBase* Test = nullptr;
+    TStrongObjectPtr<URmlUiWidget> Widget;
+    TStrongObjectPtr<UMaterial> Material;
+    TSharedPtr<SWidget> SlateRoot;
+    TSharedPtr<SWindow> Window;
+    FString TexturePath;
+    uint64 OwnerId = 0;
+    double Started = 0;
+    const FLinearColor MaterialLinearColor = FLinearColor(0.18f, 0.50f, 0.82f, 1.0f);
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateSdrColorTest, "RmlUiUnreal.Slate.SdrColorContract",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiSlateSdrColorTest::RunTest(const FString&)
+{
+    AddCommand(new FRmlUiSlateSdrColorCapture(this));
     return true;
 }
 

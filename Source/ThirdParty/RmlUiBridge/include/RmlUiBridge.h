@@ -85,6 +85,7 @@ typedef struct RmlUE_Frame {
 typedef struct RmlUE_SlateVertex {
     float X, Y;
     float U, V;
+    // Nonlinear sRGB byte channels, premultiplied by A in encoded space by RmlUi.
     uint8_t R, G, B, A;
 } RmlUE_SlateVertex;
 
@@ -128,6 +129,7 @@ typedef struct RmlUE_SlateTexture {
     int Kind;
     // -1 = not a material, 0 = background, 1 = border, 2 = reserved foreground.
     int MaterialSlot;
+    // Top-left, tightly packed nonlinear sRGB RGBA8. RGB is premultiplied by A in encoded space.
     const unsigned char* PremultipliedRGBA;
     int Width, Height;
     const char* MaterialAlias;
