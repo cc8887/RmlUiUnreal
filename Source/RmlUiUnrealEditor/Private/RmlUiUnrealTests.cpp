@@ -150,6 +150,31 @@ static UTexture2D* CreateSolidSrgbTexture(FColor Color, FName Name)
     return Texture;
 }
 
+static UTexture2D* CreateQuadrantSrgbTexture(FName Name)
+{
+    constexpr int32 Width = 4;
+    constexpr int32 Height = 4;
+    TArray64<FColor> Pixels;
+    Pixels.SetNumUninitialized(Width * Height);
+    for (int32 Y = 0; Y < Height; ++Y)
+    {
+        for (int32 X = 0; X < Width; ++X)
+        {
+            Pixels[Y * Width + X] = Y < Height / 2
+                ? (X < Width / 2 ? FColor(220, 40, 40) : FColor(40, 210, 70))
+                : (X < Width / 2 ? FColor(40, 80, 220) : FColor(220, 190, 40));
+        }
+    }
+    UTexture2D* Texture = UTexture2D::CreateTransient(Width, Height, PF_B8G8R8A8, Name,
+        TConstArrayView64<uint8>(reinterpret_cast<const uint8*>(Pixels.GetData()), Pixels.Num() * sizeof(FColor)));
+    if (!Texture) return nullptr;
+    Texture->SRGB = true;
+    Texture->NeverStream = true;
+    Texture->Filter = TF_Nearest;
+    Texture->UpdateResource();
+    return Texture;
+}
+
 static UMaterial* CreateTextureUiMaterial(UTexture* DefaultTexture, EBlendMode BlendMode = BLEND_Translucent)
 {
     if (!DefaultTexture) return nullptr;
@@ -982,16 +1007,20 @@ public:
             DefaultTexture.Reset(RmlUiTests::CreateSolidSrgbTexture(FColor(12, 18, 24), TEXT("RmlUiMaterialDefault")));
             TextureA.Reset(RmlUiTests::CreateSolidSrgbTexture(TextureAColor, TEXT("RmlUiMaterialTextureA")));
             TextureB.Reset(RmlUiTests::CreateSolidSrgbTexture(TextureBColor, TEXT("RmlUiMaterialTextureB")));
+            UvTexture.Reset(RmlUiTests::CreateQuadrantSrgbTexture(TEXT("RmlUiMaterialUvQuadrants")));
             Test->TestNotNull(TEXT("Create default material texture"), DefaultTexture.Get());
             Test->TestNotNull(TEXT("Create first dynamic material texture"), TextureA.Get());
             Test->TestNotNull(TEXT("Create replacement dynamic material texture"), TextureB.Get());
-            if (!DefaultTexture.IsValid() || !TextureA.IsValid() || !TextureB.IsValid()) return true;
+            Test->TestNotNull(TEXT("Create material UV quadrant texture"), UvTexture.Get());
+            if (!DefaultTexture.IsValid() || !TextureA.IsValid() || !TextureB.IsValid() || !UvTexture.IsValid()) return true;
 
             DynamicMaterial.Reset(RmlUiTests::CreateTextureUiMaterial(DefaultTexture.Get(), BLEND_Translucent));
             OpaqueMaterial.Reset(RmlUiTests::CreateTextureUiMaterial(DefaultTexture.Get(), BLEND_Opaque));
+            UvMaterial.Reset(RmlUiTests::CreateTextureUiMaterial(UvTexture.Get(), BLEND_Translucent));
             Test->TestNotNull(TEXT("Create texture-parameter UI material"), DynamicMaterial.Get());
             Test->TestNotNull(TEXT("Create opaque UI material boundary fixture"), OpaqueMaterial.Get());
-            if (!DynamicMaterial.IsValid() || !OpaqueMaterial.IsValid()) return true;
+            Test->TestNotNull(TEXT("Create texture-coordinate UI material"), UvMaterial.Get());
+            if (!DynamicMaterial.IsValid() || !OpaqueMaterial.IsValid() || !UvMaterial.IsValid()) return true;
 
             const FString Document = TEXT(R"RML(
 <rml><head><style>
@@ -1001,7 +1030,12 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
 #faded-parent { display: block; position: absolute; left: 200px; top: 24px; width: 128px; height: 96px; opacity: 0.5; }
 #opaque-parent { display: block; position: absolute; left: 376px; top: 24px; width: 128px; height: 96px; opacity: 0.5; }
 #opaque { display: block; width: 128px; height: 96px; decorator: ue-material(texture.opaque); }
-</style></head><body><div id="full" class="panel"></div><div id="faded-parent"><div id="faded" class="panel"></div></div><div id="opaque-parent"><div id="opaque"></div></div></body></rml>
+#transformed { display: block; position: absolute; left: 32px; top: 176px; width: 128px; height: 96px; opacity: 0.5; transform-origin: 64px 48px; transform: rotate(12deg); decorator: ue-material(texture.uv); }
+#border-parent { display: block; position: absolute; left: 216px; top: 176px; opacity: 0.5; }
+#border { display: block; width: 104px; height: 72px; border: 12px transparent; border-radius: 22px; decorator: ue-material-border(texture.dynamic); }
+#multi-wrap { display: block; position: absolute; left: 400px; top: 176px; width: 84px; opacity: 0.5; }
+#multi { font-family: LatoLatin; font-size: 28px; line-height: 40px; color: transparent; decorator: ue-material(texture.dynamic); }
+</style></head><body><div id="full" class="panel"></div><div id="faded-parent"><div id="faded" class="panel"></div></div><div id="opaque-parent"><div id="opaque"></div></div><div id="transformed"></div><div id="border-parent"><div id="border"></div></div><div id="multi-wrap"><span id="multi">AAAA AAAA</span></div></body></rml>
 )RML");
 
             Widget.Reset(NewObject<URmlUiWidget>());
@@ -1013,6 +1047,8 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
                 Widget->RegisterMaterial(TEXT("texture.dynamic"), DynamicMaterial.Get()));
             Test->TestTrue(TEXT("Register opaque boundary material alias"),
                 Widget->RegisterMaterial(TEXT("texture.opaque"), OpaqueMaterial.Get()));
+            Test->TestTrue(TEXT("Register transformed UV material alias"),
+                Widget->RegisterMaterial(TEXT("texture.uv"), UvMaterial.Get()));
             Test->TestTrue(TEXT("Set first MID texture parameter"),
                 Widget->SetMaterialTexture(TEXT("texture.dynamic"), TEXT("UiTexture"), TextureA.Get()));
 
@@ -1040,7 +1076,11 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
         Test->TestTrue(TEXT("Material texture fixture rendered without document errors"),
             SlateWidget->GetFrameNumber() > 0 && SlateWidget->GetLastError().IsEmpty());
         Test->TestTrue(TEXT("Material texture fixture resolves background material slots"),
-            SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) >= 3);
+            SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) >= 5);
+        Test->TestTrue(TEXT("Material texture fixture resolves the border material slot"),
+            SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BORDER) >= 1);
+        Test->TestTrue(TEXT("Complex material opacity is split into native Slate sections"),
+            SlateWidget->GetSlateMaterialOpacitySectionDrawCount() >= 4);
         Test->TestTrue(TEXT("Opaque material opacity loss is reported through the feature mask"),
             (SlateWidget->GetUnsupportedSlateFeatures() & RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY) != 0);
         Test->TestEqual(TEXT("Fixture raises no unrelated unsupported feature bits"),
@@ -1097,6 +1137,29 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
                         FColor(ActiveColor.R, ActiveColor.G, ActiveColor.B, ActiveAlpha), BackgroundColor), 12));
             Test->TestTrue(TEXT("Opaque material keeps its color while opacity loss is diagnosed"),
                 RmlUiTests::NearRgb(PixelAt(424, 64), DefaultTextureColor, 12));
+            const FColor ExpectedComplexFaded = RmlUiTests::CompositeEncodedPremultiplied(
+                FColor(ActiveColor.R, ActiveColor.G, ActiveColor.B, 128), BackgroundColor);
+            const auto ExpectedUv = [&](FColor Source)
+            {
+                return RmlUiTests::CompositeEncodedPremultiplied(
+                    FColor(Source.R, Source.G, Source.B, 128), BackgroundColor);
+            };
+            Test->TestTrue(TEXT("Transformed material preserves top-left UV and opacity"),
+                RmlUiTests::NearRgb(PixelAt(70, 194), ExpectedUv(FColor(220, 40, 40)), 12));
+            Test->TestTrue(TEXT("Transformed material preserves top-right UV and opacity"),
+                RmlUiTests::NearRgb(PixelAt(132, 207), ExpectedUv(FColor(40, 210, 70)), 12));
+            Test->TestTrue(TEXT("Transformed material preserves bottom-left UV and opacity"),
+                RmlUiTests::NearRgb(PixelAt(60, 241), ExpectedUv(FColor(40, 80, 220)), 12));
+            Test->TestTrue(TEXT("Transformed material preserves bottom-right UV and opacity"),
+                RmlUiTests::NearRgb(PixelAt(122, 254), ExpectedUv(FColor(220, 190, 40)), 12));
+            Test->TestTrue(TEXT("Rounded material border keeps inherited CSS opacity"),
+                RmlUiTests::NearRgb(PixelAt(280, 182), ExpectedComplexFaded, 12));
+            Test->TestTrue(TEXT("Material border leaves its content area transparent"),
+                RmlUiTests::NearRgb(PixelAt(280, 224), BackgroundColor, 6));
+            Test->TestTrue(TEXT("First fragmented inline material box keeps inherited opacity"),
+                RmlUiTests::NearRgb(PixelAt(410, 190), ExpectedComplexFaded, 12));
+            Test->TestTrue(TEXT("Second fragmented inline material box keeps inherited opacity"),
+                RmlUiTests::NearRgb(PixelAt(410, 230), ExpectedComplexFaded, 12));
 
             TArray64<uint8> Png;
             FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
@@ -1138,6 +1201,7 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
 
         Widget->UnregisterMaterial(TEXT("texture.dynamic"));
         Widget->UnregisterMaterial(TEXT("texture.opaque"));
+        Widget->UnregisterMaterial(TEXT("texture.uv"));
         SlateWidget->ShutdownNative();
         FlushRenderingCommands();
         Test->TestTrue(TEXT("Material texture fixture releases its complete resource tree"),
@@ -1148,8 +1212,10 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
         Widget.Reset();
         DynamicMaterial.Reset();
         OpaqueMaterial.Reset();
+        UvMaterial.Reset();
         DefaultTexture.Reset();
         TextureB.Reset();
+        UvTexture.Reset();
         CollectGarbage(RF_NoFlags, true);
         return true;
     }
@@ -1159,9 +1225,11 @@ private:
     TStrongObjectPtr<URmlUiWidget> Widget;
     TStrongObjectPtr<UMaterial> DynamicMaterial;
     TStrongObjectPtr<UMaterial> OpaqueMaterial;
+    TStrongObjectPtr<UMaterial> UvMaterial;
     TStrongObjectPtr<UTexture2D> DefaultTexture;
     TStrongObjectPtr<UTexture2D> TextureA;
     TStrongObjectPtr<UTexture2D> TextureB;
+    TStrongObjectPtr<UTexture2D> UvTexture;
     TWeakObjectPtr<UTexture2D> OldTexture;
     TSharedPtr<SWidget> SlateRoot;
     TSharedPtr<SWindow> Window;

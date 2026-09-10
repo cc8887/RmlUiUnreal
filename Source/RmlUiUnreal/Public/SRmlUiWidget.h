@@ -57,6 +57,7 @@ public:
     uint64 GetSlateRhiDrawCount() const { return SlateRhiDrawCount; }
     uint64 GetSlateRhiMaskCount() const { return SlateRhiMaskCount; }
     uint64 GetSlateMaterialClipDrawCount() const { return SlateMaterialClipDrawCount; }
+    uint64 GetSlateMaterialOpacitySectionDrawCount() const { return SlateMaterialOpacitySectionDrawCount; }
     uint64 GetSlateFallbackDrawCount() const { return SlateFallbackDrawCount; }
     uint32 GetUnsupportedSlateFeatures() const { return UnsupportedSlateFeatures; }
     int32 GetReadySlateRhiGeometryCount() const;
@@ -108,6 +109,9 @@ private:
         TArray<FNativeMask> ClipMasks;
         bool bMaterialClipSupported = true;
     };
+    struct FMaterialOpacitySection {
+        TArray<FVector2f> ConvexHull;
+    };
     struct FGeometryResource {
         TArray<float> Vertices;
         TArray<uint32> Indices;
@@ -116,7 +120,13 @@ private:
         uint64 IndexBufferRegistryId = 0;
         TSharedPtr<class FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> RhiGeometry;
         TArray<FVector2f> ConvexHull;
+        TArray<FMaterialOpacitySection> MaterialOpacitySections;
+        FVector2f MaterialBoundsMinimum = FVector2f::ZeroVector;
+        FVector2f MaterialBoundsMaximum = FVector2f::ZeroVector;
         bool bFilledConvex = false;
+        bool bMaterialOpacityAnalyzed = false;
+        bool bMaterialOpacitySupported = false;
+        bool bMaterialOpacityFullBox = false;
     };
     struct FTextureResource {
         TObjectPtr<UTexture2D> Texture = nullptr;
@@ -134,7 +144,8 @@ private:
         FName Alias;
         int32 Slot = -1;
     };
-    bool CanApplyMaterialOpacityAsBox(const FNativeDraw& Draw, const FGeometryResource& Geometry,
+    bool AnalyzeMaterialOpacityGeometry(FGeometryResource& Geometry) const;
+    bool CanApplyMaterialOpacityAsBoxes(const FNativeDraw& Draw, const FGeometryResource& Geometry,
         const FNativeMaterialResource& Binding, const FMaterialResource& Material) const;
     bool EnsureNativeView();
     bool CheckResult(int Result);
@@ -176,6 +187,7 @@ private:
     mutable uint64 SlateRhiDrawCount = 0;
     mutable uint64 SlateRhiMaskCount = 0;
     mutable uint64 SlateMaterialClipDrawCount = 0;
+    mutable uint64 SlateMaterialOpacitySectionDrawCount = 0;
     mutable uint64 SlateFallbackDrawCount = 0;
     bool bNativeShutdown = false;
 };

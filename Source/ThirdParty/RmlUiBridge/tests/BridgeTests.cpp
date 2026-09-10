@@ -171,16 +171,20 @@ img { position: absolute; left: 180px; top: 70px; width: 40px; height: 40px; }
     const char* SlateMarkup = R"(<rml><head><style>
 body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height: 40px; }
 #panel { background-color: #234; decorator: ue-material(panel.energy); }
-#frame { border: 6px #fff; border-radius: 10px; decorator: ue-material-border(panel.frame); }
+#frame { border: 6px #fff; border-radius: 10px; opacity: 0.5; decorator: ue-material-border(panel.frame); }
+#multi-wrap { display: block; position: absolute; left: 86px; top: 0; width: 38px; }
+#multi { font-family: LatoLatin; font-size: 14px; line-height: 18px; color: transparent; opacity: 0.5; decorator: ue-material(panel.multi); }
 #transformed { position: absolute; left: 58px; top: 28px; width: 28px; height: 14px; background-color: #f00; transform-origin: 0px 0px; transform: translate(8px, 3px) rotate(12deg); }
-</style></head><body><div id="panel"></div><div id="frame"></div><div id="transformed"></div></body></rml>)";
+</style></head><body><div id="panel"></div><div id="frame"></div><div id="multi-wrap"><span id="multi">AAAA AAAA</span></div><div id="transformed"></div></body></rml>)";
     Require(SlateView != nullptr && RmlUE_LoadDocumentFromMemory(SlateView, SlateMarkup, "slate.rml") != 0, "Slate command document");
     RmlUE_SlateFrame SlateFrame{};
     Require(RmlUE_RenderSlate(SlateView, &SlateFrame) != 0 && SlateFrame.AbiVersion == RMLUE_SLATE_ABI_VERSION && SlateFrame.DrawCount > 0, "Slate command render");
     bool FoundBackgroundMaterial = false;
     bool FoundBorderMaterial = false;
+    bool FoundMultiBoxMaterial = false;
     bool FoundTransformedDraw = false;
     uint64_t BorderTexture = 0;
+    uint64_t MultiBoxTexture = 0;
     for (uint32_t Index = 0; Index < SlateFrame.TextureCount; ++Index)
     {
         const RmlUE_SlateTexture& Texture = SlateFrame.Textures[Index];
@@ -194,10 +198,19 @@ body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height:
             FoundBorderMaterial = true;
             BorderTexture = Texture.Id;
         }
+        if (Texture.Action == RMLUE_SLATE_RESOURCE_CREATE && Texture.Kind == 1 &&
+            Texture.MaterialSlot == RMLUE_MATERIAL_SLOT_BACKGROUND && Texture.MaterialAlias &&
+            std::strcmp(Texture.MaterialAlias, "panel.multi") == 0)
+        {
+            FoundMultiBoxMaterial = true;
+            MultiBoxTexture = Texture.Id;
+        }
     }
     Require(FoundBackgroundMaterial, "Slate frame carries the background material slot and alias");
     Require(FoundBorderMaterial, "Slate frame carries the border material slot and alias");
+    Require(FoundMultiBoxMaterial, "Slate frame carries a fragmented inline material alias");
     bool FoundBorderRing = false;
+    bool FoundMultiBoxGeometry = false;
     for (uint32_t Index = 0; Index < SlateFrame.DrawCount; ++Index)
     {
         const RmlUE_SlateDraw& Draw = SlateFrame.Draws[Index];
@@ -210,11 +223,16 @@ body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height:
             for (uint32_t VertexIndex = 0; VertexIndex < Geometry->VertexCount; ++VertexIndex)
                 FoundNonZeroUv |= Geometry->Vertices[VertexIndex].U > 0.01f || Geometry->Vertices[VertexIndex].V > 0.01f;
             FoundBorderRing &= FoundNonZeroUv;
+            FoundBorderRing &= Geometry->Vertices[0].A >= 126 && Geometry->Vertices[0].A <= 128;
         }
+        if (Draw.Texture == MultiBoxTexture)
+            FoundMultiBoxGeometry = Geometry->VertexCount >= 8 && Geometry->IndexCount >= 12 &&
+                Geometry->Vertices[0].A >= 126 && Geometry->Vertices[0].A <= 128;
         if (Geometry->VertexCount > 0 && Geometry->Vertices[0].R > 240 && Geometry->Vertices[0].G < 10 && Geometry->Vertices[0].B < 10)
             FoundTransformedDraw = Draw.TransformEnabled != 0 && std::fabs(Draw.TransformM01) > 0.01f;
     }
     Require(FoundBorderRing, "Border material uses textured ring geometry rather than a content-covering quad");
+    Require(FoundMultiBoxGeometry, "Fragmented inline material keeps multiple boxes and inherited opacity in one geometry");
     Require(FoundTransformedDraw, "Slate draw carries a 2D affine transform");
     Require((SlateFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_TRANSFORM_3D) == 0, "Supported 2D transforms do not set the unsupported feature bit");
     {

@@ -452,48 +452,170 @@ bool SRmlUiWidget::TrackMaterialTexture(FName Alias, FName Parameter, UTexture* 
     return true;
 }
 
-bool SRmlUiWidget::CanApplyMaterialOpacityAsBox(const FNativeDraw& Draw, const FGeometryResource& Geometry,
-    const FNativeMaterialResource& Binding, const FMaterialResource& Material) const
+bool SRmlUiWidget::AnalyzeMaterialOpacityGeometry(FGeometryResource& Geometry) const
 {
-    if (!Material.bSupportsInheritedOpacity || Binding.Slot != RMLUE_MATERIAL_SLOT_BACKGROUND ||
-        Draw.bTransform || Geometry.Vertices.Num() != 4 * 8 || Geometry.Indices.Num() != 6)
+    if (Geometry.bMaterialOpacityAnalyzed) return Geometry.bMaterialOpacitySupported;
+    Geometry.bMaterialOpacityAnalyzed = true;
+    Geometry.MaterialOpacitySections.Reset();
+    if (Geometry.Vertices.Num() < 24 || Geometry.Vertices.Num() % 8 != 0 ||
+        Geometry.Indices.Num() < 3 || Geometry.Indices.Num() % 3 != 0)
     {
         return false;
     }
 
-    bool bUsesVertex[4] = {};
-    for (uint32 Index : Geometry.Indices)
-    {
-        if (Index >= UE_ARRAY_COUNT(bUsesVertex)) return false;
-        bUsesVertex[Index] = true;
-    }
-    for (bool bUsed : bUsesVertex)
-        if (!bUsed) return false;
-
+    constexpr int32 MaxMaterialOpacitySections = 1024;
+    TArray<FMaterialOpacitySection> Sections;
+    const int32 VertexCount = Geometry.Vertices.Num() / 8;
     FVector2f Minimum(MAX_flt, MAX_flt);
     FVector2f Maximum(-MAX_flt, -MAX_flt);
     for (int32 Offset = 0; Offset < Geometry.Vertices.Num(); Offset += 8)
     {
         const FVector2f Position(Geometry.Vertices[Offset], Geometry.Vertices[Offset + 1]);
+        if (!FMath::IsFinite(Position.X) || !FMath::IsFinite(Position.Y)) return false;
         Minimum.X = FMath::Min(Minimum.X, Position.X);
         Minimum.Y = FMath::Min(Minimum.Y, Position.Y);
         Maximum.X = FMath::Max(Maximum.X, Position.X);
         Maximum.Y = FMath::Max(Maximum.Y, Position.Y);
     }
-    if (Maximum.X - Minimum.X <= UE_SMALL_NUMBER || Maximum.Y - Minimum.Y <= UE_SMALL_NUMBER) return false;
+    const FVector2f Extent = Maximum - Minimum;
+    if (Extent.X <= UE_SMALL_NUMBER || Extent.Y <= UE_SMALL_NUMBER) return false;
 
-    uint8 CornerMask = 0;
     for (int32 Offset = 0; Offset < Geometry.Vertices.Num(); Offset += 8)
     {
         const FVector2f Position(Geometry.Vertices[Offset], Geometry.Vertices[Offset + 1]);
-        const bool bLeft = FMath::IsNearlyEqual(Position.X, Minimum.X);
-        const bool bRight = FMath::IsNearlyEqual(Position.X, Maximum.X);
-        const bool bTop = FMath::IsNearlyEqual(Position.Y, Minimum.Y);
-        const bool bBottom = FMath::IsNearlyEqual(Position.Y, Maximum.Y);
-        if ((!bLeft && !bRight) || (!bTop && !bBottom)) return false;
-        CornerMask |= 1u << ((bRight ? 1 : 0) + (bBottom ? 2 : 0));
+        const FVector2f ExpectedUv((Position.X - Minimum.X) / Extent.X,
+            (Position.Y - Minimum.Y) / Extent.Y);
+        if (!FMath::IsNearlyEqual(Geometry.Vertices[Offset + 2], ExpectedUv.X, 0.001f) ||
+            !FMath::IsNearlyEqual(Geometry.Vertices[Offset + 3], ExpectedUv.Y, 0.001f))
+        {
+            return false;
+        }
     }
-    return CornerMask == 0x0f;
+
+    const auto PositionAt = [&](uint32 VertexIndex)
+    {
+        return FVector2f(Geometry.Vertices[VertexIndex * 8], Geometry.Vertices[VertexIndex * 8 + 1]);
+    };
+    for (uint32 Index : Geometry.Indices)
+        if (Index >= static_cast<uint32>(VertexCount)) return false;
+
+    // Slate custom-material vertices ignore tint, so decompose non-box geometry into clipped box draws
+    // while preserving one full-element material UV mapping.
+    const auto BuildSectionHull = [&](int32 IndexStart, int32 IndexCount, TArray<FVector2f>& OutHull)
+    {
+        OutHull.Reset();
+        TArray<FVector2f, TInlineAllocator<8>> Points;
+        double TriangleAreaTwice = 0.0;
+        for (int32 Index = IndexStart; Index < IndexStart + IndexCount; Index += 3)
+        {
+            const FVector2f A = PositionAt(Geometry.Indices[Index]);
+            const FVector2f B = PositionAt(Geometry.Indices[Index + 1]);
+            const FVector2f C = PositionAt(Geometry.Indices[Index + 2]);
+            const double AreaTwice = FMath::Abs(static_cast<double>(Cross2D(A, B, C)));
+            if (AreaTwice <= 0.001) continue;
+            TriangleAreaTwice += AreaTwice;
+            Points.Add(A);
+            Points.Add(B);
+            Points.Add(C);
+        }
+        Points.Sort([](FVector2f A, FVector2f B)
+        {
+            return A.X < B.X || (A.X == B.X && A.Y < B.Y);
+        });
+        for (int32 Index = Points.Num() - 1; Index > 0; --Index)
+            if (Points[Index].Equals(Points[Index - 1], 0.01f)) Points.RemoveAt(Index, 1, EAllowShrinking::No);
+        if (Points.Num() < 3 || Points.Num() > 4 || TriangleAreaTwice <= 0.001) return false;
+
+        TArray<FVector2f, TInlineAllocator<8>> Hull;
+        for (FVector2f Point : Points)
+        {
+            while (Hull.Num() >= 2 && Cross2D(Hull[Hull.Num() - 2], Hull.Last(), Point) <= 0.001f)
+                Hull.Pop(EAllowShrinking::No);
+            Hull.Add(Point);
+        }
+        const int32 LowerCount = Hull.Num();
+        for (int32 Index = Points.Num() - 2; Index >= 0; --Index)
+        {
+            const FVector2f Point = Points[Index];
+            while (Hull.Num() > LowerCount && Cross2D(Hull[Hull.Num() - 2], Hull.Last(), Point) <= 0.001f)
+                Hull.Pop(EAllowShrinking::No);
+            Hull.Add(Point);
+        }
+        Hull.Pop(EAllowShrinking::No);
+        if (Hull.Num() < 3 || Hull.Num() > 4) return false;
+
+        double HullAreaTwice = 0.0;
+        for (int32 Index = 0; Index < Hull.Num(); ++Index)
+            HullAreaTwice += static_cast<double>(Hull[Index].X) * Hull[(Index + 1) % Hull.Num()].Y -
+                static_cast<double>(Hull[Index].Y) * Hull[(Index + 1) % Hull.Num()].X;
+        HullAreaTwice = FMath::Abs(HullAreaTwice);
+        if (FMath::Abs(HullAreaTwice - TriangleAreaTwice) > FMath::Max(0.1, HullAreaTwice * 0.01)) return false;
+        OutHull.Append(Hull.GetData(), Hull.Num());
+        return true;
+    };
+
+    if (Geometry.bFilledConvex && Geometry.ConvexHull.Num() <= 12)
+    {
+        FMaterialOpacitySection& Section = Sections.AddDefaulted_GetRef();
+        Section.ConvexHull = Geometry.ConvexHull;
+    }
+    else
+    {
+        for (int32 Index = 0; Index < Geometry.Indices.Num();)
+        {
+            FMaterialOpacitySection Section;
+            const bool bMergedPair = Index + 6 <= Geometry.Indices.Num() &&
+                BuildSectionHull(Index, 6, Section.ConvexHull);
+            if (!bMergedPair && !BuildSectionHull(Index, 3, Section.ConvexHull)) return false;
+            Sections.Add(MoveTemp(Section));
+            if (Sections.Num() > MaxMaterialOpacitySections) return false;
+            Index += bMergedPair ? 6 : 3;
+        }
+    }
+
+    bool bUsesVertex[4] = {};
+    uint8 CornerMask = 0;
+    if (Geometry.Vertices.Num() == 4 * 8 && Geometry.Indices.Num() == 6)
+    {
+        for (uint32 Index : Geometry.Indices)
+        {
+            if (Index >= UE_ARRAY_COUNT(bUsesVertex)) return false;
+            bUsesVertex[Index] = true;
+        }
+        for (int32 Offset = 0; Offset < Geometry.Vertices.Num(); Offset += 8)
+        {
+            const FVector2f Position(Geometry.Vertices[Offset], Geometry.Vertices[Offset + 1]);
+            const bool bLeft = FMath::IsNearlyEqual(Position.X, Minimum.X);
+            const bool bRight = FMath::IsNearlyEqual(Position.X, Maximum.X);
+            const bool bTop = FMath::IsNearlyEqual(Position.Y, Minimum.Y);
+            const bool bBottom = FMath::IsNearlyEqual(Position.Y, Maximum.Y);
+            if ((!bLeft && !bRight) || (!bTop && !bBottom)) break;
+            CornerMask |= 1u << ((bRight ? 1 : 0) + (bBottom ? 2 : 0));
+        }
+    }
+    Geometry.MaterialBoundsMinimum = Minimum;
+    Geometry.MaterialBoundsMaximum = Maximum;
+    bool bUsesEveryVertex = true;
+    for (bool bUsed : bUsesVertex) bUsesEveryVertex &= bUsed;
+    Geometry.bMaterialOpacityFullBox = CornerMask == 0x0f && bUsesEveryVertex;
+    Geometry.MaterialOpacitySections = MoveTemp(Sections);
+    Geometry.bMaterialOpacitySupported = !Geometry.MaterialOpacitySections.IsEmpty();
+    return Geometry.bMaterialOpacitySupported;
+}
+
+bool SRmlUiWidget::CanApplyMaterialOpacityAsBoxes(const FNativeDraw&, const FGeometryResource& Geometry,
+    const FNativeMaterialResource& Binding, const FMaterialResource& Material) const
+{
+    if (!Material.bSupportsInheritedOpacity ||
+        (Binding.Slot != RMLUE_MATERIAL_SLOT_BACKGROUND && Binding.Slot != RMLUE_MATERIAL_SLOT_BORDER) ||
+        !Geometry.bMaterialOpacityAnalyzed || !Geometry.bMaterialOpacitySupported)
+    {
+        return false;
+    }
+    const float Alpha = Geometry.Vertices[7];
+    for (int32 Offset = 7; Offset < Geometry.Vertices.Num(); Offset += 8)
+        if (!FMath::IsNearlyEqual(Geometry.Vertices[Offset], Alpha, 0.5f)) return false;
+    return true;
 }
 
 void SRmlUiWidget::SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet)
@@ -715,14 +837,15 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             if (const FNativeMaterialResource* Binding = NativeMaterialResources.Find(Draw.TextureId))
             {
                 const FMaterialResource* Material = Materials.Find(Binding->Alias);
-                const FGeometryResource* DrawGeometry = NativeGeometries.Find(Draw.GeometryId);
+                FGeometryResource* DrawGeometry = NativeGeometries.Find(Draw.GeometryId);
                 if (Material && DrawGeometry)
                 {
                     for (int32 VertexOffset = 7; VertexOffset < DrawGeometry->Vertices.Num(); VertexOffset += 8)
                     {
                         if (DrawGeometry->Vertices[VertexOffset] < 254.5f)
                         {
-                            if (!CanApplyMaterialOpacityAsBox(Draw, *DrawGeometry, *Binding, *Material))
+                            AnalyzeMaterialOpacityGeometry(*DrawGeometry);
+                            if (!CanApplyMaterialOpacityAsBoxes(Draw, *DrawGeometry, *Binding, *Material))
                                 FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY;
                             break;
                         }
@@ -807,6 +930,7 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
     SlateRhiDrawCount = 0;
     SlateRhiMaskCount = 0;
     SlateMaterialClipDrawCount = 0;
+    SlateMaterialOpacitySectionDrawCount = 0;
     SlateFallbackDrawCount = 0;
     if (bUseSlateRenderer && NativeDraws.Num() > 0)
     {
@@ -836,6 +960,45 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                     Result = Result.IntersectionWith(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y));
                 }
                 return Result;
+            };
+            const FVector2f CullingCorners[] = {
+                FVector2f(CullingRect.Left, CullingRect.Top), FVector2f(CullingRect.Right, CullingRect.Top),
+                FVector2f(CullingRect.Left, CullingRect.Bottom), FVector2f(CullingRect.Right, CullingRect.Bottom)};
+            const auto PushConvexClip = [&](TConstArrayView<FVector2f> Hull)
+            {
+                int32 Count = 0;
+                if (Hull.Num() < 3) return Count;
+                FVector2f Centroid = FVector2f::ZeroVector;
+                for (FVector2f Point : Hull) Centroid += Point;
+                Centroid /= static_cast<float>(Hull.Num());
+                for (int32 HullIndex = 0; HullIndex < Hull.Num(); ++HullIndex)
+                {
+                    const FVector2f Start = Hull[HullIndex];
+                    const FVector2f End = Hull[(HullIndex + 1) % Hull.Num()];
+                    const FVector2f Edge = End - Start;
+                    const float EdgeLength = Edge.Size();
+                    if (EdgeLength <= UE_SMALL_NUMBER) continue;
+                    const FVector2f Tangent = Edge / EdgeLength;
+                    FVector2f InwardNormal(-Tangent.Y, Tangent.X);
+                    if (FVector2f::DotProduct(Centroid - (Start + End) * 0.5f, InwardNormal) < 0.0f)
+                        InwardNormal *= -1.0f;
+                    float MinimumTangent = 0.0f;
+                    float MaximumTangent = EdgeLength;
+                    float MaximumNormal = FVector2f::DotProduct(Centroid - Start, InwardNormal);
+                    for (FVector2f Corner : CullingCorners)
+                    {
+                        MinimumTangent = FMath::Min(MinimumTangent, FVector2f::DotProduct(Corner - Start, Tangent));
+                        MaximumTangent = FMath::Max(MaximumTangent, FVector2f::DotProduct(Corner - Start, Tangent));
+                        MaximumNormal = FMath::Max(MaximumNormal, FVector2f::DotProduct(Corner - Start, InwardNormal));
+                    }
+                    constexpr float Padding = 2.0f;
+                    const FVector2f NearStart = Start + Tangent * (MinimumTangent - Padding);
+                    const FVector2f NearEnd = Start + Tangent * (MaximumTangent + Padding);
+                    const FVector2f Extrusion = InwardNormal * (MaximumNormal + Padding);
+                    Elements.PushClip(FSlateClippingZone(NearStart, NearEnd, NearStart + Extrusion, NearEnd + Extrusion));
+                    ++Count;
+                }
+                return Count;
             };
             const FSlateBrush* Brush = nullptr;
             const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId);
@@ -927,26 +1090,10 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             }
 
             if (!Brush) Brush = FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
-            TArray<FSlateVertex> Vertices;
-            Vertices.Reserve(GeometryResource->Vertices.Num() / 8);
-            for (int32 Offset = 0; Offset < GeometryResource->Vertices.Num(); Offset += 8)
-            {
-                FVector2f Position = FVector2f(GeometryResource->Vertices[Offset], GeometryResource->Vertices[Offset + 1]) + Draw.Translation;
-                if (Draw.bTransform) Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
-                Position /= PixelScale;
-                FColor Color(static_cast<uint8>(GeometryResource->Vertices[Offset + 4]), static_cast<uint8>(GeometryResource->Vertices[Offset + 5]),
-                    static_cast<uint8>(GeometryResource->Vertices[Offset + 6]), static_cast<uint8>(GeometryResource->Vertices[Offset + 7]));
-                if (ResolvedMaterial && !ResolvedMaterial->bUsePremultipliedVertexColor)
-                    Color = UnpremultiplyMaterialVertexColor(Color);
-                Vertices.Add(FSlateVertex::Make(Transform, Position,
-                    FVector2f(GeometryResource->Vertices[Offset + 2], GeometryResource->Vertices[Offset + 3]), Color));
-            }
-            TArray<SlateIndex> Indices;
-            Indices.Reserve(GeometryResource->Indices.Num());
-            for (uint32 Index : GeometryResource->Indices) Indices.Add(static_cast<SlateIndex>(Index));
-            const uint8 MaterialOpacity = NativeMaterial && !Vertices.IsEmpty() ? Vertices[0].Color.A : 255;
-            const bool bUseMaterialOpacityBox = NativeMaterial && ResolvedMaterial && MaterialOpacity < 255 &&
-                CanApplyMaterialOpacityAsBox(Draw, *GeometryResource, *NativeMaterial, *ResolvedMaterial);
+            const uint8 MaterialOpacity = NativeMaterial && GeometryResource->Vertices.Num() >= 8
+                ? static_cast<uint8>(GeometryResource->Vertices[7]) : 255;
+            const bool bUseMaterialOpacityBoxes = NativeMaterial && ResolvedMaterial && MaterialOpacity < 255 &&
+                CanApplyMaterialOpacityAsBoxes(Draw, *GeometryResource, *NativeMaterial, *ResolvedMaterial);
             int32 PushedClipCount = 0;
             if (Draw.bScissor)
             {
@@ -955,9 +1102,6 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             }
             if (NativeMaterial && Draw.bMaterialClipSupported && !Draw.ClipMasks.IsEmpty())
             {
-                const FVector2f CullingCorners[] = {
-                    FVector2f(CullingRect.Left, CullingRect.Top), FVector2f(CullingRect.Right, CullingRect.Top),
-                    FVector2f(CullingRect.Left, CullingRect.Bottom), FVector2f(CullingRect.Right, CullingRect.Bottom)};
                 for (const FNativeMask& Mask : Draw.ClipMasks)
                 {
                     if (Mask.bScissor)
@@ -969,67 +1113,83 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                     if (!MaskGeometry) continue;
                     TArray<FVector2f, TInlineAllocator<32>> Hull;
                     Hull.Reserve(MaskGeometry->ConvexHull.Num());
-                    FVector2f Centroid = FVector2f::ZeroVector;
                     for (FVector2f Point : MaskGeometry->ConvexHull)
                     {
                         Point = ToWindowPosition(Point, Mask.Translation, Mask.bTransform,
                             Mask.Transform, Mask.TransformTranslation);
                         Hull.Add(Point);
-                        Centroid += Point;
                     }
-                    Centroid /= static_cast<float>(Hull.Num());
-                    for (int32 HullIndex = 0; HullIndex < Hull.Num(); ++HullIndex)
-                    {
-                        const FVector2f Start = Hull[HullIndex];
-                        const FVector2f End = Hull[(HullIndex + 1) % Hull.Num()];
-                        const FVector2f Edge = End - Start;
-                        const float EdgeLength = Edge.Size();
-                        if (EdgeLength <= UE_SMALL_NUMBER) continue;
-                        const FVector2f Tangent = Edge / EdgeLength;
-                        FVector2f InwardNormal(-Tangent.Y, Tangent.X);
-                        if (FVector2f::DotProduct(Centroid - (Start + End) * 0.5f, InwardNormal) < 0.0f)
-                            InwardNormal *= -1.0f;
-                        float MinimumTangent = 0.0f;
-                        float MaximumTangent = EdgeLength;
-                        float MaximumNormal = FVector2f::DotProduct(Centroid - Start, InwardNormal);
-                        for (FVector2f Corner : CullingCorners)
-                        {
-                            MinimumTangent = FMath::Min(MinimumTangent, FVector2f::DotProduct(Corner - Start, Tangent));
-                            MaximumTangent = FMath::Max(MaximumTangent, FVector2f::DotProduct(Corner - Start, Tangent));
-                            MaximumNormal = FMath::Max(MaximumNormal, FVector2f::DotProduct(Corner - Start, InwardNormal));
-                        }
-                        constexpr float Padding = 2.0f;
-                        const FVector2f NearStart = Start + Tangent * (MinimumTangent - Padding);
-                        const FVector2f NearEnd = Start + Tangent * (MaximumTangent + Padding);
-                        const FVector2f Extrusion = InwardNormal * (MaximumNormal + Padding);
-                        Elements.PushClip(FSlateClippingZone(NearStart, NearEnd, NearStart + Extrusion, NearEnd + Extrusion));
-                        ++PushedClipCount;
-                    }
+                    PushedClipCount += PushConvexClip(Hull);
                 }
             }
-            if (bUseMaterialOpacityBox)
+            if (bUseMaterialOpacityBoxes)
             {
-                FVector2f Minimum(MAX_flt, MAX_flt);
-                FVector2f Maximum(-MAX_flt, -MAX_flt);
-                for (int32 Offset = 0; Offset < GeometryResource->Vertices.Num(); Offset += 8)
+                const FVector2f Minimum = GeometryResource->MaterialBoundsMinimum;
+                const FVector2f Maximum = GeometryResource->MaterialBoundsMaximum;
+                const FVector2f Size = (Maximum - Minimum) / PixelScale;
+                FPaintGeometry MaterialGeometry = Geometry.ToPaintGeometry(
+                    Size, FSlateLayoutTransform((Minimum + Draw.Translation) / PixelScale));
+                if (Draw.bTransform)
                 {
-                    FVector2f Position(GeometryResource->Vertices[Offset], GeometryResource->Vertices[Offset + 1]);
-                    Position = (Position + Draw.Translation) / PixelScale;
-                    Minimum.X = FMath::Min(Minimum.X, Position.X);
-                    Minimum.Y = FMath::Min(Minimum.Y, Position.Y);
-                    Maximum.X = FMath::Max(Maximum.X, Position.X);
-                    Maximum.Y = FMath::Max(Maximum.Y, Position.Y);
+                    const FVector2f TransformedOrigin =
+                        (Draw.Transform.TransformPoint(Minimum + Draw.Translation) + Draw.TransformTranslation) / PixelScale;
+                    MaterialGeometry = Geometry.ToPaintGeometry(Size, FSlateLayoutTransform(),
+                        FSlateRenderTransform(Draw.Transform, TransformedOrigin), FVector2f::ZeroVector);
                 }
                 const float Opacity = MaterialOpacity / 255.0f;
                 const FLinearColor Tint = ResolvedMaterial->bUsePremultipliedVertexColor
                     ? FLinearColor(Opacity, Opacity, Opacity, Opacity)
                     : FLinearColor(1.0f, 1.0f, 1.0f, Opacity);
-                FSlateDrawElement::MakeBox(Elements, LayerId++,
-                    Geometry.ToPaintGeometry(Maximum - Minimum, FSlateLayoutTransform(Minimum)),
-                    Brush, ESlateDrawEffect::None, Tint);
+                if (GeometryResource->bMaterialOpacityFullBox)
+                {
+                    FSlateDrawElement::MakeBox(Elements, LayerId, MaterialGeometry, Brush, ESlateDrawEffect::None, Tint);
+                    ++SlateMaterialOpacitySectionDrawCount;
+                }
+                else
+                {
+                    for (const FMaterialOpacitySection& Section : GeometryResource->MaterialOpacitySections)
+                    {
+                        TArray<FVector2f, TInlineAllocator<16>> WindowHull;
+                        WindowHull.Reserve(Section.ConvexHull.Num());
+                        for (FVector2f Point : Section.ConvexHull)
+                            WindowHull.Add(ToWindowPosition(Point, Draw.Translation, Draw.bTransform,
+                                Draw.Transform, Draw.TransformTranslation));
+                        const int32 SectionClipCount = PushConvexClip(WindowHull);
+                        if (SectionClipCount > 0)
+                        {
+                            FSlateDrawElement::MakeBox(Elements, LayerId, MaterialGeometry, Brush,
+                                ESlateDrawEffect::None, Tint);
+                            ++SlateMaterialOpacitySectionDrawCount;
+                        }
+                        for (int32 Index = 0; Index < SectionClipCount; ++Index) Elements.PopClip();
+                    }
+                }
+                ++LayerId;
             }
             else
             {
+                TArray<FSlateVertex> Vertices;
+                Vertices.Reserve(GeometryResource->Vertices.Num() / 8);
+                for (int32 Offset = 0; Offset < GeometryResource->Vertices.Num(); Offset += 8)
+                {
+                    FVector2f Position = FVector2f(GeometryResource->Vertices[Offset],
+                        GeometryResource->Vertices[Offset + 1]) + Draw.Translation;
+                    if (Draw.bTransform)
+                        Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
+                    Position /= PixelScale;
+                    FColor Color(static_cast<uint8>(GeometryResource->Vertices[Offset + 4]),
+                        static_cast<uint8>(GeometryResource->Vertices[Offset + 5]),
+                        static_cast<uint8>(GeometryResource->Vertices[Offset + 6]),
+                        static_cast<uint8>(GeometryResource->Vertices[Offset + 7]));
+                    if (ResolvedMaterial && !ResolvedMaterial->bUsePremultipliedVertexColor)
+                        Color = UnpremultiplyMaterialVertexColor(Color);
+                    Vertices.Add(FSlateVertex::Make(Transform, Position,
+                        FVector2f(GeometryResource->Vertices[Offset + 2],
+                            GeometryResource->Vertices[Offset + 3]), Color));
+                }
+                TArray<SlateIndex> Indices;
+                Indices.Reserve(GeometryResource->Indices.Num());
+                for (uint32 Index : GeometryResource->Indices) Indices.Add(static_cast<SlateIndex>(Index));
                 FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
                     FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
                     nullptr, 0, 0, ESlateDrawEffect::None, ESlateBatchDrawFlag::PreMultipliedAlpha);
