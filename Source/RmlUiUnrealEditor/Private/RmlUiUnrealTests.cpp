@@ -12,9 +12,11 @@
 #include "ImageUtils.h"
 #include "Interfaces/IPluginManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RenderingThread.h"
+#include "UObject/UObjectGlobals.h"
 #include "Widgets/SWindow.h"
 
 namespace RmlUiTests
@@ -56,6 +58,15 @@ static void Click(RmlUE_View* View, const RmlUE_Rect& Rect)
     RmlUE_MouseMove(View, int(Rect.X + Rect.Width * 0.5f), int(Rect.Y + Rect.Height * 0.5f), 0);
     RmlUE_MouseButton(View, 0, 1, 0);
     RmlUE_MouseButton(View, 0, 0, 0);
+}
+
+static TWeakObjectPtr<UObject> FindOwnedObject(uint64 OwnerId, ERmlUiResourceType Type)
+{
+    for (const FRmlUiResourceInfo& Info : FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true))
+    {
+        if (Info.Type == Type) return Info.Object;
+    }
+    return nullptr;
 }
 }
 
@@ -268,6 +279,107 @@ body { width: 100%; height: 100%; margin: 0; background-color: #285f9f; }
     FlushRenderingCommands();
     TestTrue(TEXT("Releasing the final widget removes its complete resource tree"),
         Registry.SnapshotOwnedBy(SecondOwnerId, true).IsEmpty());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiMultiWidgetResourceStressTest, "RmlUiUnreal.Resources.MultiWidgetStress",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiMultiWidgetResourceStressTest::RunTest(const FString&)
+{
+    FModuleManager::LoadModuleChecked<FRmlUiUnrealModule>(TEXT("RmlUiUnreal"));
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    UMaterialInterface* UiMaterial = UMaterial::GetDefaultMaterial(MD_UI);
+    if (!TestNotNull(TEXT("Default UI material is available for resource stress"), UiMaterial)) return false;
+
+    constexpr int32 CyclesPerScale = 4;
+    constexpr int32 ExpectedWidgetCount = (1 + 4 + 8) * CyclesPerScale;
+    int32 CreatedWidgetCount = 0;
+    int32 PeakOwnedResourceCount = 0;
+    for (const int32 WidgetCount : { 1, 4, 8 })
+    {
+        for (int32 Cycle = 0; Cycle < CyclesPerScale; ++Cycle)
+        {
+            TArray<TSharedPtr<SRmlUiWidget>> Widgets;
+            TArray<uint64> OwnerIds;
+            TArray<TWeakObjectPtr<UObject>> ReplacedMaterials;
+            TArray<TWeakObjectPtr<UObject>> ActiveMaterials;
+            TSet<uint64> UniqueOwners;
+            Widgets.Reserve(WidgetCount);
+            OwnerIds.Reserve(WidgetCount);
+
+            for (int32 Index = 0; Index < WidgetCount; ++Index)
+            {
+                const FString InitialDocument = FString::Printf(TEXT(R"RML(<rml><head><style>
+body { width: 100%%; height: 100%%; margin: 0; background-color: #%02x3040; }
+#panel { display: block; width: 72px; height: 48px; decorator: ue-material(stress.panel); }
+</style></head><body><div id="panel" data-state="initial-%d-%d"></div></body></rml>)RML"),
+                    32 + Index, Cycle, Index);
+                TSharedPtr<SRmlUiWidget> Widget = SNew(SRmlUiWidget).UseSlateRenderer(true)
+                    .InlineDocument(InitialDocument)
+                    .SourcePath(FString::Printf(TEXT("/stress/%d/%d/initial.rml"), WidgetCount, Cycle))
+                    .DesiredSize(FVector2D(128, 80));
+
+                UMaterialInstanceDynamic* InitialMaterial = UMaterialInstanceDynamic::Create(UiMaterial, GetTransientPackage());
+                TestNotNull(TEXT("Create initial stress MID"), InitialMaterial);
+                TestTrue(TEXT("Register initial stress material"),
+                    InitialMaterial && Widget->RegisterMaterial(TEXT("stress.panel"), InitialMaterial));
+                TestTrue(TEXT("Render initial stress document"), Widget->RenderFrame(128, 80));
+
+                const uint64 OwnerId = RmlUE_GetViewResourceId(Widget->GetNativeView());
+                TestTrue(TEXT("Stress Widget has a stable View owner"), OwnerId != 0 && !UniqueOwners.Contains(OwnerId));
+                UniqueOwners.Add(OwnerId);
+                OwnerIds.Add(OwnerId);
+
+                UMaterialInstanceDynamic* ReplacementMaterial = UMaterialInstanceDynamic::Create(UiMaterial, GetTransientPackage());
+                TestNotNull(TEXT("Create replacement stress MID"), ReplacementMaterial);
+                ReplacedMaterials.Add(RmlUiTests::FindOwnedObject(OwnerId, ERmlUiResourceType::SlateMaterialBrush));
+                TestTrue(TEXT("Replace stress material under the same alias"),
+                    ReplacementMaterial && Widget->RegisterMaterial(TEXT("stress.panel"), ReplacementMaterial));
+
+                const FString ReloadedDocument = FString::Printf(TEXT(R"RML(<rml><head><style>
+body { width: 100%%; height: 100%%; margin: 0; background-color: #2030%02x; }
+#panel { display: block; width: 76px; height: 52px; decorator: ue-material(stress.panel); }
+</style></head><body><div id="panel" data-state="reloaded-%d-%d"></div></body></rml>)RML"),
+                    48 + Index, Cycle, Index);
+                TestTrue(TEXT("Reload stress document"), Widget->LoadDocumentFromString(ReloadedDocument,
+                    FString::Printf(TEXT("/stress/%d/%d/reloaded.rml"), WidgetCount, Cycle)));
+                TestTrue(TEXT("Render reloaded stress document"), Widget->RenderFrame(128, 80));
+                ActiveMaterials.Add(RmlUiTests::FindOwnedObject(OwnerId, ERmlUiResourceType::SlateMaterialBrush));
+                Widgets.Add(MoveTemp(Widget));
+                ++CreatedWidgetCount;
+            }
+
+            FlushRenderingCommands();
+            CollectGarbage(RF_NoFlags, true);
+            for (int32 Index = 0; Index < WidgetCount; ++Index)
+            {
+                const TArray<FRmlUiResourceInfo> OwnedResources = Registry.SnapshotOwnedBy(OwnerIds[Index], true);
+                PeakOwnedResourceCount = FMath::Max(PeakOwnedResourceCount, OwnedResources.Num());
+                TestTrue(TEXT("Every active stress Widget owns render resources"), !OwnedResources.IsEmpty());
+                TestTrue(TEXT("Active stress material survives GC through the Slate brush"), ActiveMaterials[Index].IsValid());
+                TestFalse(TEXT("Replaced stress material is collectable"), ReplacedMaterials[Index].IsValid());
+            }
+
+            for (int32 Index = WidgetCount - 1; Index >= 0; --Index)
+            {
+                if ((Index & 1) == 0) Widgets[Index]->ShutdownNative();
+                Widgets[Index].Reset();
+            }
+            Widgets.Reset();
+            FlushRenderingCommands();
+            CollectGarbage(RF_NoFlags, true);
+            for (int32 Index = 0; Index < WidgetCount; ++Index)
+            {
+                TestTrue(TEXT("Released stress Widget leaves no owned Registry records"),
+                    Registry.SnapshotOwnedBy(OwnerIds[Index], true).IsEmpty());
+                TestFalse(TEXT("Released stress material is collectable"), ActiveMaterials[Index].IsValid());
+            }
+        }
+    }
+
+    TestEqual(TEXT("Stress test exercised all 1/4/8 Widget cycles"), CreatedWidgetCount, ExpectedWidgetCount);
+    TestTrue(TEXT("Stress test observed nonempty per-Widget resource trees"), PeakOwnedResourceCount > 0);
     return true;
 }
 
