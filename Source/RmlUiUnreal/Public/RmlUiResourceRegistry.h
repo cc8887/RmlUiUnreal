@@ -38,7 +38,8 @@ enum class ERmlUiResourceType : int32
     SlateMaterialBrush = 101,
     SlateGeometryCache = 102,
     SlateVertexBuffer = 103,
-    SlateIndexBuffer = 104
+    SlateIndexBuffer = 104,
+    MaterialParameterTexture = 105
 };
 
 enum class ERmlUiResourceBackend : int32
@@ -72,6 +73,7 @@ public:
         uint64 EstimatedBytes, FString Name, UObject* Object = nullptr,
         ERmlUiResourceState State = ERmlUiResourceState::Live);
     void UpdateUnreal(uint64 Id, uint64 EstimatedBytes);
+    bool UpdateUnrealObject(uint64 Id, uint64 EstimatedBytes, UObject* Object);
     bool ReparentUnreal(uint64 Id, uint64 OwnerId);
     void SetUnrealState(uint64 Id, ERmlUiResourceState State);
     void UnregisterUnreal(uint64 Id);

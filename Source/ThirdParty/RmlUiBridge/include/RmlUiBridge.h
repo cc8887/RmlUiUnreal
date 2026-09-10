@@ -167,6 +167,7 @@ typedef struct RmlUE_SlateFrame {
 #define RMLUE_UNSUPPORTED_LAYER (1u << 2)
 #define RMLUE_UNSUPPORTED_FILTER (1u << 3)
 #define RMLUE_UNSUPPORTED_SHADER (1u << 4)
+#define RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY (1u << 5)
 #define RMLUE_SLATE_ABI_VERSION 5u
 
 typedef struct RmlUE_Event {

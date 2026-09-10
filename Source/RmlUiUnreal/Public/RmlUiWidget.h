@@ -118,4 +118,5 @@ private:
     TSharedPtr<SRmlUiWidget> MyRmlWidget;
     UPROPERTY(Transient)
     TMap<FName, TObjectPtr<UMaterialInstanceDynamic>> MaterialInstances;
+    TMap<FName, TMap<FName, TWeakObjectPtr<UTexture>>> MaterialTextureBindings;
 };

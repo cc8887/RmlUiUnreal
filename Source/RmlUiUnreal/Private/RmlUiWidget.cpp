@@ -1,6 +1,7 @@
 #include "RmlUiWidget.h"
 
 #include "SRmlUiWidget.h"
+#include "Engine/Texture.h"
 #include "MaterialDomain.h"
 #include "RmlUiBridge.h"
 #include "RmlUiUnrealModule.h"
@@ -37,7 +38,14 @@ void URmlUiWidget::SynchronizeProperties()
         MyRmlWidget->SetDesiredSize(DesiredSize);
         MyRmlWidget->SetMaxTextureDimension(MaxTextureDimension);
         MyRmlWidget->SetUseSlateRenderer(bUseSlateRenderer);
-        for (const auto& Pair : MaterialInstances) MyRmlWidget->RegisterMaterial(Pair.Key, Pair.Value);
+        for (const auto& Pair : MaterialInstances)
+        {
+            MyRmlWidget->RegisterMaterial(Pair.Key, Pair.Value);
+            if (const TMap<FName, TWeakObjectPtr<UTexture>>* Bindings = MaterialTextureBindings.Find(Pair.Key))
+                for (const auto& Binding : *Bindings)
+                    if (UTexture* Texture = Binding.Value.Get())
+                        MyRmlWidget->TrackMaterialTexture(Pair.Key, Binding.Key, Texture);
+        }
         MyRmlWidget->SetBaseStyleSheet(GetBaseStyleSheet());
         if (InlineDocument.IsEmpty()) MyRmlWidget->LoadDocument(DocumentPath);
         else
@@ -140,6 +148,7 @@ bool URmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
     UMaterialInstanceDynamic* Instance = UMaterialInstanceDynamic::Create(Material, this);
     if (!Instance) return false;
     MaterialInstances.Add(Alias, Instance);
+    MaterialTextureBindings.Remove(Alias);
     TakeWidget();
     return MyRmlWidget.IsValid() && MyRmlWidget->RegisterMaterial(Alias, Instance);
 }
@@ -147,6 +156,7 @@ bool URmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
 void URmlUiWidget::UnregisterMaterial(FName Alias)
 {
     MaterialInstances.Remove(Alias);
+    MaterialTextureBindings.Remove(Alias);
     if (MyRmlWidget) MyRmlWidget->UnregisterMaterial(Alias);
 }
 
@@ -155,6 +165,7 @@ bool URmlUiWidget::SetMaterialScalar(FName Alias, FName Parameter, float Value)
     if (TObjectPtr<UMaterialInstanceDynamic>* Instance = MaterialInstances.Find(Alias))
     {
         (*Instance)->SetScalarParameterValue(Parameter, Value);
+        if (MyRmlWidget) MyRmlWidget->Invalidate(EInvalidateWidgetReason::Paint);
         return true;
     }
     return false;
@@ -165,6 +176,7 @@ bool URmlUiWidget::SetMaterialVector(FName Alias, FName Parameter, FLinearColor 
     if (TObjectPtr<UMaterialInstanceDynamic>* Instance = MaterialInstances.Find(Alias))
     {
         (*Instance)->SetVectorParameterValue(Parameter, Value);
+        if (MyRmlWidget) MyRmlWidget->Invalidate(EInvalidateWidgetReason::Paint);
         return true;
     }
     return false;
@@ -175,6 +187,13 @@ bool URmlUiWidget::SetMaterialTexture(FName Alias, FName Parameter, UTexture* Va
     if (TObjectPtr<UMaterialInstanceDynamic>* Instance = MaterialInstances.Find(Alias))
     {
         (*Instance)->SetTextureParameterValue(Parameter, Value);
+        if (Value) MaterialTextureBindings.FindOrAdd(Alias).Add(Parameter, Value);
+        else if (TMap<FName, TWeakObjectPtr<UTexture>>* Bindings = MaterialTextureBindings.Find(Alias))
+        {
+            Bindings->Remove(Parameter);
+            if (Bindings->IsEmpty()) MaterialTextureBindings.Remove(Alias);
+        }
+        if (MyRmlWidget) MyRmlWidget->TrackMaterialTexture(Alias, Parameter, Value);
         return true;
     }
     return false;

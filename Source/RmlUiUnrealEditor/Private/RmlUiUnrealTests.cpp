@@ -13,6 +13,7 @@
 #include "ImageUtils.h"
 #include "Interfaces/IPluginManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/FileHelper.h"
@@ -132,6 +133,42 @@ static UMaterial* CreateParameterizedUiMaterial()
     Material->PostEditChange();
     return Material;
 }
+
+static UTexture2D* CreateSolidSrgbTexture(FColor Color, FName Name)
+{
+    constexpr int32 Width = 4;
+    constexpr int32 Height = 4;
+    TArray64<FColor> Pixels;
+    Pixels.Init(Color, Width * Height);
+    UTexture2D* Texture = UTexture2D::CreateTransient(Width, Height, PF_B8G8R8A8, Name,
+        TConstArrayView64<uint8>(reinterpret_cast<const uint8*>(Pixels.GetData()), Pixels.Num() * sizeof(FColor)));
+    if (!Texture) return nullptr;
+    Texture->SRGB = true;
+    Texture->NeverStream = true;
+    Texture->Filter = TF_Nearest;
+    Texture->UpdateResource();
+    return Texture;
+}
+
+static UMaterial* CreateTextureUiMaterial(UTexture* DefaultTexture, EBlendMode BlendMode = BLEND_Translucent)
+{
+    if (!DefaultTexture) return nullptr;
+    UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+    Material->MaterialDomain = MD_UI;
+    Material->BlendMode = BlendMode;
+    UMaterialExpressionTextureSampleParameter2D* Texture =
+        NewObject<UMaterialExpressionTextureSampleParameter2D>(Material);
+    Texture->ParameterName = TEXT("UiTexture");
+    Texture->Texture = DefaultTexture;
+    Texture->SamplerType = SAMPLERTYPE_Color;
+    Material->GetExpressionCollection().AddExpression(Texture);
+    UMaterialEditorOnlyData* EditorOnly = Material->GetEditorOnlyData();
+    EditorOnly->EmissiveColor.Expression = Texture;
+    EditorOnly->Opacity.UseConstant = true;
+    EditorOnly->Opacity.Constant = 1.0f;
+    Material->PostEditChange();
+    return Material;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiResourceRegistryTest, "RmlUiUnreal.Resources.Registry",
@@ -185,6 +222,16 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     const FRmlUiResourceInfo* UpdatedInfo = Updated.FindByPredicate(
         [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; });
     TestTrue(TEXT("Resource estimate can be updated"), UpdatedInfo && UpdatedInfo->EstimatedBytes == 8192);
+    UTexture2D* ReplacementObject = UTexture2D::CreateTransient(2, 2, PF_B8G8R8A8);
+    TestNotNull(TEXT("Registry replacement UObject"), ReplacementObject);
+    TestTrue(TEXT("Resource UObject can be replaced without changing its stable ID"),
+        ReplacementObject && Registry.UpdateUnrealObject(UnrealId, 16384, ReplacementObject));
+    const TArray<FRmlUiResourceInfo> ReplacedObjectSnapshot = Registry.Snapshot();
+    const FRmlUiResourceInfo* ReplacedObjectInfo = ReplacedObjectSnapshot.FindByPredicate(
+        [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; });
+    TestTrue(TEXT("Resource replacement updates the weak object and byte estimate in place"),
+        ReplacedObjectInfo && ReplacedObjectInfo->Object.Get() == ReplacementObject &&
+        ReplacedObjectInfo->EstimatedBytes == 16384);
     TestTrue(TEXT("Unreal resource can be reparented without replacing its stable ID"),
         Registry.ReparentUnreal(UnrealId, 88));
     TestTrue(TEXT("Reparent removes the resource tree from its previous owner"),
@@ -920,6 +967,221 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateSdrColorTest, "RmlUiUnreal.Slate.Sdr
 bool FRmlUiSlateSdrColorTest::RunTest(const FString&)
 {
     AddCommand(new FRmlUiSlateSdrColorCapture(this));
+    return true;
+}
+
+class FRmlUiSlateMaterialOpacityTextureCapture final : public IAutomationLatentCommand
+{
+public:
+    explicit FRmlUiSlateMaterialOpacityTextureCapture(FAutomationTestBase* InTest) : Test(InTest) {}
+
+    virtual bool Update() override
+    {
+        if (!Window.IsValid())
+        {
+            DefaultTexture.Reset(RmlUiTests::CreateSolidSrgbTexture(FColor(12, 18, 24), TEXT("RmlUiMaterialDefault")));
+            TextureA.Reset(RmlUiTests::CreateSolidSrgbTexture(TextureAColor, TEXT("RmlUiMaterialTextureA")));
+            TextureB.Reset(RmlUiTests::CreateSolidSrgbTexture(TextureBColor, TEXT("RmlUiMaterialTextureB")));
+            Test->TestNotNull(TEXT("Create default material texture"), DefaultTexture.Get());
+            Test->TestNotNull(TEXT("Create first dynamic material texture"), TextureA.Get());
+            Test->TestNotNull(TEXT("Create replacement dynamic material texture"), TextureB.Get());
+            if (!DefaultTexture.IsValid() || !TextureA.IsValid() || !TextureB.IsValid()) return true;
+
+            DynamicMaterial.Reset(RmlUiTests::CreateTextureUiMaterial(DefaultTexture.Get(), BLEND_Translucent));
+            OpaqueMaterial.Reset(RmlUiTests::CreateTextureUiMaterial(DefaultTexture.Get(), BLEND_Opaque));
+            Test->TestNotNull(TEXT("Create texture-parameter UI material"), DynamicMaterial.Get());
+            Test->TestNotNull(TEXT("Create opaque UI material boundary fixture"), OpaqueMaterial.Get());
+            if (!DynamicMaterial.IsValid() || !OpaqueMaterial.IsValid()) return true;
+
+            const FString Document = TEXT(R"RML(
+<rml><head><style>
+html, body { display: block; width: 640px; height: 320px; margin: 0; background-color: #102030; }
+.panel { display: block; width: 128px; height: 96px; decorator: ue-material(texture.dynamic); }
+#full { position: absolute; left: 24px; top: 24px; }
+#faded-parent { display: block; position: absolute; left: 200px; top: 24px; width: 128px; height: 96px; opacity: 0.5; }
+#opaque-parent { display: block; position: absolute; left: 376px; top: 24px; width: 128px; height: 96px; opacity: 0.5; }
+#opaque { display: block; width: 128px; height: 96px; decorator: ue-material(texture.opaque); }
+</style></head><body><div id="full" class="panel"></div><div id="faded-parent"><div id="faded" class="panel"></div></div><div id="opaque-parent"><div id="opaque"></div></div></body></rml>
+)RML");
+
+            Widget.Reset(NewObject<URmlUiWidget>());
+            Widget->DesiredSize = FVector2D(640, 320);
+            Widget->bUseSlateRenderer = true;
+            Widget->InlineSourcePath = TEXT("F://RmlUiTests/slate-material-opacity-texture.rml");
+            Widget->InlineDocument = Document;
+            Test->TestTrue(TEXT("Register dynamic texture material alias"),
+                Widget->RegisterMaterial(TEXT("texture.dynamic"), DynamicMaterial.Get()));
+            Test->TestTrue(TEXT("Register opaque boundary material alias"),
+                Widget->RegisterMaterial(TEXT("texture.opaque"), OpaqueMaterial.Get()));
+            Test->TestTrue(TEXT("Set first MID texture parameter"),
+                Widget->SetMaterialTexture(TEXT("texture.dynamic"), TEXT("UiTexture"), TextureA.Get()));
+
+            SlateRoot = Widget->TakeWidget();
+            const TSharedPtr<SRmlUiWidget> SlateWidget = Widget->GetSlateRmlWidget();
+            Test->TestTrue(TEXT("Create native Slate widget for material texture fixture"), SlateWidget.IsValid());
+            if (!SlateWidget.IsValid()) return true;
+            OwnerId = RmlUE_GetViewResourceId(SlateWidget->GetNativeView());
+            Test->AddExpectedMessagePlain(TEXT("cannot reproduce RmlUi feature mask 0x20"), ELogVerbosity::Warning);
+            Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi material opacity and texture")))
+                .ClientSize(FVector2D(640, 320)).UseOSWindowBorder(false).CreateTitleBar(false)
+                .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
+                .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[SlateRoot.ToSharedRef()];
+            FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+            Started = FPlatformTime::Seconds();
+            return false;
+        }
+
+        if (FPlatformTime::Seconds() - Started < (Stage == 0 ? 2.0 : 1.0)) return false;
+        const TSharedPtr<SRmlUiWidget> SlateWidget = Widget->GetSlateRmlWidget();
+        if (!Test->TestTrue(TEXT("Material texture fixture keeps its Slate widget"), SlateWidget.IsValid())) return true;
+        FlushRenderingCommands();
+
+        Test->TestTrue(TEXT("Material texture fixture rendered without document errors"),
+            SlateWidget->GetFrameNumber() > 0 && SlateWidget->GetLastError().IsEmpty());
+        Test->TestTrue(TEXT("Material texture fixture resolves background material slots"),
+            SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) >= 3);
+        Test->TestTrue(TEXT("Opaque material opacity loss is reported through the feature mask"),
+            (SlateWidget->GetUnsupportedSlateFeatures() & RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY) != 0);
+        Test->TestEqual(TEXT("Fixture raises no unrelated unsupported feature bits"),
+            SlateWidget->GetUnsupportedSlateFeatures(), uint32(RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY));
+
+        const TArray<FRmlUiResourceInfo> OwnedResources =
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true);
+        const FRmlUiResourceInfo* TextureResource = OwnedResources.FindByPredicate(
+            [](const FRmlUiResourceInfo& Info)
+            {
+                return Info.Type == ERmlUiResourceType::MaterialParameterTexture;
+            });
+        Test->TestNotNull(TEXT("Dynamic MID texture is tracked as an owned resource"), TextureResource);
+        if (TextureResource)
+        {
+            const FRmlUiResourceInfo* MaterialResource = OwnedResources.FindByPredicate(
+                [TextureResource](const FRmlUiResourceInfo& Info)
+                {
+                    return Info.Id == TextureResource->OwnerId && Info.Type == ERmlUiResourceType::SlateMaterialBrush;
+                });
+            Test->TestNotNull(TEXT("Dynamic texture record is parented to its material brush"), MaterialResource);
+            Test->TestTrue(TEXT("Dynamic texture record exposes a resident-memory estimate"),
+                TextureResource->EstimatedBytes > 0);
+            if (Stage == 0)
+            {
+                TextureRegistryId = TextureResource->Id;
+                Test->TestTrue(TEXT("Initial texture record points to the first parameter value"),
+                    TextureResource->Object.Get() == TextureA.Get());
+            }
+            else
+            {
+                Test->TestEqual(TEXT("Texture replacement preserves the Registry stable ID"),
+                    TextureResource->Id, TextureRegistryId);
+                Test->TestTrue(TEXT("Texture record points to the replacement parameter value"),
+                    TextureResource->Object.Get() == TextureB.Get());
+            }
+        }
+
+        TArray<FColor> Pixels;
+        FIntVector Size = FIntVector::ZeroValue;
+        const bool bCaptured = FSlateApplication::Get().TakeScreenshot(SlateRoot.ToSharedRef(), Pixels, Size);
+        Test->TestTrue(TEXT("Capture material opacity and texture output"),
+            bCaptured && Size.X == 640 && Size.Y == 320 && Pixels.Num() == Size.X * Size.Y);
+        if (bCaptured && Pixels.Num() == Size.X * Size.Y)
+        {
+            const auto PixelAt = [&](int32 X, int32 Y) { return Pixels[Y * Size.X + X]; };
+            const FColor ActiveColor = Stage == 0 ? TextureAColor : TextureBColor;
+            const uint8 ActiveAlpha = Stage == 0 ? 128 : 64;
+            Test->TestTrue(TEXT("MID texture parameter reaches the full-opacity material panel"),
+                RmlUiTests::NearRgb(PixelAt(72, 64), ActiveColor, 12));
+            Test->TestTrue(TEXT("Inherited CSS opacity modulates a translucent UE UI material"),
+                RmlUiTests::NearRgb(PixelAt(248, 64),
+                    RmlUiTests::CompositeEncodedPremultiplied(
+                        FColor(ActiveColor.R, ActiveColor.G, ActiveColor.B, ActiveAlpha), BackgroundColor), 12));
+            Test->TestTrue(TEXT("Opaque material keeps its color while opacity loss is diagnosed"),
+                RmlUiTests::NearRgb(PixelAt(424, 64), DefaultTextureColor, 12));
+
+            TArray64<uint8> Png;
+            FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
+                TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+            Test->TestTrue(TEXT("Save material opacity and texture screenshot"), FFileHelper::SaveArrayToFile(Png,
+                *RmlUiTests::ArtifactPath(Stage == 0 ? TEXT("slate-material-opacity-texture-a.png") :
+                    TEXT("slate-material-opacity-texture-b.png"))));
+        }
+
+        if (Stage == 0)
+        {
+            OldTexture = TextureA.Get();
+            Test->TestTrue(TEXT("Replace MID texture parameter"),
+                Widget->SetMaterialTexture(TEXT("texture.dynamic"), TEXT("UiTexture"), TextureB.Get()));
+            Test->TestTrue(TEXT("Update inherited parent opacity through the DOM"),
+                SlateWidget->SetElementProperty(TEXT("faded-parent"), TEXT("opacity"), TEXT("0.25")));
+            TextureA.Reset();
+            Stage = 1;
+            Started = FPlatformTime::Seconds();
+            return false;
+        }
+
+        CollectGarbage(RF_NoFlags, true);
+        Test->TestFalse(TEXT("Replaced MID texture is collectable after render commands drain"), OldTexture.IsValid());
+        Test->TestFalse(TEXT("No Registry record retains the replaced texture"),
+            FRmlUiResourceRegistry::Get().Snapshot().ContainsByPredicate(
+                [this](const FRmlUiResourceInfo& Info)
+                {
+                    return Info.Object.HasSameIndexAndSerialNumber(OldTexture);
+                }));
+        Test->TestTrue(TEXT("Clear MID texture parameter"),
+            Widget->SetMaterialTexture(TEXT("texture.dynamic"), TEXT("UiTexture"), nullptr));
+        Test->TestFalse(TEXT("Clearing a MID texture removes its owned Registry record"),
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true).ContainsByPredicate(
+                [](const FRmlUiResourceInfo& Info)
+                {
+                    return Info.Type == ERmlUiResourceType::MaterialParameterTexture;
+                }));
+
+        Widget->UnregisterMaterial(TEXT("texture.dynamic"));
+        Widget->UnregisterMaterial(TEXT("texture.opaque"));
+        SlateWidget->ShutdownNative();
+        FlushRenderingCommands();
+        Test->TestTrue(TEXT("Material texture fixture releases its complete resource tree"),
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true).IsEmpty());
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        SlateRoot.Reset();
+        Window.Reset();
+        Widget.Reset();
+        DynamicMaterial.Reset();
+        OpaqueMaterial.Reset();
+        DefaultTexture.Reset();
+        TextureB.Reset();
+        CollectGarbage(RF_NoFlags, true);
+        return true;
+    }
+
+private:
+    FAutomationTestBase* Test = nullptr;
+    TStrongObjectPtr<URmlUiWidget> Widget;
+    TStrongObjectPtr<UMaterial> DynamicMaterial;
+    TStrongObjectPtr<UMaterial> OpaqueMaterial;
+    TStrongObjectPtr<UTexture2D> DefaultTexture;
+    TStrongObjectPtr<UTexture2D> TextureA;
+    TStrongObjectPtr<UTexture2D> TextureB;
+    TWeakObjectPtr<UTexture2D> OldTexture;
+    TSharedPtr<SWidget> SlateRoot;
+    TSharedPtr<SWindow> Window;
+    uint64 OwnerId = 0;
+    uint64 TextureRegistryId = 0;
+    double Started = 0;
+    int32 Stage = 0;
+    const FColor BackgroundColor = FColor(16, 32, 48);
+    const FColor DefaultTextureColor = FColor(12, 18, 24);
+    const FColor TextureAColor = FColor(210, 60, 90);
+    const FColor TextureBColor = FColor(40, 190, 120);
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateMaterialOpacityTextureTest,
+    "RmlUiUnreal.Slate.MaterialOpacityAndDynamicTexture",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiSlateMaterialOpacityTextureTest::RunTest(const FString&)
+{
+    AddCommand(new FRmlUiSlateMaterialOpacityTextureCapture(this));
     return true;
 }
 

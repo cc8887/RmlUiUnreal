@@ -301,7 +301,7 @@ body { margin: 0; }
     auto* MaskedMaterialView = RmlUE_CreateSlateView(64, 64, 1);
     const char* MaskedMaterialMarkup = R"(<rml><head><style>
 body { margin: 0; }
-#clip { display: block; width: 40px; height: 32px; overflow: hidden; border-radius: 8px; }
+#clip { display: block; width: 40px; height: 32px; overflow: hidden; border-radius: 8px; opacity: 0.5; }
 #material { display: block; width: 52px; height: 32px; decorator: ue-material(masked.panel); }
 </style></head><body><div id="clip"><div id="material"></div></div></body></rml>)";
     Require(MaskedMaterialView != nullptr &&
@@ -313,9 +313,16 @@ body { margin: 0; }
         "Slate command ABI transports material clip masks for host capability validation");
     bool FoundMaskedMaterialDraw = false;
     for (uint32_t Index = 0; Index < MaskedMaterialFrame.DrawCount; ++Index)
-        FoundMaskedMaterialDraw |= MaskedMaterialFrame.Draws[Index].Texture != 0 &&
-            MaskedMaterialFrame.Draws[Index].ClipMaskCount > 0;
-    Require(FoundMaskedMaterialDraw, "Slate material draw retains its non-rectangular clip-mask snapshot");
+    {
+        const RmlUE_SlateDraw& Draw = MaskedMaterialFrame.Draws[Index];
+        if (Draw.Texture == 0 || Draw.ClipMaskCount == 0) continue;
+        const RmlUE_SlateGeometryDelta* Geometry = FindCreatedGeometry(MaskedMaterialFrame, Draw.GeometryId);
+        FoundMaskedMaterialDraw |= Geometry && Geometry->VertexCount > 0 &&
+            Geometry->Vertices[0].A >= 126 && Geometry->Vertices[0].A <= 128 &&
+            Geometry->Vertices[0].R == Geometry->Vertices[0].A;
+    }
+    Require(FoundMaskedMaterialDraw,
+        "Slate material draw retains its clip-mask snapshot and inherited premultiplied opacity");
     RmlUE_DestroyView(MaskedMaterialView);
 
     auto* Transform3DView = RmlUE_CreateSlateView(64, 64, 1);

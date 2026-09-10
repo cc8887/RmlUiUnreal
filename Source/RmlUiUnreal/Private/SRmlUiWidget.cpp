@@ -37,6 +37,16 @@ int GetMouseButton(const FKey& Key)
     return -1;
 }
 
+FColor UnpremultiplyMaterialVertexColor(FColor Color)
+{
+    if (Color.A == 0) return FColor(255, 255, 255, 0);
+    const auto Channel = [Alpha = int32(Color.A)](uint8 Value)
+    {
+        return static_cast<uint8>(FMath::Min((int32(Value) * 255 + Alpha / 2) / Alpha, 255));
+    };
+    return FColor(Channel(Color.R), Channel(Color.G), Channel(Color.B), Color.A);
+}
+
 int GetVirtualKey(const FKeyEvent& Event)
 {
     if (Event.GetKeyCode()) return static_cast<int>(Event.GetKeyCode());
@@ -212,7 +222,12 @@ void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
     NativeTextures.Reset();
     if (bIncludeMaterials)
     {
-        for (const auto& Pair : Materials) Registry.UnregisterUnreal(Pair.Value.RegistryId);
+        for (const auto& Pair : Materials)
+        {
+            for (const auto& TextureParameter : Pair.Value.TextureParameterRegistryIds)
+                Registry.UnregisterUnreal(TextureParameter.Value);
+            Registry.UnregisterUnreal(Pair.Value.RegistryId);
+        }
         Materials.Reset();
     }
 }
@@ -376,13 +391,22 @@ bool SRmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
 {
     if (Alias.IsNone() || !Material) return false;
     FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
-    if (const FMaterialResource* Existing = Materials.Find(Alias)) Registry.UnregisterUnreal(Existing->RegistryId);
+    if (const FMaterialResource* Existing = Materials.Find(Alias))
+    {
+        for (const auto& TextureParameter : Existing->TextureParameterRegistryIds)
+            Registry.UnregisterUnreal(TextureParameter.Value);
+        Registry.UnregisterUnreal(Existing->RegistryId);
+    }
     const FSlateMaterialBrush MaterialBrush(*Material, FVector2D(1.0, 1.0));
     FMaterialResource Resource;
     Resource.Brush = FDeferredCleanupSlateBrush::CreateBrush(MaterialBrush);
     Resource.RegistryId = Registry.RegisterUnreal(ERmlUiResourceType::SlateMaterialBrush, ERmlUiResourceBackend::Slate,
         NativeView ? RmlUE_GetViewResourceId(NativeView) : 0, 0,
         FString::Printf(TEXT("Material alias: %s"), *Alias.ToString()), Material);
+    const EBlendMode BlendMode = Material->GetBlendMode();
+    Resource.bUsePremultipliedVertexColor = BlendMode == BLEND_AlphaComposite;
+    Resource.bSupportsInheritedOpacity = BlendMode == BLEND_Translucent || BlendMode == BLEND_Additive ||
+        BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_AlphaHoldout;
     Materials.Add(Alias, MoveTemp(Resource));
     Invalidate(EInvalidateWidgetReason::Paint);
     return true;
@@ -391,9 +415,85 @@ bool SRmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
 void SRmlUiWidget::UnregisterMaterial(FName Alias)
 {
     if (const FMaterialResource* Existing = Materials.Find(Alias))
+    {
+        for (const auto& TextureParameter : Existing->TextureParameterRegistryIds)
+            FRmlUiResourceRegistry::Get().UnregisterUnreal(TextureParameter.Value);
         FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
+    }
     Materials.Remove(Alias);
     Invalidate(EInvalidateWidgetReason::Paint);
+}
+
+bool SRmlUiWidget::TrackMaterialTexture(FName Alias, FName Parameter, UTexture* Value)
+{
+    if (Alias.IsNone() || Parameter.IsNone()) return false;
+    FMaterialResource* Material = Materials.Find(Alias);
+    if (!Material) return false;
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    uint64* ExistingId = Material->TextureParameterRegistryIds.Find(Parameter);
+    if (!Value)
+    {
+        if (ExistingId) Registry.UnregisterUnreal(*ExistingId);
+        Material->TextureParameterRegistryIds.Remove(Parameter);
+        Invalidate(EInvalidateWidgetReason::Paint);
+        return true;
+    }
+    const uint64 EstimatedBytes = Value->CalcTextureMemorySizeEnum(TMC_ResidentMips);
+    if (ExistingId && Registry.UpdateUnrealObject(*ExistingId, EstimatedBytes, Value))
+    {
+        Invalidate(EInvalidateWidgetReason::Paint);
+        return true;
+    }
+    const uint64 RegistryId = Registry.RegisterUnreal(ERmlUiResourceType::MaterialParameterTexture,
+        ERmlUiResourceBackend::Slate, Material->RegistryId, EstimatedBytes,
+        FString::Printf(TEXT("Material texture: %s.%s"), *Alias.ToString(), *Parameter.ToString()), Value);
+    Material->TextureParameterRegistryIds.Add(Parameter, RegistryId);
+    Invalidate(EInvalidateWidgetReason::Paint);
+    return true;
+}
+
+bool SRmlUiWidget::CanApplyMaterialOpacityAsBox(const FNativeDraw& Draw, const FGeometryResource& Geometry,
+    const FNativeMaterialResource& Binding, const FMaterialResource& Material) const
+{
+    if (!Material.bSupportsInheritedOpacity || Binding.Slot != RMLUE_MATERIAL_SLOT_BACKGROUND ||
+        Draw.bTransform || Geometry.Vertices.Num() != 4 * 8 || Geometry.Indices.Num() != 6)
+    {
+        return false;
+    }
+
+    bool bUsesVertex[4] = {};
+    for (uint32 Index : Geometry.Indices)
+    {
+        if (Index >= UE_ARRAY_COUNT(bUsesVertex)) return false;
+        bUsesVertex[Index] = true;
+    }
+    for (bool bUsed : bUsesVertex)
+        if (!bUsed) return false;
+
+    FVector2f Minimum(MAX_flt, MAX_flt);
+    FVector2f Maximum(-MAX_flt, -MAX_flt);
+    for (int32 Offset = 0; Offset < Geometry.Vertices.Num(); Offset += 8)
+    {
+        const FVector2f Position(Geometry.Vertices[Offset], Geometry.Vertices[Offset + 1]);
+        Minimum.X = FMath::Min(Minimum.X, Position.X);
+        Minimum.Y = FMath::Min(Minimum.Y, Position.Y);
+        Maximum.X = FMath::Max(Maximum.X, Position.X);
+        Maximum.Y = FMath::Max(Maximum.Y, Position.Y);
+    }
+    if (Maximum.X - Minimum.X <= UE_SMALL_NUMBER || Maximum.Y - Minimum.Y <= UE_SMALL_NUMBER) return false;
+
+    uint8 CornerMask = 0;
+    for (int32 Offset = 0; Offset < Geometry.Vertices.Num(); Offset += 8)
+    {
+        const FVector2f Position(Geometry.Vertices[Offset], Geometry.Vertices[Offset + 1]);
+        const bool bLeft = FMath::IsNearlyEqual(Position.X, Minimum.X);
+        const bool bRight = FMath::IsNearlyEqual(Position.X, Maximum.X);
+        const bool bTop = FMath::IsNearlyEqual(Position.Y, Minimum.Y);
+        const bool bBottom = FMath::IsNearlyEqual(Position.Y, Maximum.Y);
+        if ((!bLeft && !bRight) || (!bTop && !bBottom)) return false;
+        CornerMask |= 1u << ((bRight ? 1 : 0) + (bBottom ? 2 : 0));
+    }
+    return CornerMask == 0x0f;
 }
 
 void SRmlUiWidget::SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet)
@@ -612,10 +712,27 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
                 if (ClipPlaneCount > 240) Draw.bMaterialClipSupported = false;
                 if (!Draw.bMaterialClipSupported) FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
             }
+            if (const FNativeMaterialResource* Binding = NativeMaterialResources.Find(Draw.TextureId))
+            {
+                const FMaterialResource* Material = Materials.Find(Binding->Alias);
+                const FGeometryResource* DrawGeometry = NativeGeometries.Find(Draw.GeometryId);
+                if (Material && DrawGeometry)
+                {
+                    for (int32 VertexOffset = 7; VertexOffset < DrawGeometry->Vertices.Num(); VertexOffset += 8)
+                    {
+                        if (DrawGeometry->Vertices[VertexOffset] < 254.5f)
+                        {
+                            if (!CanApplyMaterialOpacityAsBox(Draw, *DrawGeometry, *Binding, *Material))
+                                FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY;
+                            break;
+                        }
+                    }
+                }
+            }
         }
         if (FrameUnsupportedFeatures && FrameUnsupportedFeatures != UnsupportedSlateFeatures)
         {
-            UE_LOG(LogRmlUiUnreal, Warning, TEXT("The experimental Slate renderer omitted RmlUi advanced feature mask 0x%X. Use the DX11 compatibility renderer for visual parity."), FrameUnsupportedFeatures);
+            UE_LOG(LogRmlUiUnreal, Warning, TEXT("The experimental Slate renderer cannot reproduce RmlUi feature mask 0x%X. Use the DX11 compatibility renderer for visual parity."), FrameUnsupportedFeatures);
         }
         UnsupportedSlateFeatures = FrameUnsupportedFeatures;
         FrameNumber = SlateFrame.Number;
@@ -722,11 +839,13 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             };
             const FSlateBrush* Brush = nullptr;
             const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId);
+            const FMaterialResource* ResolvedMaterial = nullptr;
             if (NativeMaterial)
             {
                 if (const FMaterialResource* Material = Materials.Find(NativeMaterial->Alias))
                     if (Material->Brush.IsValid())
                     {
+                        ResolvedMaterial = Material;
                         Brush = Material->Brush->GetSlateBrush();
                         ++ResolvedMaterialDrawCount;
                         if (NativeMaterial->Slot >= 0 && NativeMaterial->Slot < UE_ARRAY_COUNT(ResolvedMaterialDrawCounts))
@@ -815,14 +934,19 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 FVector2f Position = FVector2f(GeometryResource->Vertices[Offset], GeometryResource->Vertices[Offset + 1]) + Draw.Translation;
                 if (Draw.bTransform) Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
                 Position /= PixelScale;
-                const FColor Color(static_cast<uint8>(GeometryResource->Vertices[Offset + 4]), static_cast<uint8>(GeometryResource->Vertices[Offset + 5]),
+                FColor Color(static_cast<uint8>(GeometryResource->Vertices[Offset + 4]), static_cast<uint8>(GeometryResource->Vertices[Offset + 5]),
                     static_cast<uint8>(GeometryResource->Vertices[Offset + 6]), static_cast<uint8>(GeometryResource->Vertices[Offset + 7]));
+                if (ResolvedMaterial && !ResolvedMaterial->bUsePremultipliedVertexColor)
+                    Color = UnpremultiplyMaterialVertexColor(Color);
                 Vertices.Add(FSlateVertex::Make(Transform, Position,
                     FVector2f(GeometryResource->Vertices[Offset + 2], GeometryResource->Vertices[Offset + 3]), Color));
             }
             TArray<SlateIndex> Indices;
             Indices.Reserve(GeometryResource->Indices.Num());
             for (uint32 Index : GeometryResource->Indices) Indices.Add(static_cast<SlateIndex>(Index));
+            const uint8 MaterialOpacity = NativeMaterial && !Vertices.IsEmpty() ? Vertices[0].Color.A : 255;
+            const bool bUseMaterialOpacityBox = NativeMaterial && ResolvedMaterial && MaterialOpacity < 255 &&
+                CanApplyMaterialOpacityAsBox(Draw, *GeometryResource, *NativeMaterial, *ResolvedMaterial);
             int32 PushedClipCount = 0;
             if (Draw.bScissor)
             {
@@ -883,9 +1007,33 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                     }
                 }
             }
-            FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
-                FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
-                nullptr, 0, 0, ESlateDrawEffect::None, ESlateBatchDrawFlag::PreMultipliedAlpha);
+            if (bUseMaterialOpacityBox)
+            {
+                FVector2f Minimum(MAX_flt, MAX_flt);
+                FVector2f Maximum(-MAX_flt, -MAX_flt);
+                for (int32 Offset = 0; Offset < GeometryResource->Vertices.Num(); Offset += 8)
+                {
+                    FVector2f Position(GeometryResource->Vertices[Offset], GeometryResource->Vertices[Offset + 1]);
+                    Position = (Position + Draw.Translation) / PixelScale;
+                    Minimum.X = FMath::Min(Minimum.X, Position.X);
+                    Minimum.Y = FMath::Min(Minimum.Y, Position.Y);
+                    Maximum.X = FMath::Max(Maximum.X, Position.X);
+                    Maximum.Y = FMath::Max(Maximum.Y, Position.Y);
+                }
+                const float Opacity = MaterialOpacity / 255.0f;
+                const FLinearColor Tint = ResolvedMaterial->bUsePremultipliedVertexColor
+                    ? FLinearColor(Opacity, Opacity, Opacity, Opacity)
+                    : FLinearColor(1.0f, 1.0f, 1.0f, Opacity);
+                FSlateDrawElement::MakeBox(Elements, LayerId++,
+                    Geometry.ToPaintGeometry(Maximum - Minimum, FSlateLayoutTransform(Minimum)),
+                    Brush, ESlateDrawEffect::None, Tint);
+            }
+            else
+            {
+                FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
+                    FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
+                    nullptr, 0, 0, ESlateDrawEffect::None, ESlateBatchDrawFlag::PreMultipliedAlpha);
+            }
             ++SlateFallbackDrawCount;
             if (NativeMaterial && Draw.bMaterialClipSupported && !Draw.ClipMasks.IsEmpty()) ++SlateMaterialClipDrawCount;
             while (PushedClipCount > 0)

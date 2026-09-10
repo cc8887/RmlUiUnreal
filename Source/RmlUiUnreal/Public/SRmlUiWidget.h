@@ -5,6 +5,7 @@
 
 class FDeferredCleanupSlateBrush;
 class UMaterialInterface;
+class UTexture;
 class UTexture2D;
 struct RmlUE_View;
 struct RmlUE_StyleSheet;
@@ -44,6 +45,7 @@ public:
     void SetUseSlateRenderer(bool bInUseSlateRenderer);
     bool RegisterMaterial(FName Alias, UMaterialInterface* Material);
     void UnregisterMaterial(FName Alias);
+    bool TrackMaterialTexture(FName Alias, FName Parameter, UTexture* Value);
     void SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet);
     void ShutdownNative();
     bool RenderFrame(int32 Width, int32 Height, float DpRatio = 1.0f);
@@ -124,11 +126,16 @@ private:
     struct FMaterialResource {
         TSharedPtr<FDeferredCleanupSlateBrush> Brush;
         uint64 RegistryId = 0;
+        TMap<FName, uint64> TextureParameterRegistryIds;
+        bool bUsePremultipliedVertexColor = false;
+        bool bSupportsInheritedOpacity = true;
     };
     struct FNativeMaterialResource {
         FName Alias;
         int32 Slot = -1;
     };
+    bool CanApplyMaterialOpacityAsBox(const FNativeDraw& Draw, const FGeometryResource& Geometry,
+        const FNativeMaterialResource& Binding, const FMaterialResource& Material) const;
     bool EnsureNativeView();
     bool CheckResult(int Result);
     void UpdateMousePosition(const FGeometry& Geometry, const FPointerEvent& Event);

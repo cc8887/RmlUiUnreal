@@ -525,20 +525,21 @@ public:
     {
         Rml::RenderManager* RenderManager = Element->GetRenderManager();
         if (!RenderManager) return INVALID_DECORATORDATAHANDLE;
+        const Rml::ColourbPremultiplied Tint =
+            Rml::Colourb(255).ToPremultiplied(Element->GetComputedValues().opacity());
         Rml::Mesh Mesh;
         for (int Index = 0; Index < Element->GetNumBoxes(); ++Index)
         {
             const Rml::RenderBox RenderBox = Element->GetRenderBox(PaintArea, Index);
             if (MaterialSlot == RMLUE_MATERIAL_SLOT_BORDER)
             {
-                const Rml::ColourbPremultiplied White(255);
                 const Rml::ColourbPremultiplied Transparent(0, 0, 0, 0);
-                const Rml::ColourbPremultiplied BorderColors[4] = {White, White, White, White};
+                const Rml::ColourbPremultiplied BorderColors[4] = {Tint, Tint, Tint, Tint};
                 Rml::MeshUtilities::GenerateBackgroundBorder(Mesh, RenderBox, Transparent, BorderColors);
             }
             else
             {
-                Rml::MeshUtilities::GenerateBackground(Mesh, RenderBox, Rml::ColourbPremultiplied(255));
+                Rml::MeshUtilities::GenerateBackground(Mesh, RenderBox, Tint);
             }
         }
         if (Mesh.vertices.empty()) return INVALID_DECORATORDATAHANDLE;
