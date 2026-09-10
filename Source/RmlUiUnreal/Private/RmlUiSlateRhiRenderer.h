@@ -6,6 +6,17 @@
 
 class FRmlUiSlateRhiGeometry;
 
+struct FRmlUiSlateRhiMaskDesc
+{
+    TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> Geometry;
+    FVector2f Origin = FVector2f::ZeroVector;
+    FVector2f AxisX = FVector2f(1.0f, 0.0f);
+    FVector2f AxisY = FVector2f(0.0f, 1.0f);
+    FSlateRect ScissorRect;
+    uint64 GeometryId = 0;
+    int32 Operation = 0;
+};
+
 struct FRmlUiSlateRhiDrawDesc
 {
     TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> Geometry;
@@ -15,6 +26,7 @@ struct FRmlUiSlateRhiDrawDesc
     FVector2f AxisY = FVector2f(0.0f, 1.0f);
     FSlateRect ScissorRect;
     uint64 GeometryId = 0;
+    TArray<FRmlUiSlateRhiMaskDesc> ClipMasks;
 };
 
 class FRmlUiSlateRhiDraw : public ICustomSlateElement

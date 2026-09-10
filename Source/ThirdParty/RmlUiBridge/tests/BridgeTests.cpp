@@ -261,8 +261,8 @@ body { margin: 0; } #panel, #frame { display: inline-block; width: 48px; height:
     auto* ClipView = RmlUE_CreateSlateView(128, 64, 1);
     const char* ClipMarkup = R"(<rml><head><style>
 body { margin: 0; }
-#outer { display: block; position: absolute; left: 4px; top: 4px; width: 38px; height: 24px; overflow: hidden; }
-#inner { display: block; position: relative; left: 6px; top: 5px; width: 30px; height: 18px; overflow: hidden; }
+#outer { display: block; position: absolute; left: 4px; top: 4px; width: 38px; height: 24px; overflow: hidden; border-radius: 8px; }
+#inner { display: block; position: relative; left: 6px; top: 5px; width: 30px; height: 18px; overflow: hidden; border-radius: 6px; }
 #clipped { display: block; width: 50px; height: 30px; background-color: #0f0; }
 #unclipped { display: block; position: absolute; left: 110px; top: 0; width: 10px; height: 10px; background-color: #00f; }
 </style></head><body><div id="outer"><div id="inner"><div id="clipped"></div></div></div><div id="unclipped"></div></body></rml>)";
@@ -271,19 +271,47 @@ body { margin: 0; }
     Require(RmlUE_RenderSlate(ClipView, &ClipFrame) != 0, "Slate clipping render");
     bool FoundNestedClipDraw = false;
     bool FoundUnclippedSiblingDraw = false;
+    bool FoundMaskSet = false;
+    bool FoundMaskIntersect = false;
+    for (uint32_t Index = 0; Index < ClipFrame.ClipMaskCount; ++Index)
+    {
+        FoundMaskSet |= ClipFrame.ClipMasks[Index].Operation == RMLUE_CLIP_MASK_SET;
+        FoundMaskIntersect |= ClipFrame.ClipMasks[Index].Operation == RMLUE_CLIP_MASK_INTERSECT;
+        Require(FindCreatedGeometry(ClipFrame, ClipFrame.ClipMasks[Index].GeometryId) != nullptr,
+            "clipping frame creates every referenced mask geometry cache entry");
+    }
     for (uint32_t Index = 0; Index < ClipFrame.DrawCount; ++Index)
     {
         const RmlUE_SlateDraw& Draw = ClipFrame.Draws[Index];
         const RmlUE_SlateGeometryDelta* Geometry = FindCreatedGeometry(ClipFrame, Draw.GeometryId);
         Require(Geometry != nullptr, "clipping frame creates every referenced geometry cache entry");
         if (Geometry->VertexCount > 0 && Geometry->Vertices[0].G > 240 && Geometry->Vertices[0].R < 10 && Geometry->Vertices[0].B < 10)
-            FoundNestedClipDraw = Draw.ScissorEnabled != 0 && Draw.ScissorWidth <= 30.f && Draw.ScissorHeight <= 18.f;
+            FoundNestedClipDraw = Draw.ScissorEnabled != 0 && Draw.ScissorWidth <= 30.f && Draw.ScissorHeight <= 18.f &&
+                Draw.ClipMaskCount >= 2;
         if (Geometry->VertexCount > 0 && Geometry->Vertices[0].B > 240 && Geometry->Vertices[0].R < 10 && Geometry->Vertices[0].G < 10)
             FoundUnclippedSiblingDraw = Draw.ScissorEnabled == 0;
     }
     Require(FoundNestedClipDraw, "Slate draw carries the nested rectangular clip intersection");
+    Require(FoundMaskSet && FoundMaskIntersect, "Slate frame carries nested non-rectangular clip-mask operations");
+    Require((ClipFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_CLIP_MASK) == 0,
+        "Plain geometry clip masks are supported by the Slate command path");
     Require(FoundUnclippedSiblingDraw, "Slate rectangular clip state is restored after leaving the clipped subtree");
     RmlUE_DestroyView(ClipView);
+
+    auto* MaskedMaterialView = RmlUE_CreateSlateView(64, 64, 1);
+    const char* MaskedMaterialMarkup = R"(<rml><head><style>
+body { margin: 0; }
+#clip { display: block; width: 40px; height: 32px; overflow: hidden; border-radius: 8px; }
+#material { display: block; width: 52px; height: 32px; decorator: ue-material(masked.panel); }
+</style></head><body><div id="clip"><div id="material"></div></div></body></rml>)";
+    Require(MaskedMaterialView != nullptr &&
+        RmlUE_LoadDocumentFromMemory(MaskedMaterialView, MaskedMaterialMarkup, "slate-masked-material.rml") != 0,
+        "Slate masked material document");
+    RmlUE_SlateFrame MaskedMaterialFrame{};
+    Require(RmlUE_RenderSlate(MaskedMaterialView, &MaskedMaterialFrame) != 0 &&
+        (MaskedMaterialFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_CLIP_MASK) != 0,
+        "Slate reports unsupported non-rectangular clipping on UE material draws");
+    RmlUE_DestroyView(MaskedMaterialView);
 
     auto* Transform3DView = RmlUE_CreateSlateView(64, 64, 1);
     const char* Transform3DMarkup = R"(<rml><head><style>

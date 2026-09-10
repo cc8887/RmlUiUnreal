@@ -97,7 +97,20 @@ typedef struct RmlUE_SlateDraw {
     float TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY;
     int ScissorEnabled;
     float ScissorX, ScissorY, ScissorWidth, ScissorHeight;
+    // Range in RmlUE_SlateFrame::ClipMasks which must be rebuilt before this draw.
+    uint32_t ClipMaskStart, ClipMaskCount;
 } RmlUE_SlateDraw;
+
+typedef struct RmlUE_SlateClipMask {
+    uint64_t GeometryId;
+    // 0 = Set, 1 = SetInverse, 2 = Intersect.
+    int Operation;
+    float TranslateX, TranslateY;
+    int TransformEnabled;
+    float TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY;
+    int ScissorEnabled;
+    float ScissorX, ScissorY, ScissorWidth, ScissorHeight;
+} RmlUE_SlateClipMask;
 
 typedef struct RmlUE_SlateGeometryDelta {
     uint64_t Id;
@@ -124,6 +137,9 @@ typedef struct RmlUE_SlateFrame {
     uint32_t AbiVersion;
     const RmlUE_SlateDraw* Draws;
     uint32_t DrawCount;
+    // Clip-mask snapshots referenced by draw ranges. Geometry uses the same incremental cache as ordinary draws.
+    const RmlUE_SlateClipMask* ClipMasks;
+    uint32_t ClipMaskCount;
     // Create/destroy deltas since the previous frame. Create payload pointers remain valid until the next render.
     const RmlUE_SlateGeometryDelta* GeometryDeltas;
     uint32_t GeometryDeltaCount;
@@ -141,12 +157,15 @@ typedef struct RmlUE_SlateFrame {
 #define RMLUE_MATERIAL_SLOT_FOREGROUND 2
 #define RMLUE_SLATE_RESOURCE_CREATE 1
 #define RMLUE_SLATE_RESOURCE_DESTROY 2
+#define RMLUE_CLIP_MASK_SET 0
+#define RMLUE_CLIP_MASK_SET_INVERSE 1
+#define RMLUE_CLIP_MASK_INTERSECT 2
 #define RMLUE_UNSUPPORTED_CLIP_MASK (1u << 0)
 #define RMLUE_UNSUPPORTED_TRANSFORM_3D (1u << 1)
 #define RMLUE_UNSUPPORTED_LAYER (1u << 2)
 #define RMLUE_UNSUPPORTED_FILTER (1u << 3)
 #define RMLUE_UNSUPPORTED_SHADER (1u << 4)
-#define RMLUE_SLATE_ABI_VERSION 4u
+#define RMLUE_SLATE_ABI_VERSION 5u
 
 typedef struct RmlUE_Event {
     char Type[32];

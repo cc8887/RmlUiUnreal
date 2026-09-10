@@ -421,7 +421,10 @@ body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
 #warm { display: block; position: absolute; left: 36px; top: 32px; width: 220px; height: 136px; background-color: #e84a44; }
 #cool { display: block; position: absolute; left: 184px; top: 118px; width: 244px; height: 150px; background-color: #2cb891; }
 #alpha { display: block; position: absolute; left: 356px; top: 32px; width: 84px; height: 62px; background-color: rgba(255, 255, 255, 128); }
-</style></head><body><div id="warm"></div><div id="cool"></div><div id="alpha"></div></body></rml>
+#mask { display: block; position: absolute; left: 30px; top: 210px; width: 130px; height: 80px; overflow: hidden; border-radius: 24px; }
+#mask-inner { display: block; position: relative; left: -10px; top: 10px; width: 130px; height: 60px; overflow: hidden; border-radius: 18px; }
+#mask-fill { display: block; width: 140px; height: 80px; background-color: #f5c542; }
+</style></head><body><div id="warm"></div><div id="cool"></div><div id="alpha"></div><div id="mask"><div id="mask-inner"><div id="mask-fill"></div></div></div></body></rml>
 )RML");
             Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
                 .SourcePath(TEXT("/slate-rhi-direct.rml")).DesiredSize(FVector2D(480, 320));
@@ -458,6 +461,7 @@ body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
         const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Widget.ToSharedRef(), Pixels, Size);
         Test->TestTrue(TEXT("Capture direct Slate RHI output"), bCaptured && Pixels.Num() > 0);
         Test->TestTrue(TEXT("Pure CSS fixture submits persistent RHI draws"), Widget->GetSlateRhiDrawCount() > 0);
+        Test->TestTrue(TEXT("Nested rounded clipping submits RHI stencil masks"), Widget->GetSlateRhiMaskCount() >= 2);
         Test->TestTrue(TEXT("Pure CSS fixture needs no transient Slate vertex fallback"),
             Widget->GetSlateFallbackDrawCount() == 0);
         if (bCaptured && Pixels.Num() > 0)
@@ -477,6 +481,12 @@ body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
                 NearRgb(PixelAt(300, 200), FColor(44, 184, 145), 4));
             Test->TestTrue(TEXT("Premultiplied alpha composites over the CSS background"),
                 NearRgb(PixelAt(380, 60), FColor(139, 145, 152), 6));
+            Test->TestTrue(TEXT("Outer rounded mask clips inside the nested mask rectangle"),
+                NearRgb(PixelAt(32, 222), FColor(22, 34, 49), 4));
+            Test->TestTrue(TEXT("Nested rounded mask preserves its intersected content"),
+                NearRgb(PixelAt(80, 240), FColor(245, 197, 66), 5));
+            Test->TestTrue(TEXT("Inner rounded mask clips inside the outer mask rectangle"),
+                NearRgb(PixelAt(148, 222), FColor(22, 34, 49), 4));
             TArray64<uint8> Png;
             FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
                 TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);

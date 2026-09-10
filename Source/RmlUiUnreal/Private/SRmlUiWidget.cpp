@@ -477,9 +477,12 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
         for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
         {
             const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
-            if (!NativeGeometries.Contains(Source.GeometryId))
+            if (!NativeGeometries.Contains(Source.GeometryId) ||
+                (Source.ClipMaskCount > 0 && SlateFrame.ClipMasks == nullptr) ||
+                Source.ClipMaskStart > SlateFrame.ClipMaskCount ||
+                Source.ClipMaskCount > SlateFrame.ClipMaskCount - Source.ClipMaskStart)
             {
-                LastError = FString::Printf(TEXT("Slate draw references missing geometry cache %llu."), Source.GeometryId);
+                LastError = FString::Printf(TEXT("Slate draw references invalid geometry or clip-mask range for %llu."), Source.GeometryId);
                 return false;
             }
             FNativeDraw& Draw = NativeDraws.AddDefaulted_GetRef();
@@ -491,6 +494,28 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             Draw.TransformTranslation = FVector2f(Source.TransformX, Source.TransformY);
             Draw.bScissor = Source.ScissorEnabled != 0;
             Draw.Scissor = FSlateRect(Source.ScissorX, Source.ScissorY, Source.ScissorX + Source.ScissorWidth, Source.ScissorY + Source.ScissorHeight);
+            Draw.ClipMasks.Reserve(Source.ClipMaskCount);
+            for (uint32 MaskIndex = 0; MaskIndex < Source.ClipMaskCount; ++MaskIndex)
+            {
+                const RmlUE_SlateClipMask& SourceMask = SlateFrame.ClipMasks[Source.ClipMaskStart + MaskIndex];
+                if (!NativeGeometries.Contains(SourceMask.GeometryId) || SourceMask.Operation < RMLUE_CLIP_MASK_SET ||
+                    SourceMask.Operation > RMLUE_CLIP_MASK_INTERSECT)
+                {
+                    LastError = FString::Printf(TEXT("Slate draw references invalid clip-mask geometry %llu."), SourceMask.GeometryId);
+                    return false;
+                }
+                FNativeMask& Mask = Draw.ClipMasks.AddDefaulted_GetRef();
+                Mask.GeometryId = SourceMask.GeometryId;
+                Mask.Operation = SourceMask.Operation;
+                Mask.Translation = FVector2f(SourceMask.TranslateX, SourceMask.TranslateY);
+                Mask.bTransform = SourceMask.TransformEnabled != 0;
+                Mask.Transform = FMatrix2x2(SourceMask.TransformM00, SourceMask.TransformM10,
+                    SourceMask.TransformM01, SourceMask.TransformM11);
+                Mask.TransformTranslation = FVector2f(SourceMask.TransformX, SourceMask.TransformY);
+                Mask.bScissor = SourceMask.ScissorEnabled != 0;
+                Mask.Scissor = FSlateRect(SourceMask.ScissorX, SourceMask.ScissorY,
+                    SourceMask.ScissorX + SourceMask.ScissorWidth, SourceMask.ScissorY + SourceMask.ScissorHeight);
+            }
         }
         if (SlateFrame.UnsupportedFeatures && SlateFrame.UnsupportedFeatures != UnsupportedSlateFeatures)
         {
@@ -567,6 +592,7 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
     FSlateWindowElementList& Elements, int32 LayerId, const FWidgetStyle& Style, bool bParentEnabled) const
 {
     SlateRhiDrawCount = 0;
+    SlateRhiMaskCount = 0;
     SlateFallbackDrawCount = 0;
     if (bUseSlateRenderer && NativeDraws.Num() > 0)
     {
@@ -595,8 +621,14 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 if (TextureResource->Brush.IsValid()) Brush = TextureResource->Brush->GetSlateBrush();
             }
 
+            bool bMasksReady = true;
+            for (const FNativeMask& Mask : Draw.ClipMasks)
+            {
+                const FGeometryResource* MaskGeometry = NativeGeometries.Find(Mask.GeometryId);
+                bMasksReady &= MaskGeometry && IsRmlUiSlateRhiGeometryReady(MaskGeometry->RhiGeometry);
+            }
             FTextureRHIRef TextureRhi;
-            if (!NativeMaterial && IsRmlUiSlateRhiGeometryReady(GeometryResource->RhiGeometry))
+            if (!NativeMaterial && bMasksReady && IsRmlUiSlateRhiGeometryReady(GeometryResource->RhiGeometry))
             {
                 if (Draw.TextureId == 0)
                 {
@@ -609,30 +641,55 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             }
             if (TextureRhi.IsValid())
             {
-                const auto ToWindowPosition = [&](FVector2f Position)
+                const auto ToWindowPosition = [&](FVector2f Position, FVector2f Translation, bool bTransform,
+                    const FMatrix2x2& DrawTransform, FVector2f TransformTranslation)
                 {
-                    Position += Draw.Translation;
-                    if (Draw.bTransform) Position = Draw.Transform.TransformPoint(Position) + Draw.TransformTranslation;
+                    Position += Translation;
+                    if (bTransform) Position = DrawTransform.TransformPoint(Position) + TransformTranslation;
                     Position /= PixelScale;
                     return TransformPoint(Transform, Position);
                 };
-                const FVector2f Origin = ToWindowPosition(FVector2f::ZeroVector);
+                const auto ResolveScissor = [&](bool bScissor, const FSlateRect& Scissor)
+                {
+                    FSlateRect Result = CullingRect;
+                    if (bScissor)
+                    {
+                        const FVector2D TopLeft = Geometry.LocalToAbsolute(
+                            FVector2D(Scissor.Left, Scissor.Top) / PixelScale);
+                        const FVector2D BottomRight = Geometry.LocalToAbsolute(
+                            FVector2D(Scissor.Right, Scissor.Bottom) / PixelScale);
+                        Result = Result.IntersectionWith(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y));
+                    }
+                    return Result;
+                };
+                const FVector2f Origin = ToWindowPosition(FVector2f::ZeroVector, Draw.Translation, Draw.bTransform,
+                    Draw.Transform, Draw.TransformTranslation);
                 FRmlUiSlateRhiDrawDesc RhiDraw;
                 RhiDraw.Geometry = GeometryResource->RhiGeometry;
                 RhiDraw.Texture = TextureRhi;
                 RhiDraw.Origin = Origin;
-                RhiDraw.AxisX = ToWindowPosition(FVector2f(1.0f, 0.0f)) - Origin;
-                RhiDraw.AxisY = ToWindowPosition(FVector2f(0.0f, 1.0f)) - Origin;
-                RhiDraw.ScissorRect = CullingRect;
+                RhiDraw.AxisX = ToWindowPosition(FVector2f(1.0f, 0.0f), Draw.Translation, Draw.bTransform,
+                    Draw.Transform, Draw.TransformTranslation) - Origin;
+                RhiDraw.AxisY = ToWindowPosition(FVector2f(0.0f, 1.0f), Draw.Translation, Draw.bTransform,
+                    Draw.Transform, Draw.TransformTranslation) - Origin;
+                RhiDraw.ScissorRect = ResolveScissor(Draw.bScissor, Draw.Scissor);
                 RhiDraw.GeometryId = Draw.GeometryId;
-                if (Draw.bScissor)
+                RhiDraw.ClipMasks.Reserve(Draw.ClipMasks.Num());
+                for (const FNativeMask& Mask : Draw.ClipMasks)
                 {
-                    const FVector2D TopLeft = Geometry.LocalToAbsolute(
-                        FVector2D(Draw.Scissor.Left, Draw.Scissor.Top) / PixelScale);
-                    const FVector2D BottomRight = Geometry.LocalToAbsolute(
-                        FVector2D(Draw.Scissor.Right, Draw.Scissor.Bottom) / PixelScale);
-                    RhiDraw.ScissorRect = RhiDraw.ScissorRect.IntersectionWith(
-                        FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y));
+                    const FGeometryResource* MaskGeometry = NativeGeometries.Find(Mask.GeometryId);
+                    if (!MaskGeometry) continue;
+                    FRmlUiSlateRhiMaskDesc& RhiMask = RhiDraw.ClipMasks.AddDefaulted_GetRef();
+                    RhiMask.Geometry = MaskGeometry->RhiGeometry;
+                    RhiMask.Operation = Mask.Operation;
+                    RhiMask.GeometryId = Mask.GeometryId;
+                    RhiMask.ScissorRect = ResolveScissor(Mask.bScissor, Mask.Scissor);
+                    RhiMask.Origin = ToWindowPosition(FVector2f::ZeroVector, Mask.Translation, Mask.bTransform,
+                        Mask.Transform, Mask.TransformTranslation);
+                    RhiMask.AxisX = ToWindowPosition(FVector2f(1.0f, 0.0f), Mask.Translation, Mask.bTransform,
+                        Mask.Transform, Mask.TransformTranslation) - RhiMask.Origin;
+                    RhiMask.AxisY = ToWindowPosition(FVector2f(0.0f, 1.0f), Mask.Translation, Mask.bTransform,
+                        Mask.Transform, Mask.TransformTranslation) - RhiMask.Origin;
                 }
                 if (RhiDraw.ScissorRect.Right > RhiDraw.ScissorRect.Left &&
                     RhiDraw.ScissorRect.Bottom > RhiDraw.ScissorRect.Top)
@@ -648,6 +705,7 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                     FSlateDrawElement::MakeCustom(Elements, LayerId++, SlateRhiDrawElements[RhiDrawElementIndex]);
                     ++RhiDrawElementIndex;
                     ++SlateRhiDrawCount;
+                    SlateRhiMaskCount += Draw.ClipMasks.Num();
                 }
                 continue;
             }

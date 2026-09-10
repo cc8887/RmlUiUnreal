@@ -53,6 +53,7 @@ public:
     uint64 GetResolvedMaterialDrawCount() const { return ResolvedMaterialDrawCount; }
     uint64 GetResolvedMaterialDrawCount(int32 MaterialSlot) const;
     uint64 GetSlateRhiDrawCount() const { return SlateRhiDrawCount; }
+    uint64 GetSlateRhiMaskCount() const { return SlateRhiMaskCount; }
     uint64 GetSlateFallbackDrawCount() const { return SlateFallbackDrawCount; }
     int32 GetReadySlateRhiGeometryCount() const;
     bool IsUsingSlateRenderer() const { return bUseSlateRenderer; }
@@ -81,6 +82,16 @@ public:
     virtual FReply OnTouchEnded(const FGeometry& Geometry, const FPointerEvent& Event) override;
 
 private:
+    struct FNativeMask {
+        uint64 GeometryId = 0;
+        int32 Operation = 0;
+        FVector2f Translation = FVector2f::ZeroVector;
+        FMatrix2x2 Transform;
+        FVector2f TransformTranslation = FVector2f::ZeroVector;
+        FSlateRect Scissor;
+        bool bTransform = false;
+        bool bScissor = false;
+    };
     struct FNativeDraw {
         uint64 GeometryId = 0;
         uint64 TextureId = 0;
@@ -90,6 +101,7 @@ private:
         FSlateRect Scissor;
         bool bTransform = false;
         bool bScissor = false;
+        TArray<FNativeMask> ClipMasks;
     };
     struct FGeometryResource {
         TArray<float> Vertices;
@@ -149,6 +161,7 @@ private:
     mutable uint64 ResolvedMaterialDrawCount = 0;
     mutable uint64 ResolvedMaterialDrawCounts[3] = {};
     mutable uint64 SlateRhiDrawCount = 0;
+    mutable uint64 SlateRhiMaskCount = 0;
     mutable uint64 SlateFallbackDrawCount = 0;
     bool bNativeShutdown = false;
 };

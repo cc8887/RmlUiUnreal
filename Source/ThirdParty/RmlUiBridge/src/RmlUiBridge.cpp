@@ -32,6 +32,10 @@
 using Microsoft::WRL::ComPtr;
 
 namespace {
+static_assert(static_cast<int>(Rml::ClipMaskOperation::Set) == RMLUE_CLIP_MASK_SET);
+static_assert(static_cast<int>(Rml::ClipMaskOperation::SetInverse) == RMLUE_CLIP_MASK_SET_INVERSE);
+static_assert(static_cast<int>(Rml::ClipMaskOperation::Intersect) == RMLUE_CLIP_MASK_INTERSECT);
+
 RmlUE_Host Host{};
 std::string LastError;
 std::thread::id OwnerThread;
@@ -261,8 +265,11 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
     Rml::Rectanglei Scissor{};
     bool TransformEnabled = false;
     float TransformM00 = 1.f, TransformM01 = 0.f, TransformM10 = 0.f, TransformM11 = 1.f, TransformX = 0.f, TransformY = 0.f;
+    bool ClipMaskEnabled = false;
+    std::vector<RmlUE_SlateClipMask> ActiveClipMasks;
 public:
     std::vector<RmlUE_SlateDraw> Draws;
+    std::vector<RmlUE_SlateClipMask> PublicClipMasks;
     std::unordered_map<uint64_t, GeometryData*> GeometryDataById;
     std::unordered_map<uint64_t, TextureData> TextureDataById;
     std::vector<uint64_t> ReleasedGeometryIds;
@@ -304,10 +311,20 @@ public:
         const auto* Geometry = reinterpret_cast<const GeometryData*>(Handle);
         if (!Geometry) return;
         const Rml::Rectanglei Region = Scissor;
+        const uint32_t ClipMaskStart = static_cast<uint32_t>(PublicClipMasks.size());
+        if (ClipMaskEnabled)
+            PublicClipMasks.insert(PublicClipMasks.end(), ActiveClipMasks.begin(), ActiveClipMasks.end());
+        const uint32_t ClipMaskCount = static_cast<uint32_t>(PublicClipMasks.size()) - ClipMaskStart;
         Draws.push_back({Geometry->Id, static_cast<uint64_t>(Texture), Translation.x, Translation.y,
             TransformEnabled ? 1 : 0, TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY,
             ScissorEnabled ? 1 : 0, static_cast<float>(Region.Left()), static_cast<float>(Region.Top()),
-            static_cast<float>(Region.Width()), static_cast<float>(Region.Height())});
+            static_cast<float>(Region.Width()), static_cast<float>(Region.Height()), ClipMaskStart, ClipMaskCount});
+        if (ClipMaskCount > 0)
+        {
+            const auto FoundTexture = TextureDataById.find(static_cast<uint64_t>(Texture));
+            if (FoundTexture != TextureDataById.end() && FoundTexture->second.Kind == 1)
+                UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
+        }
         if (ActiveStats) ++ActiveStats->GeometryDraws;
     }
     void ReleaseGeometry(Rml::CompiledGeometryHandle Handle) override
@@ -394,8 +411,30 @@ public:
     }
     void EnableScissorRegion(bool Enable) override { ScissorEnabled = Enable; }
     void SetScissorRegion(Rml::Rectanglei Region) override { Scissor = Region; }
-    void EnableClipMask(bool) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK; }
-    void RenderToClipMask(Rml::ClipMaskOperation, Rml::CompiledGeometryHandle, Rml::Vector2f) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK; }
+    void EnableClipMask(bool Enable) override
+    {
+        ClipMaskEnabled = Enable;
+        if (!Enable) ActiveClipMasks.clear();
+    }
+    void RenderToClipMask(Rml::ClipMaskOperation Operation, Rml::CompiledGeometryHandle Handle,
+        Rml::Vector2f Translation) override
+    {
+        const auto* Geometry = reinterpret_cast<const GeometryData*>(Handle);
+        if (!Geometry) return;
+        if (Operation == Rml::ClipMaskOperation::Set || Operation == Rml::ClipMaskOperation::SetInverse)
+            ActiveClipMasks.clear();
+        if (ActiveClipMasks.size() >= 254)
+        {
+            UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
+            return;
+        }
+        const Rml::Rectanglei Region = Scissor;
+        ActiveClipMasks.push_back({Geometry->Id, static_cast<int>(Operation), Translation.x, Translation.y,
+            TransformEnabled ? 1 : 0, TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY,
+            ScissorEnabled ? 1 : 0, static_cast<float>(Region.Left()), static_cast<float>(Region.Top()),
+            static_cast<float>(Region.Width()), static_cast<float>(Region.Height())});
+        if (ActiveStats) ++ActiveStats->ClipMasks;
+    }
     void SetTransform(const Rml::Matrix4f* Transform) override
     {
         TransformEnabled = false;
@@ -434,6 +473,9 @@ public:
     void BeginFrame()
     {
         Draws.clear();
+        PublicClipMasks.clear();
+        ClipMaskEnabled = false;
+        ActiveClipMasks.clear();
         PublicGeometryDeltas.clear();
         PublicTextures.clear();
         UnsupportedFeatures = 0;
@@ -1082,6 +1124,7 @@ int RmlUE_RenderSlate(RmlUE_View* View, RmlUE_SlateFrame* Frame)
     View->SlateRenderer->EndFrame();
     ++View->FrameNumber;
     *Frame = {RMLUE_SLATE_ABI_VERSION, View->SlateRenderer->Draws.data(), static_cast<uint32_t>(View->SlateRenderer->Draws.size()),
+        View->SlateRenderer->PublicClipMasks.data(), static_cast<uint32_t>(View->SlateRenderer->PublicClipMasks.size()),
         View->SlateRenderer->PublicGeometryDeltas.data(), static_cast<uint32_t>(View->SlateRenderer->PublicGeometryDeltas.size()),
         View->SlateRenderer->PublicTextures.data(), static_cast<uint32_t>(View->SlateRenderer->PublicTextures.size()),
         View->FrameNumber, View->SlateRenderer->UnsupportedFeatures};

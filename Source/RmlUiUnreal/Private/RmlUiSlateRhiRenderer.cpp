@@ -7,6 +7,7 @@
 #include "RenderResource.h"
 #include "RHIStaticStates.h"
 #include "RHIUtilities.h"
+#include "RmlUiBridge.h"
 #include "RmlUiResourceRegistry.h"
 #include "ShaderParameterStruct.h"
 #include "Containers/Queue.h"
@@ -207,6 +208,15 @@ public:
         FRmlUiSlateRenderPassParameters* PassParameters = GraphBuilder.AllocParameters<FRmlUiSlateRenderPassParameters>();
         PassParameters->RenderTargets[0] = FRenderTargetBinding(Inputs.OutputTexture, ERenderTargetLoadAction::ELoad);
         const FIntPoint Extent = Inputs.OutputTexture->Desc.Extent;
+        if (!Draw.ClipMasks.IsEmpty())
+        {
+            const FRDGTextureDesc StencilDesc = FRDGTextureDesc::Create2D(Extent, PF_DepthStencil,
+                FClearValueBinding(0.0f, 0), TexCreate_DepthStencilTargetable);
+            FRDGTextureRef StencilTexture = GraphBuilder.CreateTexture(StencilDesc, TEXT("RmlUiSlate.ClipStencil"));
+            PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(StencilTexture,
+                ERenderTargetLoadAction::ENoAction, ERenderTargetLoadAction::EClear,
+                FExclusiveDepthStencil::DepthNop_StencilWrite);
+        }
         const FVector2f ElementsOffset = Inputs.ElementsOffset;
         const FMatrix44f ViewProjection = Inputs.ElementsMatrix;
 
@@ -215,42 +225,89 @@ public:
             {
                 if (!Draw.Geometry->IsReady()) return;
                 RHICmdList.SetViewport(0, 0, 0.0f, Extent.X, Extent.Y, 1.0f);
-                const int32 Left = FMath::Clamp(FMath::FloorToInt(Draw.ScissorRect.Left + ElementsOffset.X), 0, Extent.X);
-                const int32 Top = FMath::Clamp(FMath::FloorToInt(Draw.ScissorRect.Top + ElementsOffset.Y), 0, Extent.Y);
-                const int32 Right = FMath::Clamp(FMath::CeilToInt(Draw.ScissorRect.Right + ElementsOffset.X), Left, Extent.X);
-                const int32 Bottom = FMath::Clamp(FMath::CeilToInt(Draw.ScissorRect.Bottom + ElementsOffset.Y), Top, Extent.Y);
-                if (Right <= Left || Bottom <= Top) return;
-                RHICmdList.SetScissorRect(true, Left, Top, Right, Bottom);
-
                 TShaderMapRef<FRmlUiSlateVertexShader> VertexShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
                 TShaderMapRef<FRmlUiSlatePixelShader> PixelShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-                FGraphicsPipelineStateInitializer GraphicsPSOInit;
-                RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-                GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha,
-                    BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI();
-                GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
-                GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-                GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GRmlUiSlateVertexDeclaration.VertexDeclarationRHI;
-                GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-                GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-                GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-                SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
-
-                FRmlUiSlateVertexShader::FParameters VertexParameters;
-                VertexParameters.ViewProjection = ViewProjection;
-                VertexParameters.Origin = Draw.Origin;
-                VertexParameters.AxisX = Draw.AxisX;
-                VertexParameters.AxisY = Draw.AxisY;
-                SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VertexParameters);
-
                 FRmlUiSlatePixelShader::FParameters PixelParameters;
                 PixelParameters.InTexture = Draw.Texture;
                 PixelParameters.TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-                SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PixelParameters);
 
-                RHICmdList.SetStreamSource(0, Draw.Geometry->VertexBufferRHI, 0);
-                RHICmdList.DrawIndexedPrimitive(Draw.Geometry->IndexBufferRHI, 0, 0,
-                    Draw.Geometry->VertexCount, 0, Draw.Geometry->IndexCount / 3, 1);
+                const auto SetScissor = [&](const FSlateRect& Rect)
+                {
+                    const int32 Left = FMath::Clamp(FMath::FloorToInt(Rect.Left + ElementsOffset.X), 0, Extent.X);
+                    const int32 Top = FMath::Clamp(FMath::FloorToInt(Rect.Top + ElementsOffset.Y), 0, Extent.Y);
+                    const int32 Right = FMath::Clamp(FMath::CeilToInt(Rect.Right + ElementsOffset.X), Left, Extent.X);
+                    const int32 Bottom = FMath::Clamp(FMath::CeilToInt(Rect.Bottom + ElementsOffset.Y), Top, Extent.Y);
+                    RHICmdList.SetScissorRect(true, Left, Top, Right, Bottom);
+                    return Right > Left && Bottom > Top;
+                };
+                const auto SetPipeline = [&](FRHIBlendState* BlendState, FRHIDepthStencilState* DepthStencilState)
+                {
+                    FGraphicsPipelineStateInitializer GraphicsPSOInit;
+                    RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+                    GraphicsPSOInit.BlendState = BlendState;
+                    GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
+                    GraphicsPSOInit.DepthStencilState = DepthStencilState;
+                    GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GRmlUiSlateVertexDeclaration.VertexDeclarationRHI;
+                    GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+                    GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+                    GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+                    SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+                    SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PixelParameters);
+                };
+                const auto DrawGeometry = [&](const TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe>& Geometry,
+                    FVector2f Origin, FVector2f AxisX, FVector2f AxisY)
+                {
+                    FRmlUiSlateVertexShader::FParameters VertexParameters;
+                    VertexParameters.ViewProjection = ViewProjection;
+                    VertexParameters.Origin = Origin;
+                    VertexParameters.AxisX = AxisX;
+                    VertexParameters.AxisY = AxisY;
+                    SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VertexParameters);
+                    RHICmdList.SetStreamSource(0, Geometry->VertexBufferRHI, 0);
+                    RHICmdList.DrawIndexedPrimitive(Geometry->IndexBufferRHI, 0, 0,
+                        Geometry->VertexCount, 0, Geometry->IndexCount / 3, 1);
+                };
+
+                uint32 StencilReference = 0;
+                if (!Draw.ClipMasks.IsEmpty())
+                {
+                    FRHIBlendState* NoColor = TStaticBlendState<CW_NONE>::GetRHI();
+                    FRHIDepthStencilState* ReplaceStencil = TStaticDepthStencilState<false, CF_Always,
+                        true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+                        true, CF_Always, SO_Keep, SO_Keep, SO_Replace>::GetRHI();
+                    FRHIDepthStencilState* IncrementStencil = TStaticDepthStencilState<false, CF_Always,
+                        true, CF_Always, SO_Keep, SO_Keep, SO_SaturatedIncrement,
+                        true, CF_Always, SO_Keep, SO_Keep, SO_SaturatedIncrement>::GetRHI();
+                    for (const FRmlUiSlateRhiMaskDesc& Mask : Draw.ClipMasks)
+                    {
+                        if (!Mask.Geometry.IsValid() || !Mask.Geometry->IsReady()) return;
+                        if (Mask.Operation == RMLUE_CLIP_MASK_SET || Mask.Operation == RMLUE_CLIP_MASK_SET_INVERSE)
+                        {
+                            StencilReference = Mask.Operation == RMLUE_CLIP_MASK_SET ? 1u : 0u;
+                            SetPipeline(NoColor, ReplaceStencil);
+                            RHICmdList.SetStencilRef(1);
+                        }
+                        else
+                        {
+                            StencilReference = FMath::Min(StencilReference + 1u, 255u);
+                            SetPipeline(NoColor, IncrementStencil);
+                            RHICmdList.SetStencilRef(1);
+                        }
+                        if (SetScissor(Mask.ScissorRect))
+                            DrawGeometry(Mask.Geometry, Mask.Origin, Mask.AxisX, Mask.AxisY);
+                    }
+                }
+
+                FRHIDepthStencilState* ContentDepthStencil = Draw.ClipMasks.IsEmpty()
+                    ? TStaticDepthStencilState<false, CF_Always>::GetRHI()
+                    : TStaticDepthStencilState<false, CF_Always,
+                        true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
+                        true, CF_Equal, SO_Keep, SO_Keep, SO_Keep, 0xff, 0x00>::GetRHI();
+                SetPipeline(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha,
+                    BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI(), ContentDepthStencil);
+                RHICmdList.SetStencilRef(StencilReference);
+                if (SetScissor(Draw.ScissorRect))
+                    DrawGeometry(Draw.Geometry, Draw.Origin, Draw.AxisX, Draw.AxisY);
                 RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
             });
     }
