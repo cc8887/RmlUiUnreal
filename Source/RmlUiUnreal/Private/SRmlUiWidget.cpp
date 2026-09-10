@@ -59,6 +59,74 @@ int GetVirtualKey(const FKeyEvent& Event)
     const FString Name = Key.GetFName().ToString();
     return Name.Len() == 1 ? FChar::ToUpper(Name[0]) : 0;
 }
+
+float Cross2D(FVector2f Origin, FVector2f A, FVector2f B)
+{
+    return (A.X - Origin.X) * (B.Y - Origin.Y) - (A.Y - Origin.Y) * (B.X - Origin.X);
+}
+
+bool BuildFilledConvexHull(const TArray<float>& Vertices, const TArray<uint32>& Indices, TArray<FVector2f>& OutHull)
+{
+    OutHull.Reset();
+    if (Vertices.Num() < 24 || Vertices.Num() % 8 != 0 || Indices.Num() < 3 || Indices.Num() % 3 != 0) return false;
+
+    TArray<FVector2f> Points;
+    Points.Reserve(Vertices.Num() / 8);
+    for (int32 Offset = 0; Offset < Vertices.Num(); Offset += 8)
+    {
+        const FVector2f Point(Vertices[Offset], Vertices[Offset + 1]);
+        if (!FMath::IsFinite(Point.X) || !FMath::IsFinite(Point.Y)) return false;
+        Points.Add(Point);
+    }
+    Points.Sort([](FVector2f A, FVector2f B)
+    {
+        return A.X < B.X || (A.X == B.X && A.Y < B.Y);
+    });
+    for (int32 Index = Points.Num() - 1; Index > 0; --Index)
+        if (Points[Index].Equals(Points[Index - 1], 0.01f)) Points.RemoveAt(Index, 1, EAllowShrinking::No);
+    if (Points.Num() < 3) return false;
+
+    TArray<FVector2f> Hull;
+    Hull.Reserve(Points.Num() * 2);
+    for (FVector2f Point : Points)
+    {
+        while (Hull.Num() >= 2 && Cross2D(Hull[Hull.Num() - 2], Hull.Last(), Point) <= 0.001f) Hull.Pop(EAllowShrinking::No);
+        Hull.Add(Point);
+    }
+    const int32 LowerCount = Hull.Num();
+    for (int32 Index = Points.Num() - 2; Index >= 0; --Index)
+    {
+        const FVector2f Point = Points[Index];
+        while (Hull.Num() > LowerCount && Cross2D(Hull[Hull.Num() - 2], Hull.Last(), Point) <= 0.001f) Hull.Pop(EAllowShrinking::No);
+        Hull.Add(Point);
+    }
+    Hull.Pop(EAllowShrinking::No);
+    if (Hull.Num() < 3) return false;
+
+    double HullAreaTwice = 0.0;
+    for (int32 Index = 0; Index < Hull.Num(); ++Index)
+        HullAreaTwice += static_cast<double>(Hull[Index].X) * Hull[(Index + 1) % Hull.Num()].Y -
+            static_cast<double>(Hull[Index].Y) * Hull[(Index + 1) % Hull.Num()].X;
+    HullAreaTwice = FMath::Abs(HullAreaTwice);
+
+    double TriangleAreaTwice = 0.0;
+    const int32 VertexCount = Vertices.Num() / 8;
+    for (int32 Index = 0; Index < Indices.Num(); Index += 3)
+    {
+        if (Indices[Index] >= static_cast<uint32>(VertexCount) || Indices[Index + 1] >= static_cast<uint32>(VertexCount) ||
+            Indices[Index + 2] >= static_cast<uint32>(VertexCount)) return false;
+        const auto Position = [&](uint32 VertexIndex)
+        {
+            return FVector2f(Vertices[VertexIndex * 8], Vertices[VertexIndex * 8 + 1]);
+        };
+        TriangleAreaTwice += FMath::Abs(static_cast<double>(Cross2D(
+            Position(Indices[Index]), Position(Indices[Index + 1]), Position(Indices[Index + 2]))));
+    }
+    const double AreaTolerance = FMath::Max(1.0, HullAreaTwice * 0.01);
+    if (HullAreaTwice <= 0.01 || FMath::Abs(TriangleAreaTwice - HullAreaTwice) > AreaTolerance) return false;
+    OutHull = MoveTemp(Hull);
+    return true;
+}
 }
 
 void SRmlUiWidget::Construct(const FArguments& InArgs)
@@ -404,6 +472,7 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
                 ERmlUiResourceState::PendingCreate);
             Resource.RhiGeometry = CreateRmlUiSlateRhiGeometry(Resource.Vertices, Resource.Indices,
                 Resource.RegistryId, Resource.VertexBufferRegistryId, Resource.IndexBufferRegistryId);
+            Resource.bFilledConvex = BuildFilledConvexHull(Resource.Vertices, Resource.Indices, Resource.ConvexHull);
             if (!Resource.RhiGeometry.IsValid())
             {
                 FRmlUiResourceRegistry::Get().UnregisterUnreal(Resource.VertexBufferRegistryId);
@@ -474,6 +543,7 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
                 FString::Printf(TEXT("Slate texture %llu"), Source.Id), NewTexture);
             NativeTextures.Add(Source.Id, MoveTemp(Resource));
         }
+        uint32 FrameUnsupportedFeatures = SlateFrame.UnsupportedFeatures;
         for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
         {
             const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
@@ -516,12 +586,28 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
                 Mask.Scissor = FSlateRect(SourceMask.ScissorX, SourceMask.ScissorY,
                     SourceMask.ScissorX + SourceMask.ScissorWidth, SourceMask.ScissorY + SourceMask.ScissorHeight);
             }
+            if (NativeMaterialResources.Contains(Draw.TextureId) && !Draw.ClipMasks.IsEmpty())
+            {
+                int32 ClipPlaneCount = 0;
+                for (const FNativeMask& Mask : Draw.ClipMasks)
+                {
+                    const FGeometryResource* MaskGeometry = NativeGeometries.Find(Mask.GeometryId);
+                    if (Mask.Operation == RMLUE_CLIP_MASK_SET_INVERSE || !MaskGeometry || !MaskGeometry->bFilledConvex)
+                    {
+                        Draw.bMaterialClipSupported = false;
+                        break;
+                    }
+                    ClipPlaneCount += MaskGeometry->ConvexHull.Num() + (Mask.bScissor ? 1 : 0);
+                }
+                if (ClipPlaneCount > 240) Draw.bMaterialClipSupported = false;
+                if (!Draw.bMaterialClipSupported) FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
+            }
         }
-        if (SlateFrame.UnsupportedFeatures && SlateFrame.UnsupportedFeatures != UnsupportedSlateFeatures)
+        if (FrameUnsupportedFeatures && FrameUnsupportedFeatures != UnsupportedSlateFeatures)
         {
-            UE_LOG(LogRmlUiUnreal, Warning, TEXT("The experimental Slate renderer omitted RmlUi advanced feature mask 0x%X. Use the DX11 compatibility renderer for visual parity."), SlateFrame.UnsupportedFeatures);
+            UE_LOG(LogRmlUiUnreal, Warning, TEXT("The experimental Slate renderer omitted RmlUi advanced feature mask 0x%X. Use the DX11 compatibility renderer for visual parity."), FrameUnsupportedFeatures);
         }
-        UnsupportedSlateFeatures = SlateFrame.UnsupportedFeatures;
+        UnsupportedSlateFeatures = FrameUnsupportedFeatures;
         FrameNumber = SlateFrame.Number;
         Invalidate(EInvalidateWidgetReason::Paint);
         DispatchEvents();
@@ -593,6 +679,7 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
 {
     SlateRhiDrawCount = 0;
     SlateRhiMaskCount = 0;
+    SlateMaterialClipDrawCount = 0;
     SlateFallbackDrawCount = 0;
     if (bUseSlateRenderer && NativeDraws.Num() > 0)
     {
@@ -602,6 +689,27 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
         {
             const FGeometryResource* GeometryResource = NativeGeometries.Find(Draw.GeometryId);
             if (!GeometryResource) continue;
+            const auto ToWindowPosition = [&](FVector2f Position, FVector2f Translation, bool bTransform,
+                const FMatrix2x2& DrawTransform, FVector2f TransformTranslation)
+            {
+                Position += Translation;
+                if (bTransform) Position = DrawTransform.TransformPoint(Position) + TransformTranslation;
+                Position /= PixelScale;
+                return TransformPoint(Transform, Position);
+            };
+            const auto ResolveScissor = [&](bool bScissor, const FSlateRect& Scissor)
+            {
+                FSlateRect Result = CullingRect;
+                if (bScissor)
+                {
+                    const FVector2D TopLeft = Geometry.LocalToAbsolute(
+                        FVector2D(Scissor.Left, Scissor.Top) / PixelScale);
+                    const FVector2D BottomRight = Geometry.LocalToAbsolute(
+                        FVector2D(Scissor.Right, Scissor.Bottom) / PixelScale);
+                    Result = Result.IntersectionWith(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y));
+                }
+                return Result;
+            };
             const FSlateBrush* Brush = nullptr;
             const FNativeMaterialResource* NativeMaterial = NativeMaterialResources.Find(Draw.TextureId);
             if (NativeMaterial)
@@ -641,27 +749,6 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             }
             if (TextureRhi.IsValid())
             {
-                const auto ToWindowPosition = [&](FVector2f Position, FVector2f Translation, bool bTransform,
-                    const FMatrix2x2& DrawTransform, FVector2f TransformTranslation)
-                {
-                    Position += Translation;
-                    if (bTransform) Position = DrawTransform.TransformPoint(Position) + TransformTranslation;
-                    Position /= PixelScale;
-                    return TransformPoint(Transform, Position);
-                };
-                const auto ResolveScissor = [&](bool bScissor, const FSlateRect& Scissor)
-                {
-                    FSlateRect Result = CullingRect;
-                    if (bScissor)
-                    {
-                        const FVector2D TopLeft = Geometry.LocalToAbsolute(
-                            FVector2D(Scissor.Left, Scissor.Top) / PixelScale);
-                        const FVector2D BottomRight = Geometry.LocalToAbsolute(
-                            FVector2D(Scissor.Right, Scissor.Bottom) / PixelScale);
-                        Result = Result.IntersectionWith(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y));
-                    }
-                    return Result;
-                };
                 const FVector2f Origin = ToWindowPosition(FVector2f::ZeroVector, Draw.Translation, Draw.bTransform,
                     Draw.Transform, Draw.TransformTranslation);
                 FRmlUiSlateRhiDrawDesc RhiDraw;
@@ -726,17 +813,76 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
             TArray<SlateIndex> Indices;
             Indices.Reserve(GeometryResource->Indices.Num());
             for (uint32 Index : GeometryResource->Indices) Indices.Add(static_cast<SlateIndex>(Index));
+            int32 PushedClipCount = 0;
             if (Draw.bScissor)
             {
-                const FVector2D TopLeft = Geometry.LocalToAbsolute(FVector2D(Draw.Scissor.Left, Draw.Scissor.Top) / PixelScale);
-                const FVector2D BottomRight = Geometry.LocalToAbsolute(FVector2D(Draw.Scissor.Right, Draw.Scissor.Bottom) / PixelScale);
-                Elements.PushClip(FSlateClippingZone(FSlateRect(TopLeft.X, TopLeft.Y, BottomRight.X, BottomRight.Y)));
+                Elements.PushClip(FSlateClippingZone(ResolveScissor(true, Draw.Scissor)));
+                ++PushedClipCount;
+            }
+            if (NativeMaterial && Draw.bMaterialClipSupported && !Draw.ClipMasks.IsEmpty())
+            {
+                const FVector2f CullingCorners[] = {
+                    FVector2f(CullingRect.Left, CullingRect.Top), FVector2f(CullingRect.Right, CullingRect.Top),
+                    FVector2f(CullingRect.Left, CullingRect.Bottom), FVector2f(CullingRect.Right, CullingRect.Bottom)};
+                for (const FNativeMask& Mask : Draw.ClipMasks)
+                {
+                    if (Mask.bScissor)
+                    {
+                        Elements.PushClip(FSlateClippingZone(ResolveScissor(true, Mask.Scissor)));
+                        ++PushedClipCount;
+                    }
+                    const FGeometryResource* MaskGeometry = NativeGeometries.Find(Mask.GeometryId);
+                    if (!MaskGeometry) continue;
+                    TArray<FVector2f, TInlineAllocator<32>> Hull;
+                    Hull.Reserve(MaskGeometry->ConvexHull.Num());
+                    FVector2f Centroid = FVector2f::ZeroVector;
+                    for (FVector2f Point : MaskGeometry->ConvexHull)
+                    {
+                        Point = ToWindowPosition(Point, Mask.Translation, Mask.bTransform,
+                            Mask.Transform, Mask.TransformTranslation);
+                        Hull.Add(Point);
+                        Centroid += Point;
+                    }
+                    Centroid /= static_cast<float>(Hull.Num());
+                    for (int32 HullIndex = 0; HullIndex < Hull.Num(); ++HullIndex)
+                    {
+                        const FVector2f Start = Hull[HullIndex];
+                        const FVector2f End = Hull[(HullIndex + 1) % Hull.Num()];
+                        const FVector2f Edge = End - Start;
+                        const float EdgeLength = Edge.Size();
+                        if (EdgeLength <= UE_SMALL_NUMBER) continue;
+                        const FVector2f Tangent = Edge / EdgeLength;
+                        FVector2f InwardNormal(-Tangent.Y, Tangent.X);
+                        if (FVector2f::DotProduct(Centroid - (Start + End) * 0.5f, InwardNormal) < 0.0f)
+                            InwardNormal *= -1.0f;
+                        float MinimumTangent = 0.0f;
+                        float MaximumTangent = EdgeLength;
+                        float MaximumNormal = FVector2f::DotProduct(Centroid - Start, InwardNormal);
+                        for (FVector2f Corner : CullingCorners)
+                        {
+                            MinimumTangent = FMath::Min(MinimumTangent, FVector2f::DotProduct(Corner - Start, Tangent));
+                            MaximumTangent = FMath::Max(MaximumTangent, FVector2f::DotProduct(Corner - Start, Tangent));
+                            MaximumNormal = FMath::Max(MaximumNormal, FVector2f::DotProduct(Corner - Start, InwardNormal));
+                        }
+                        constexpr float Padding = 2.0f;
+                        const FVector2f NearStart = Start + Tangent * (MinimumTangent - Padding);
+                        const FVector2f NearEnd = Start + Tangent * (MaximumTangent + Padding);
+                        const FVector2f Extrusion = InwardNormal * (MaximumNormal + Padding);
+                        Elements.PushClip(FSlateClippingZone(NearStart, NearEnd, NearStart + Extrusion, NearEnd + Extrusion));
+                        ++PushedClipCount;
+                    }
+                }
             }
             FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
                 FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
                 nullptr, 0, 0, ESlateDrawEffect::None, ESlateBatchDrawFlag::PreMultipliedAlpha);
             ++SlateFallbackDrawCount;
-            if (Draw.bScissor) Elements.PopClip();
+            if (NativeMaterial && Draw.bMaterialClipSupported && !Draw.ClipMasks.IsEmpty()) ++SlateMaterialClipDrawCount;
+            while (PushedClipCount > 0)
+            {
+                Elements.PopClip();
+                --PushedClipCount;
+            }
         }
         for (int32 Index = RhiDrawElementIndex; Index < SlateRhiDrawElements.Num(); ++Index)
         {

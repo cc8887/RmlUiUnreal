@@ -309,8 +309,13 @@ body { margin: 0; }
         "Slate masked material document");
     RmlUE_SlateFrame MaskedMaterialFrame{};
     Require(RmlUE_RenderSlate(MaskedMaterialView, &MaskedMaterialFrame) != 0 &&
-        (MaskedMaterialFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_CLIP_MASK) != 0,
-        "Slate reports unsupported non-rectangular clipping on UE material draws");
+        (MaskedMaterialFrame.UnsupportedFeatures & RMLUE_UNSUPPORTED_CLIP_MASK) == 0,
+        "Slate command ABI transports material clip masks for host capability validation");
+    bool FoundMaskedMaterialDraw = false;
+    for (uint32_t Index = 0; Index < MaskedMaterialFrame.DrawCount; ++Index)
+        FoundMaskedMaterialDraw |= MaskedMaterialFrame.Draws[Index].Texture != 0 &&
+            MaskedMaterialFrame.Draws[Index].ClipMaskCount > 0;
+    Require(FoundMaskedMaterialDraw, "Slate material draw retains its non-rectangular clip-mask snapshot");
     RmlUE_DestroyView(MaskedMaterialView);
 
     auto* Transform3DView = RmlUE_CreateSlateView(64, 64, 1);

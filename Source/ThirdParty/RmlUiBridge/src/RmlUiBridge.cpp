@@ -319,12 +319,6 @@ public:
             TransformEnabled ? 1 : 0, TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY,
             ScissorEnabled ? 1 : 0, static_cast<float>(Region.Left()), static_cast<float>(Region.Top()),
             static_cast<float>(Region.Width()), static_cast<float>(Region.Height()), ClipMaskStart, ClipMaskCount});
-        if (ClipMaskCount > 0)
-        {
-            const auto FoundTexture = TextureDataById.find(static_cast<uint64_t>(Texture));
-            if (FoundTexture != TextureDataById.end() && FoundTexture->second.Kind == 1)
-                UnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
-        }
         if (ActiveStats) ++ActiveStats->GeometryDraws;
     }
     void ReleaseGeometry(Rml::CompiledGeometryHandle Handle) override

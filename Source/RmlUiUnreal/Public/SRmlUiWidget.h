@@ -54,7 +54,9 @@ public:
     uint64 GetResolvedMaterialDrawCount(int32 MaterialSlot) const;
     uint64 GetSlateRhiDrawCount() const { return SlateRhiDrawCount; }
     uint64 GetSlateRhiMaskCount() const { return SlateRhiMaskCount; }
+    uint64 GetSlateMaterialClipDrawCount() const { return SlateMaterialClipDrawCount; }
     uint64 GetSlateFallbackDrawCount() const { return SlateFallbackDrawCount; }
+    uint32 GetUnsupportedSlateFeatures() const { return UnsupportedSlateFeatures; }
     int32 GetReadySlateRhiGeometryCount() const;
     bool IsUsingSlateRenderer() const { return bUseSlateRenderer; }
     FOnRmlUiBeforeRender OnBeforeRender;
@@ -102,6 +104,7 @@ private:
         bool bTransform = false;
         bool bScissor = false;
         TArray<FNativeMask> ClipMasks;
+        bool bMaterialClipSupported = true;
     };
     struct FGeometryResource {
         TArray<float> Vertices;
@@ -110,6 +113,8 @@ private:
         uint64 VertexBufferRegistryId = 0;
         uint64 IndexBufferRegistryId = 0;
         TSharedPtr<class FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> RhiGeometry;
+        TArray<FVector2f> ConvexHull;
+        bool bFilledConvex = false;
     };
     struct FTextureResource {
         TObjectPtr<UTexture2D> Texture = nullptr;
@@ -162,6 +167,7 @@ private:
     mutable uint64 ResolvedMaterialDrawCounts[3] = {};
     mutable uint64 SlateRhiDrawCount = 0;
     mutable uint64 SlateRhiMaskCount = 0;
+    mutable uint64 SlateMaterialClipDrawCount = 0;
     mutable uint64 SlateFallbackDrawCount = 0;
     bool bNativeShutdown = false;
 };
