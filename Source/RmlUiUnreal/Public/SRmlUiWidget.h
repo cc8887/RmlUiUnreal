@@ -135,6 +135,7 @@ private:
     FReply ForwardTouch(const FGeometry& Geometry, const FPointerEvent& Event, int32 Phase);
     void DispatchEvents();
     void ReleaseUnrealRenderResources(bool bIncludeMaterials);
+    void ReparentMaterialResources(uint64 OwnerId);
 
     RmlUE_View* NativeView = nullptr;
     RmlUE_StyleSheet* BaseStyleSheet = nullptr;

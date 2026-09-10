@@ -217,6 +217,12 @@ void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
     }
 }
 
+void SRmlUiWidget::ReparentMaterialResources(uint64 OwnerId)
+{
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    for (const auto& Pair : Materials) Registry.ReparentUnreal(Pair.Value.RegistryId, OwnerId);
+}
+
 RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
 {
     check(IsInGameThread() && Replacement);
@@ -229,6 +235,7 @@ RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
     NativeDraws.Reset();
     NativeMaterialResources.Reset();
     NativeView = Replacement;
+    ReparentMaterialResources(RmlUE_GetViewResourceId(NativeView));
     bNativeShutdown = false;
     DocumentError.Reset();
     LastError.Reset();
@@ -252,6 +259,7 @@ bool SRmlUiWidget::EnsureNativeView()
     const int32 Height = FMath::Clamp(FMath::RoundToInt(DesiredSize.Y), 1, MaxTextureDimension);
     NativeView = bUseSlateRenderer ? RmlUE_CreateSlateView(Width, Height, 1.0f) : RmlUE_CreateView(Width, Height, 1.0f);
     if (!CheckResult(NativeView != nullptr)) return false;
+    ReparentMaterialResources(RmlUE_GetViewResourceId(NativeView));
     return !BaseStyleSheet || CheckResult(RmlUE_SetBaseStyleSheet(NativeView, BaseStyleSheet));
 }
 
@@ -355,6 +363,7 @@ void SRmlUiWidget::SetUseSlateRenderer(bool bInUseSlateRenderer)
     if (!NativeView) return;
     OnNativeShutdown.Broadcast();
     ReleaseUnrealRenderResources(false);
+    ReparentMaterialResources(0);
     RmlUE_DestroyView(NativeView);
     NativeView = nullptr;
     bNativeShutdown = false;
@@ -372,7 +381,8 @@ bool SRmlUiWidget::RegisterMaterial(FName Alias, UMaterialInterface* Material)
     FMaterialResource Resource;
     Resource.Brush = FDeferredCleanupSlateBrush::CreateBrush(MaterialBrush);
     Resource.RegistryId = Registry.RegisterUnreal(ERmlUiResourceType::SlateMaterialBrush, ERmlUiResourceBackend::Slate,
-        0, 0, FString::Printf(TEXT("Material alias: %s"), *Alias.ToString()), Material);
+        NativeView ? RmlUE_GetViewResourceId(NativeView) : 0, 0,
+        FString::Printf(TEXT("Material alias: %s"), *Alias.ToString()), Material);
     Materials.Add(Alias, MoveTemp(Resource));
     Invalidate(EInvalidateWidgetReason::Paint);
     return true;

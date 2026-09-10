@@ -11,6 +11,7 @@
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
 #include "Interfaces/IPluginManager.h"
+#include "Materials/Material.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RenderingThread.h"
@@ -109,6 +110,12 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     const FRmlUiResourceInfo* UpdatedInfo = Updated.FindByPredicate(
         [UnrealId](const FRmlUiResourceInfo& Info) { return Info.Id == UnrealId; });
     TestTrue(TEXT("Resource estimate can be updated"), UpdatedInfo && UpdatedInfo->EstimatedBytes == 8192);
+    TestTrue(TEXT("Unreal resource can be reparented without replacing its stable ID"),
+        Registry.ReparentUnreal(UnrealId, 88));
+    TestTrue(TEXT("Reparent removes the resource tree from its previous owner"),
+        Registry.SnapshotOwnedBy(77, true).IsEmpty());
+    TestEqual(TEXT("Reparent preserves recursive child ownership under the new owner"),
+        Registry.SnapshotOwnedBy(88, true).Num(), 3);
     Registry.UnregisterUnreal(GrandchildId);
     Registry.UnregisterUnreal(ChildId);
     Registry.UnregisterUnreal(UnrealId);
@@ -186,6 +193,81 @@ bool FRmlUiResourceRegistryTest::RunTest(const FString&)
     FlushRenderingCommands();
     TestTrue(TEXT("Slate shutdown removes its complete resource tree"),
         Registry.SnapshotOwnedBy(SlateOwnerId, true).IsEmpty());
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiMultipleSlateWidgetsTest, "RmlUiUnreal.Resources.MultipleSlateWidgets",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiMultipleSlateWidgetsTest::RunTest(const FString&)
+{
+    FModuleManager::LoadModuleChecked<FRmlUiUnrealModule>(TEXT("RmlUiUnreal"));
+    FRmlUiResourceRegistry& Registry = FRmlUiResourceRegistry::Get();
+    const FString FirstDocument = TEXT(R"RML(<rml><head><style>
+body { width: 100%; height: 100%; margin: 0; background-color: #a32f3f; }
+#panel { display: block; width: 80px; height: 48px; decorator: ue-material(shared.panel); }
+</style></head><body><div id="panel" data-owner="first"></div></body></rml>)RML");
+    const FString SecondDocument = TEXT(R"RML(<rml><head><style>
+body { width: 100%; height: 100%; margin: 0; background-color: #285f9f; }
+#panel { display: block; width: 72px; height: 56px; decorator: ue-material(shared.panel); }
+</style></head><body><div id="panel" data-owner="second"></div></body></rml>)RML");
+
+    TSharedRef<SRmlUiWidget> FirstWidget = SNew(SRmlUiWidget).UseSlateRenderer(true)
+        .InlineDocument(FirstDocument).SourcePath(TEXT("/multi-first.rml")).DesiredSize(FVector2D(160, 100));
+    TSharedRef<SRmlUiWidget> SecondWidget = SNew(SRmlUiWidget).UseSlateRenderer(true)
+        .InlineDocument(SecondDocument).SourcePath(TEXT("/multi-second.rml")).DesiredSize(FVector2D(160, 100));
+    UMaterialInterface* UiMaterial = UMaterial::GetDefaultMaterial(MD_UI);
+    TestNotNull(TEXT("Default UI material is available"), UiMaterial);
+    TestTrue(TEXT("First widget registers its material alias"), UiMaterial && FirstWidget->RegisterMaterial(TEXT("shared.panel"), UiMaterial));
+    TestTrue(TEXT("Second widget registers the same alias independently"), UiMaterial && SecondWidget->RegisterMaterial(TEXT("shared.panel"), UiMaterial));
+    TestTrue(TEXT("First widget renders its command stream"), FirstWidget->RenderFrame(160, 100));
+    TestTrue(TEXT("Second widget renders its command stream"), SecondWidget->RenderFrame(160, 100));
+    FlushRenderingCommands();
+
+    const uint64 FirstOwnerId = RmlUE_GetViewResourceId(FirstWidget->GetNativeView());
+    const uint64 SecondOwnerId = RmlUE_GetViewResourceId(SecondWidget->GetNativeView());
+    TestTrue(TEXT("Multiple widgets have distinct stable View owners"), FirstOwnerId != 0 && SecondOwnerId != 0 && FirstOwnerId != SecondOwnerId);
+    FString FirstOwner, SecondOwner;
+    TestTrue(TEXT("First widget retains its own DOM state"),
+        FirstWidget->GetElementAttribute(TEXT("panel"), TEXT("data-owner"), FirstOwner) && FirstOwner == TEXT("first"));
+    TestTrue(TEXT("Second widget retains its own DOM state"),
+        SecondWidget->GetElementAttribute(TEXT("panel"), TEXT("data-owner"), SecondOwner) && SecondOwner == TEXT("second"));
+
+    const TArray<FRmlUiResourceInfo> FirstResources = Registry.SnapshotOwnedBy(FirstOwnerId, true);
+    const TArray<FRmlUiResourceInfo> SecondResources = Registry.SnapshotOwnedBy(SecondOwnerId, true);
+    TestTrue(TEXT("First widget owns live render resources"), !FirstResources.IsEmpty());
+    TestTrue(TEXT("Second widget owns live render resources"), !SecondResources.IsEmpty());
+    TestTrue(TEXT("Each widget owns its registered Slate material brush"),
+        FirstResources.ContainsByPredicate([](const FRmlUiResourceInfo& Info)
+        {
+            return Info.Type == ERmlUiResourceType::SlateMaterialBrush && Info.Backend == ERmlUiResourceBackend::Slate;
+        }) && SecondResources.ContainsByPredicate([](const FRmlUiResourceInfo& Info)
+        {
+            return Info.Type == ERmlUiResourceType::SlateMaterialBrush && Info.Backend == ERmlUiResourceBackend::Slate;
+        }));
+    bool bResourceTreesDisjoint = true;
+    for (const FRmlUiResourceInfo& First : FirstResources)
+    {
+        bResourceTreesDisjoint &= !SecondResources.ContainsByPredicate(
+            [&First](const FRmlUiResourceInfo& Second) { return Second.Id == First.Id; });
+    }
+    TestTrue(TEXT("Multiple widget resource trees do not share owned records"), bResourceTreesDisjoint);
+
+    const uint64 SecondFrameBeforeRelease = SecondWidget->GetFrameNumber();
+    FirstWidget->ShutdownNative();
+    FlushRenderingCommands();
+    TestTrue(TEXT("Releasing one widget removes only its complete resource tree"),
+        Registry.SnapshotOwnedBy(FirstOwnerId, true).IsEmpty());
+    TestEqual(TEXT("The other widget resource tree survives peer shutdown"),
+        Registry.SnapshotOwnedBy(SecondOwnerId, true).Num(), SecondResources.Num());
+    TestTrue(TEXT("The surviving widget continues rendering"),
+        SecondWidget->RenderFrame(160, 100) && SecondWidget->GetFrameNumber() > SecondFrameBeforeRelease);
+    TestFalse(TEXT("A shut down widget cannot recreate resources implicitly"), FirstWidget->RenderFrame(160, 100));
+
+    SecondWidget->ShutdownNative();
+    FlushRenderingCommands();
+    TestTrue(TEXT("Releasing the final widget removes its complete resource tree"),
+        Registry.SnapshotOwnedBy(SecondOwnerId, true).IsEmpty());
     return true;
 }
 

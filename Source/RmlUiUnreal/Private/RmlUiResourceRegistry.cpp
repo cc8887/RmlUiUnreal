@@ -75,6 +75,21 @@ void FRmlUiResourceRegistry::UpdateUnreal(uint64 Id, uint64 EstimatedBytes)
     Trace(ERmlUiResourceAction::Updated, Info);
 }
 
+bool FRmlUiResourceRegistry::ReparentUnreal(uint64 Id, uint64 OwnerId)
+{
+    FRmlUiResourceInfo Info;
+    {
+        FScopeLock Lock(&Mutex);
+        FRmlUiResourceInfo* Existing = Resources.Find(Id);
+        if (!Existing || Existing->Domain != ERmlUiResourceDomain::Unreal || Id == OwnerId) return false;
+        if (Existing->OwnerId == OwnerId) return true;
+        Existing->OwnerId = OwnerId;
+        Info = *Existing;
+    }
+    Trace(ERmlUiResourceAction::Updated, Info);
+    return true;
+}
+
 void FRmlUiResourceRegistry::UnregisterUnreal(uint64 Id)
 {
     FRmlUiResourceInfo Info;

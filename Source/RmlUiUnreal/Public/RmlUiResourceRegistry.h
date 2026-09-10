@@ -72,6 +72,7 @@ public:
         uint64 EstimatedBytes, FString Name, UObject* Object = nullptr,
         ERmlUiResourceState State = ERmlUiResourceState::Live);
     void UpdateUnreal(uint64 Id, uint64 EstimatedBytes);
+    bool ReparentUnreal(uint64 Id, uint64 OwnerId);
     void SetUnrealState(uint64 Id, ERmlUiResourceState State);
     void UnregisterUnreal(uint64 Id);
     void ApplyNativeEvent(int32 Action, const RmlUE_ResourceRecord& Record);
