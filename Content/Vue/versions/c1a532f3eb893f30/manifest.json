@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "abi": 1,
+  "stateSchema": 1,
+  "version": "c1a532f3eb893f30",
+  "entry": "app.js",
+  "document": "shell.rml",
+  "fonts": [],
+  "files": {
+    "app.js.map": "7e8fc1f9c9158d5b30152253d9ce556ab93a01ec600d7216a2b72666bf214208",
+    "app.js": "97ae4c52b852f32937f9c911aefd5166d1eab31cff51005562a8950b2aa94eb9",
+    "licenses/_vue_reactivity-LICENSE.txt": "1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175",
+    "licenses/_vue_runtime-core-LICENSE.txt": "1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175",
+    "licenses/_vue_shared-LICENSE.txt": "1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175",
+    "app.rcss": "85987adf2d04720fc736894276cab602dc528915cdad4236046c917542cae0ad",
+    "shell.rml": "adbb07630bb92e7d811042931760d493dc7e29547b33985f164acb8e31bcdd6f",
+    "hello_world.png": "d9877e95e9e94ad08279b14d917529c6c74525fe397b5c640c4b1c78e9feb0a4"
+  }
+}

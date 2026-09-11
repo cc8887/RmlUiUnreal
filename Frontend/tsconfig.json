@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2020", "module": "ESNext", "moduleResolution": "Bundler",
+    "strict": true, "skipLibCheck": true, "noEmit": true,
+    "paths": { "@rmlui/vue": ["./src/renderer.ts"] }
+  },
+  "include": ["src/**/*.ts"]
+}

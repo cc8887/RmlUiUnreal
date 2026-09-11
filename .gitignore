@@ -1,5 +1,7 @@
 /Binaries/
 /Intermediate/
+/Frontend/node_modules/
+/Tools/node_modules/
 /.vs/
 *.sln
 *.slnx

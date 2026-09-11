@@ -1,0 +1,8 @@
+Bulma Card compatibility fixture
+
+The HTML structure and class naming are adapted from the Bulma Card component.
+Bulma is Copyright (c) 2026 Jeremy Thomas and contributors and is distributed
+under the MIT License: https://github.com/jgthms/bulma/blob/main/LICENSE
+
+The fixture contains a small, locally adapted CSS subset so the test remains
+deterministic and does not require a network connection at runtime.

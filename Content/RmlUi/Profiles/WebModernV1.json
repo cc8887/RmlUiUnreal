@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "WebModernV1",
+  "baseStyles": [
+    "../Styles/html-ua-v1.rcss",
+    "../Styles/modern-reset-v1.rcss"
+  ]
+}

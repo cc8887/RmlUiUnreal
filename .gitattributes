@@ -4,3 +4,6 @@ Source/ThirdParty/RmlUiBridge/grid/vendor/** -text
 *.png binary
 *.ttf binary
 *.otf binary
+Content/**/fonts/OFL-Lato.txt -whitespace
+Content/**/licenses/* -whitespace
+Content/RuntimeCompiler/THIRD_PARTY_NOTICES.txt -whitespace

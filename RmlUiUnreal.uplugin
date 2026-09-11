@@ -3,7 +3,7 @@
   "Version": 1,
   "VersionName": "0.1.0",
   "FriendlyName": "RmlUi Unreal",
-  "Description": "RmlUi documents rendered in Unreal Engine through Slate and UMG.",
+  "Description": "RmlUi rendering, Web compatibility, and Puerts/Vue integration for Unreal Engine.",
   "Category": "UI",
   "CreatedBy": "RmlUi Unreal integration",
   "CanContainContent": true,
@@ -11,6 +11,13 @@
   "SupportedTargetPlatforms": ["Win64"],
   "Modules": [
     {"Name": "RmlUiUnreal", "Type": "Runtime", "LoadingPhase": "PostConfigInit"},
-    {"Name": "RmlUiUnrealEditor", "Type": "Editor", "LoadingPhase": "Default"}
+    {"Name": "RmlUiUnrealWebCompat", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "RmlUiUnrealWebCompatPuerts", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "RmlUiUnrealJS", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "RmlUiUnrealEditor", "Type": "Editor", "LoadingPhase": "Default"},
+    {"Name": "RmlUiUnrealJSEditor", "Type": "Editor", "LoadingPhase": "Default"}
+  ],
+  "Plugins": [
+    {"Name": "Puerts", "Enabled": true}
   ]
 }

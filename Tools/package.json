@@ -1,0 +1,20 @@
+{
+  "name": "rmlui-unreal-webcompat-tools",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "compile": "node ./src/cli.mjs",
+    "build:runtime": "node ./src/build-runtime.mjs",
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "dom-serializer": "3.0.0",
+    "domutils": "4.0.2",
+    "htmlparser2": "12.0.0",
+    "postcss": "8.5.28"
+  }
+}

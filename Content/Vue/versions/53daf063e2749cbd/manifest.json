@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "abi": 1,
+  "stateSchema": 1,
+  "version": "53daf063e2749cbd",
+  "entry": "app.js",
+  "document": "shell.rml",
+  "files": {
+    "app.js.map": "5cc44ac628137b25946badf27836741e894e292db6a91750dfa8e3317a579e8a",
+    "app.js": "91a44cce1cd5ee31c7a085e0a6297d38d5095ec0bae4c8d35f046c78713d61d8",
+    "app.rcss": "a7b7ab7b4c152bc5422c2f760479660e9ee190080ce94117f127f3b1683e768b",
+    "shell.rml": "adbb07630bb92e7d811042931760d493dc7e29547b33985f164acb8e31bcdd6f",
+    "hello_world.png": "d9877e95e9e94ad08279b14d917529c6c74525fe397b5c640c4b1c78e9feb0a4"
+  }
+}

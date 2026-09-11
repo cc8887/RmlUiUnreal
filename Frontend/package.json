@@ -1,0 +1,37 @@
+{
+  "name": "@rmlui/unreal-vue",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "dev": "node tools/build.mjs --watch",
+    "serve": "node tools/serve.mjs",
+    "chat:build": "node tools/build.mjs --chat",
+    "chat:dev": "node tools/build.mjs --chat --watch",
+    "chat:fixture": "node tools/chat-fixture.mjs",
+    "actors:build": "node tools/build.mjs --actors",
+    "actors:dev": "node tools/build.mjs --actors --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@vue/runtime-core": "3.5.42",
+    "highlight.js": "11.12.0",
+    "htmlparser2": "12.0.0",
+    "markdown-it": "15.0.1"
+  },
+  "devDependencies": {
+    "@babel/core": "8.0.1",
+    "@babel/plugin-transform-unicode-property-regex": "8.0.1",
+    "@types/markdown-it": "14.2.0",
+    "@vue/compiler-sfc": "3.5.42",
+    "esbuild": "0.28.2",
+    "lucide-static": "1.42.0",
+    "playwright": "1.63.0",
+    "postcss": "8.5.28",
+    "sharp": "0.35.4",
+    "tailwindcss": "3.4.17",
+    "typescript": "7.0.2"
+  }
+}
