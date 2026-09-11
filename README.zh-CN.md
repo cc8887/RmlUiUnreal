@@ -238,4 +238,6 @@ RmlUiUnreal/
 
 ## 许可证
 
-第三方源码、字体、示例和前端包分别保留其原始许可证和 Notice，位于 `Source/ThirdParty`、`Content/RmlUi` 和生成的 bundle Manifest 中。当前仓库尚未声明统一的项目级许可证；重新分发集成代码前，请先向项目所有者取得明确授权。
+本仓库的原创集成代码采用 [PolyForm Noncommercial License 1.0.0](LICENSE.md) 以源码可用方式许可。仅可将其用于该协议允许的用途，并可在许可范围内修改和再分发；商业使用需要另行取得项目所有者的商业授权。该协议是禁止商用的源码可用协议，不是 OSI 认可的开源协议。
+
+必需版权声明见 [NOTICE](NOTICE)。第三方源码、字体、示例和前端包继续适用其各自的原始许可证和 Notice，相关文件位于 `Source/ThirdParty`、`Content/RmlUi` 和生成的 bundle Manifest 中；本项目协议不会覆盖或替代这些第三方协议。

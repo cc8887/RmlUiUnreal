@@ -238,4 +238,6 @@ Keep changes scoped to the plugin, preserve the module boundaries above, and acc
 
 ## Licensing
 
-Third-party source, fonts, examples, and frontend packages retain their original license and notice files under `Source/ThirdParty`, `Content/RmlUi`, and generated bundle manifests. This repository currently does not declare a single project-wide license; obtain an explicit license from the project owner before redistributing the integration code.
+Original integration code in this repository is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). It may be used, modified, and redistributed only for purposes permitted by that license. Commercial use requires a separate commercial license from the project owner. This is a noncommercial source-available license, not an OSI-approved open-source license.
+
+The required copyright notice is provided in [NOTICE](NOTICE). Third-party source, fonts, examples, and frontend packages retain their original licenses and notices under `Source/ThirdParty`, `Content/RmlUi`, and generated bundle manifests; the project license does not replace them.
