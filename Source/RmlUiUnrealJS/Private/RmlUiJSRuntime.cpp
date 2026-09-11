@@ -35,9 +35,23 @@ bool DigestMatches(const TArray<uint8>& Bytes, const FString& Expected)
 {
     if (Expected.Len() != 64) return false;
     BCRYPT_ALG_HANDLE Algorithm = nullptr;
+    BCRYPT_HASH_HANDLE HashHandle = nullptr;
     uint8 Hash[32]{};
     if (BCryptOpenAlgorithmProvider(&Algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return false;
-    const NTSTATUS Status = BCryptHash(Algorithm, nullptr, 0, const_cast<uint8*>(Bytes.GetData()), Bytes.Num(), Hash, sizeof(Hash));
+    ULONG ObjectLength = 0;
+    ULONG ResultLength = 0;
+    NTSTATUS Status = BCryptGetProperty(Algorithm, BCRYPT_OBJECT_LENGTH,
+        reinterpret_cast<PUCHAR>(&ObjectLength), sizeof(ObjectLength), &ResultLength, 0);
+    TArray<uint8> HashObject;
+    if (Status >= 0) {
+        HashObject.SetNumUninitialized(ObjectLength);
+        Status = BCryptCreateHash(Algorithm, &HashHandle, HashObject.GetData(), ObjectLength, nullptr, 0, 0);
+    }
+    if (Status >= 0) {
+        Status = BCryptHashData(HashHandle, const_cast<PUCHAR>(Bytes.GetData()), static_cast<ULONG>(Bytes.Num()), 0);
+    }
+    if (Status >= 0) Status = BCryptFinishHash(HashHandle, Hash, sizeof(Hash), 0);
+    if (HashHandle) BCryptDestroyHash(HashHandle);
     BCryptCloseAlgorithmProvider(Algorithm, 0);
     return Status >= 0 && BytesToHex(Hash, sizeof(Hash)).Equals(Expected, ESearchCase::IgnoreCase);
 }

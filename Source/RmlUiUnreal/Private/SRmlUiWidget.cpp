@@ -10,6 +10,7 @@
 #include "Misc/App.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "RmlUiBridge.h"
 #include "RmlUiResourceRegistry.h"
 #include "RmlUiSlateRhiRenderer.h"
@@ -1190,9 +1191,15 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 TArray<SlateIndex> Indices;
                 Indices.Reserve(GeometryResource->Indices.Num());
                 for (uint32 Index : GeometryResource->Indices) Indices.Add(static_cast<SlateIndex>(Index));
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
                 FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
                     FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
                     nullptr, 0, 0, ESlateDrawEffect::None, ESlateBatchDrawFlag::PreMultipliedAlpha);
+#else
+                FSlateDrawElement::MakeCustomVerts(Elements, LayerId++,
+                    FSlateApplication::Get().GetRenderer()->GetResourceHandle(*Brush), Vertices, Indices,
+                    nullptr, 0, 0, ESlateDrawEffect::None);
+#endif
             }
             ++SlateFallbackDrawCount;
             if (NativeMaterial && Draw.bMaterialClipSupported && !Draw.ClipMasks.IsEmpty()) ++SlateMaterialClipDrawCount;
