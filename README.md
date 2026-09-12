@@ -41,7 +41,16 @@ UE's standard WebBrowser is the right choice when a project must display existin
 | Content delivery | Normal web URL/resource and cache model | Cooked UFS content, content-addressed manifests, SHA-256 checks, atomic activation, rollback, and packaged runtime compilation |
 | Compatibility tradeoff | Much broader browser compatibility | Smaller, deterministic surface with explicit unsupported-feature diagnostics |
 
-Unreal-focused features implemented by this project include `URmlUiWidget` and `URmlUiWebWidget`, the editor Preview and Actor Observer tabs, current Editor World binding, native Slate event routing, host-controlled UI Material registration, stable resource IDs and owner trees, Unreal Insights lifecycle events, and DX11/DX12 packaged validation. These are application and engine integration advantages, not a claim that every RmlUi page is already faster than WebBrowser. The default complete renderer still performs a DX11 readback/upload; the direct Slate/RHI path and comparative performance instrumentation remain active roadmap work.
+Unreal-focused features implemented by this project include `URmlUiWidget` and `URmlUiWebWidget`, the editor Preview and Actor Observer tabs, current Editor World binding, native Slate event routing, host-controlled UI Material registration, stable resource IDs and owner trees, Unreal Insights lifecycle events, and DX11/DX12 packaged validation. These are application and engine integration advantages, not a claim that every RmlUi page is already faster than WebBrowser. The default complete renderer still performs a DX11 readback/upload; the data-access comparison below is complete, while the direct Slate/RHI path and broader page, GPU, and multi-view performance validation remain active work.
+
+### Measured C++ data access
+
+| UI solution | Measured C++ data access |
+| --- | --- |
+| WebBrowser | JSON event round trip: **7.3–8.0 ms**; official Promise binding: **7.8–8.3 ms** (median serial RTT) |
+| RmlUi | Through Puerts: float read **0.105–0.115 µs/read**; live property read through a cached UObject proxy **~0.058 µs/read** (median amortized cost of synchronous batches) |
+
+Measured in UE 5.8.1 Development Editor on a Ryzen 9 9950X / RTX 5080 with DX11/DX12, using 2 warmup batches and 5 measured batches per scenario. Each batch performs 128 WebBrowser requests or 100,000 RmlUi reads; C++ changes the value before each batch and returned values are verified. WebBrowser RTT includes CEF/UE scheduling, while RmlUi uses synchronous, in-process Puerts calls; these are not overall CPU or UI speedup ratios. Raw data: [DX11](Docs/Performance/2026-09-12/DX11/CommunicationComparison.json), [DX12](Docs/Performance/2026-09-12/DX12/CommunicationComparison.json).
 
 ### Reconstructing a practical web stack
 
