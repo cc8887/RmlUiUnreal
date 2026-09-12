@@ -26,6 +26,30 @@ RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 
 | --- | --- |
 | ![UI Lab 宽版](Docs/Images/ui-lab-wide.png) | ![UI Lab 窄版](Docs/Images/ui-lab-narrow.png) |
 
+## 性能数据对比
+
+进程内低延迟 UE 数据访问，以及减少整页像素传输，是当前两项已验证的性能优势。以下结果来自 UE 5.8.1 Development Editor、Ryzen 9 9950X / RTX 5080 的 DX11/DX12 测试。
+
+### C++ 数据通信
+
+| UI 方案 | C++ 数据读取实测 |
+| --- | --- |
+| WebBrowser | JSON 事件往返 **7.3–8.0 ms**；官方 Promise 绑定 **7.8–8.3 ms**（串行 RTT 中位数） |
+| RmlUi | 通过 Puerts 读取 float **0.105–0.115 µs/次**；读取缓存 UObject 代理的实时属性约 **0.058 µs/次**（同步批次均摊中位数） |
+
+每场景预热 2 批、测量 5 批；WebBrowser 每批 128 次请求，RmlUi 每批 100,000 次读取，C++ 每批改写数值并校验返回结果。WebBrowser RTT 包含 CEF/UE 调度等待，RmlUi 使用进程内 Puerts 同步调用；两种口径不直接换算成整体 CPU 或 UI 加速倍数。原始数据：[DX11](Docs/Performance/2026-09-12/DX11/CommunicationComparison.json)、[DX12](Docs/Performance/2026-09-12/DX12/CommunicationComparison.json)。
+
+### 渲染耗时与整页传输
+
+在同一 1280×800、100 行夹具中，RmlUi Slate/RHI 路径将 `RenderFrame` 平均耗时降低 **77.5%–79.0%**，并消除了整页像素上传：
+
+| RmlUi 渲染路径 | `RenderFrame` 平均耗时 | 整页像素上传 |
+| --- | ---: | ---: |
+| 私有 DX11 后端 | 6.306–7.202 ms/帧 | 3.90625 MiB/帧 |
+| Slate/RHI 后端 | **1.418–1.509 ms/帧** | **0 MiB/帧** |
+
+每条路径预热 10 秒、采样 60 秒，同字体、行高和标题更新请求。这里比较的是本项目两条 RmlUi 后端的插件阶段耗时；Slate/RHI 为实验路径，0 仅指整页上传，纹理增量、几何提交和 GPU 工作仍然存在。原始四方数据：[DX11](Docs/Performance/2026-09-12/DX11/RmlUiComparison-D3D11-Windowed.json)、[DX12](Docs/Performance/2026-09-12/DX12/RmlUiComparison-D3D12-Windowed.json)。
+
 ## 功能特性
 
 ### 为 Unreal UI 设计，而不是嵌入浏览器
@@ -41,16 +65,7 @@ RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 
 | 内容交付 | 常规 Web URL、资源和缓存模型 | Cooked UFS、内容寻址 Manifest、SHA-256 校验、原子激活、回滚和 packaged 运行时编译 |
 | 兼容性取舍 | 浏览器兼容范围更广 | 能力面更小但更确定，不支持的特性会显式诊断 |
 
-本项目已经为 Unreal 原生工作流补充了 `URmlUiWidget`、`URmlUiWebWidget`、编辑器 Preview、Actor Observer、当前 Editor World 绑定、原生 Slate 事件路由、宿主控制的 UI Material 注册、稳定资源 ID 与 Owner Tree、Unreal Insights 生命周期事件，以及 DX11/DX12 packaged 验证。这些是面向应用和引擎集成的优势，但不代表当前所有 RmlUi 页面性能已经超过 WebBrowser。默认完整渲染器仍包含 DX11 readback/upload；下述数据通信对比已完成，直接 Slate/RHI 路径与更多页面、GPU 和多 View 性能验证仍在持续推进。
-
-### C++ 数据通信实测
-
-| UI 方案 | C++ 数据读取实测 |
-| --- | --- |
-| WebBrowser | JSON 事件往返 **7.3–8.0 ms**；官方 Promise 绑定 **7.8–8.3 ms**（串行 RTT 中位数） |
-| RmlUi | 通过 Puerts 读取 float **0.105–0.115 µs/次**；读取缓存 UObject 代理的实时属性约 **0.058 µs/次**（同步批次均摊中位数） |
-
-测试环境：UE 5.8.1 Development Editor、Ryzen 9 9950X / RTX 5080、DX11/DX12；每场景预热 2 批、测量 5 批。WebBrowser 每批 128 次请求，RmlUi 每批 100,000 次读取；C++ 每批改写数值并校验返回结果。WebBrowser RTT 包含 CEF/UE 调度等待，RmlUi 使用进程内 Puerts 同步调用；两者不等同于整体 CPU 或 UI 加速倍数。原始数据：[DX11](Docs/Performance/2026-09-12/DX11/CommunicationComparison.json)、[DX12](Docs/Performance/2026-09-12/DX12/CommunicationComparison.json)。
+本项目已经为 Unreal 原生工作流补充了 `URmlUiWidget`、`URmlUiWebWidget`、编辑器 Preview、Actor Observer、当前 Editor World 绑定、原生 Slate 事件路由、宿主控制的 UI Material 注册、稳定资源 ID 与 Owner Tree、Unreal Insights 生命周期事件，以及 DX11/DX12 packaged 验证。这些是面向应用和引擎集成的优势，但不代表当前所有 RmlUi 页面性能已经超过 WebBrowser。默认完整渲染器仍包含 DX11 readback/upload；[性能数据对比](#性能数据对比)记录了已完成的通信和受控渲染测试，更多页面、GPU 和多 View 性能验证仍在持续推进。
 
 ### 尽可能还原实用 Web 开发栈
 

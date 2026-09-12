@@ -1,0 +1,223 @@
+{
+	"schema_version": 2,
+	"method": "1280x800 requested client pixels; 100 fixed 29px rows, three fields, 48px header; LatoLatin 14px/20px; clipping; per-UE-frame header update; readiness then 10.000s warmup + 60.000s sample",
+	"warmup_seconds": 10,
+	"sample_seconds": 60,
+	"created_rows": 100,
+	"requested_client_width": 1280,
+	"requested_client_height": 800,
+	"webbrowser_frame_rate": 60,
+	"frame_metric": "Elapsed wall time between automation updates in the UE host, not UI-only CPU time or browser presented-frame latency",
+	"widget_traversal_metric": "Outer SCompoundWidget::OnPaint including child traversal; child SWidget::Paint may execute Tick and OnPaint. This is not pure draw submission time. Browser work is asynchronous and CEF child CPU/GPU time is excluded.",
+	"workload_limitations": "Same visible content and per-host-frame update requests; browser refresh capped at 60Hz and may coalesce updates. Native Slate and RmlUi process updates in the UE host. Font rasterizers and widget/DOM implementations differ. Results are steady-state Editor measurements, not input-to-photon latency or packaged-runtime totals.",
+	"readiness": "Cached geometry; browser IsLoaded plus document.fonts.ready title acknowledgement; RmlUi native view plus a completed frame and no document error",
+	"scope": "UE host process; WebBrowser child-process CPU and memory excluded",
+	"engine": "5.8.1-56057345+++UE5+Release-5.8",
+	"rhi": "D3D12",
+	"cpu": "AMD Ryzen 9 9950X 16-Core Processor            ",
+	"rhi_adapter": "NVIDIA GeForce RTX 5080",
+	"primary_display_adapter": "Microsoft Remote Display Adapter",
+	"font": "F:/Github/RmlUiUnrealTest/Plugins/RmlUiUnreal/Content/RmlUi/Fonts/LatoLatin-Regular.ttf",
+	"scenarios": [
+		{
+			"name": "Slate",
+			"ready": true,
+			"readiness_seconds": 0.010309100151062012,
+			"actual_sample_seconds": 60.004088699817657,
+			"sample_started_utc": "2026-09-12T05:21:39.160Z",
+			"sample_finished_utc": "2026-09-12T05:22:39.162Z",
+			"geometry":
+			{
+				"local_width": 1280,
+				"local_height": 800,
+				"layout_scale": 1,
+				"window_dpi_scale": 1,
+				"application_scale": 1
+			},
+			"content_pixels_verified": true,
+			"header_text_pixels_verified": true,
+			"header_text_pixels": 375,
+			"screenshot_width": 1280,
+			"screenshot_height": 800,
+			"screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/SlateBenchmark-D3D12-Windowed.png",
+			"samples": 7124,
+			"frame_p50_ms": 8.2870982587337494,
+			"frame_p95_ms": 10.619401931762695,
+			"frame_p99_ms": 12.371998280286789,
+			"widget_traversal_samples": 7124,
+			"widget_traversal_p50_ms": 0.25559999999999999,
+			"widget_traversal_p95_ms": 0.4163,
+			"widget_traversal_p99_ms": 0.55930000000000002,
+			"process_used_physical_mib": 3742.56640625
+		},
+		{
+			"name": "WebBrowser",
+			"ready": true,
+			"readiness_seconds": 0.060888297855854034,
+			"actual_sample_seconds": 60.007119599729776,
+			"sample_started_utc": "2026-09-12T05:22:49.370Z",
+			"sample_finished_utc": "2026-09-12T05:23:49.376Z",
+			"geometry":
+			{
+				"local_width": 1280,
+				"local_height": 800,
+				"layout_scale": 1,
+				"window_dpi_scale": 1,
+				"application_scale": 1
+			},
+			"content_pixels_verified": true,
+			"header_text_pixels_verified": true,
+			"header_text_pixels": 439,
+			"screenshot_width": 1280,
+			"screenshot_height": 800,
+			"screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/WebBrowserBenchmark-D3D12-Windowed.png",
+			"samples": 7064,
+			"frame_p50_ms": 8.3349980413913727,
+			"frame_p95_ms": 10.369598865509033,
+			"frame_p99_ms": 13.275802135467529,
+			"widget_traversal_samples": 7064,
+			"widget_traversal_p50_ms": 0.011399999999999999,
+			"widget_traversal_p95_ms": 0.018800000000000001,
+			"widget_traversal_p99_ms": 0.027899999999999998,
+			"process_used_physical_mib": 3751.48828125
+		},
+		{
+			"name": "RmlUiDX11",
+			"ready": true,
+			"readiness_seconds": 0.023002099245786667,
+			"actual_sample_seconds": 60.000947099179029,
+			"sample_started_utc": "2026-09-12T05:23:59.563Z",
+			"sample_finished_utc": "2026-09-12T05:24:59.563Z",
+			"geometry":
+			{
+				"local_width": 1280,
+				"local_height": 800,
+				"layout_scale": 1,
+				"window_dpi_scale": 1,
+				"application_scale": 1
+			},
+			"content_pixels_verified": true,
+			"header_text_pixels_verified": true,
+			"header_text_pixels": 344,
+			"screenshot_width": 1280,
+			"screenshot_height": 800,
+			"screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/RmlUiDX11Benchmark-D3D12-Windowed.png",
+			"samples": 5107,
+			"frame_p50_ms": 11.585302650928497,
+			"frame_p95_ms": 13.991400599479675,
+			"frame_p99_ms": 15.809301286935806,
+			"widget_traversal_samples": 5107,
+			"widget_traversal_p50_ms": 6.2154999999999996,
+			"widget_traversal_p95_ms": 7.4226000000000001,
+			"widget_traversal_p99_ms": 9.027099999999999,
+			"process_used_physical_mib": 3772.265625,
+			"rmlui_stages":
+			{
+				"render_frame":
+				{
+					"calls": 5107,
+					"total_ms": 32203.663899999996,
+					"mean_ms": 6.3057888975915404
+				},
+				"bridge_render":
+				{
+					"calls": 5107,
+					"total_ms": 31025.956200000001,
+					"mean_ms": 6.0751823379674956
+				},
+				"draw_decode":
+				{
+					"calls": 0,
+					"total_ms": 0,
+					"mean_ms": 0
+				},
+				"upload_prepare":
+				{
+					"calls": 5107,
+					"total_ms": 1034.0865999999999,
+					"mean_ms": 0.20248415899745445
+				},
+				"on_paint":
+				{
+					"calls": 5107,
+					"total_ms": 24.004200000000001,
+					"mean_ms": 0.0047002545525748974
+				}
+			},
+			"frames": 5107,
+			"draws": 0,
+			"full_frame_upload_mib": 19949.21875,
+			"rmlui_metrics_verified": true,
+			"unsupported_slate_features": 0
+		},
+		{
+			"name": "RmlUiSlate",
+			"ready": true,
+			"readiness_seconds": 0.0093077979981899261,
+			"actual_sample_seconds": 60.006699200719595,
+			"sample_started_utc": "2026-09-12T05:25:09.719Z",
+			"sample_finished_utc": "2026-09-12T05:26:09.725Z",
+			"geometry":
+			{
+				"local_width": 1280,
+				"local_height": 800,
+				"layout_scale": 1,
+				"window_dpi_scale": 1,
+				"application_scale": 1
+			},
+			"content_pixels_verified": true,
+			"header_text_pixels_verified": true,
+			"header_text_pixels": 365,
+			"screenshot_width": 1280,
+			"screenshot_height": 800,
+			"screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/RmlUiSlateBenchmark-D3D12-Windowed.png",
+			"samples": 7183,
+			"frame_p50_ms": 8.2992017269134521,
+			"frame_p95_ms": 10.184299200773239,
+			"frame_p99_ms": 11.193100363016129,
+			"widget_traversal_samples": 7183,
+			"widget_traversal_p50_ms": 1.5044999999999999,
+			"widget_traversal_p95_ms": 2.0476000000000001,
+			"widget_traversal_p99_ms": 2.3685999999999998,
+			"process_used_physical_mib": 3778.19140625,
+			"rmlui_stages":
+			{
+				"render_frame":
+				{
+					"calls": 7183,
+					"total_ms": 10184.579599999999,
+					"mean_ms": 1.4178726994292077
+				},
+				"bridge_render":
+				{
+					"calls": 7183,
+					"total_ms": 9907.6522999999979,
+					"mean_ms": 1.3793195461506331
+				},
+				"draw_decode":
+				{
+					"calls": 7183,
+					"total_ms": 37.317900000000002,
+					"mean_ms": 0.0051953083669775864
+				},
+				"upload_prepare":
+				{
+					"calls": 0,
+					"total_ms": 0,
+					"mean_ms": 0
+				},
+				"on_paint":
+				{
+					"calls": 7183,
+					"total_ms": 586.17669999999998,
+					"mean_ms": 0.081606111652512872
+				}
+			},
+			"frames": 7183,
+			"draws": 1300123,
+			"full_frame_upload_mib": 0,
+			"rmlui_metrics_verified": true,
+			"unsupported_slate_features": 0
+		}
+	]
+}
