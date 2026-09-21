@@ -56,6 +56,10 @@ public:
 	/// Stops propagation of the event if it is interruptible, including to any other listeners on the current element.
 	void StopImmediatePropagation();
 
+	// Unreal host extension: cancellation is independent of listener propagation.
+	void PreventDefault() { if (interruptible) default_prevented = true; }
+	bool IsDefaultPrevented() const { return default_prevented; }
+
 	/// Returns true if the event can be interrupted, that is, stopped from propagating.
 	bool IsInterruptible() const;
 	/// Returns true if the event is still propagating.
@@ -107,6 +111,7 @@ private:
 
 	bool interrupted = false;
 	bool interrupted_immediate = false;
+	bool default_prevented = false;
 
 	bool has_mouse_position = false;
 	Vector2f mouse_screen_position = Vector2f(0, 0);

@@ -137,6 +137,9 @@ ElementDocument::ElementDocument(const String& tag) : Element(tag)
 	SetOwnerDocument(this, true);
 
 	SetProperty(PropertyId::Position, Property(Style::Position::Absolute));
+	// Match :root before Context::LoadDocument performs its initial style update.
+	// Setting this later in the host would report spurious undefined theme variables.
+	SetPseudoClass("root", true);
 }
 
 ElementDocument::~ElementDocument()

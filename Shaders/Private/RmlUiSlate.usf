@@ -7,6 +7,7 @@ float2 AxisX;
 float2 AxisY;
 Texture2D InTexture;
 SamplerState TextureSampler;
+float VisualOpacity;
 
 struct FRmlUiSlateVertexOutput
 {
@@ -32,6 +33,7 @@ FRmlUiSlateVertexOutput MainVS(
 float4 MainPS(FRmlUiSlateVertexOutput Input) : SV_TARGET0
 {
     float4 Output = Input.Color * InTexture.Sample(TextureSampler, Input.TexCoord);
+    Output *= VisualOpacity;
     Output.rgb = LinearToSrgb(Output.rgb);
     return Output;
 }

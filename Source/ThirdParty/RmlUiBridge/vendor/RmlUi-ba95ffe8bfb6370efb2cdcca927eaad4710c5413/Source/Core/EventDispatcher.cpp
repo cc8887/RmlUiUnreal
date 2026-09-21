@@ -173,7 +173,7 @@ bool EventDispatcher::DispatchEvent(Element* target_element, const EventId id, c
 	// Process the default actions.
 	for (auto& element_ptr : default_action_elements)
 	{
-		if (!event->IsPropagating())
+		if (!event->IsPropagating() || event->IsDefaultPrevented())
 			break;
 
 		if (Element* element = element_ptr.get())
@@ -184,7 +184,8 @@ bool EventDispatcher::DispatchEvent(Element* target_element, const EventId id, c
 		}
 	}
 
-	bool propagating = event->IsPropagating();
+	// Context also performs defaults (Tab navigation and scrolling) after dispatch.
+	bool propagating = event->IsPropagating() && !event->IsDefaultPrevented();
 
 	return propagating;
 }

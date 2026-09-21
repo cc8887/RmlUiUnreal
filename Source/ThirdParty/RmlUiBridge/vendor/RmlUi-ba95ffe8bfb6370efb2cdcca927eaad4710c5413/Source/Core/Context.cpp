@@ -1227,7 +1227,13 @@ bool Context::OnFocusChange(Element* new_focus, bool focus_visible)
 
 	// Send out blur/focus events.
 	Dictionary parameters;
+	const auto old_focus_observer = old_focus ? old_focus->GetObserverPtr() : ObserverPtr<Element>();
+	const auto new_focus_observer = new_focus->GetObserverPtr();
+	parameters["related_target"] = static_cast<void*>(new_focus);
 	SendEvents(old_chain, new_chain, EventId::Blur, parameters);
+	if (!new_focus_observer)
+		return false;
+	parameters["related_target"] = static_cast<void*>(old_focus_observer.get());
 
 	if (focus_visible)
 		parameters["focus_visible"] = true;

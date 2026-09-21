@@ -12,13 +12,17 @@
 #include "Rendering/SlateRenderer.h"
 #include "Runtime/Launch/Resources/Version.h"
 #include "RmlUiBridge.h"
+#include "RmlUiAnimationRuntime.h"
+#include "RmlUiPerformance.h"
 #include "RmlUiResourceRegistry.h"
 #include "RmlUiSlateRhiRenderer.h"
+#include "RmlUiTextInput.h"
 #include "RmlUiUnrealModule.h"
 #include "Slate/DeferredCleanupSlateBrush.h"
 #include "SlateMaterialBrush.h"
 #include "Styling/CoreStyle.h"
 #include "TextureResource.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 namespace
 {
@@ -46,6 +50,15 @@ FColor UnpremultiplyMaterialVertexColor(FColor Color)
         return static_cast<uint8>(FMath::Min((int32(Value) * 255 + Alpha / 2) / Alpha, 255));
     };
     return FColor(Channel(Color.R), Channel(Color.G), Channel(Color.B), Color.A);
+}
+
+FColor ApplyPremultipliedOpacity(FColor Color, float Opacity)
+{
+    const auto Scale = [Opacity](uint8 Value)
+    {
+        return static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(static_cast<float>(Value) * Opacity), 0, 255));
+    };
+    return FColor(Scale(Color.R), Scale(Color.G), Scale(Color.B), Scale(Color.A));
 }
 
 int GetVirtualKey(const FKeyEvent& Event)
@@ -145,12 +158,16 @@ void SRmlUiWidget::Construct(const FArguments& InArgs)
     DesiredSize = InArgs._DesiredSize;
     MaxTextureDimension = FMath::Clamp(InArgs._MaxTextureDimension, 64, 4096);
     bUseSlateRenderer = InArgs._UseSlateRenderer;
+    bUsePaintCache = InArgs._UsePaintCache;
+    bSlatePaintCacheEligible = bUsePaintCache;
     OnDocumentEvent = InArgs._OnDocumentEvent;
     SetBaseStyleSheet(InArgs._BaseStyleSheet);
     SetCanTick(true);
-    ForceVolatile(true);
+    ForceVolatile(bUseSlateRenderer);
     SetClipping(EWidgetClipping::ClipToBounds);
     FRmlUiUnrealModule::Get().RegisterWidget(SharedThis(this));
+    TextInputContext = MakeShared<FRmlUiTextInputMethodContext>(SharedThis(this));
+    TextInputContext->Initialize();
     if (!InArgs._InlineDocument.IsEmpty())
     {
         LoadDocumentFromString(InArgs._InlineDocument, InArgs._SourcePath);
@@ -164,6 +181,16 @@ void SRmlUiWidget::Construct(const FArguments& InArgs)
 SRmlUiWidget::~SRmlUiWidget()
 {
     ShutdownNative();
+}
+
+TSharedPtr<ITextInputMethodContext> SRmlUiWidget::GetTextInputMethodContext() const
+{
+    return TextInputContext;
+}
+
+void SRmlUiWidget::CancelTextComposition()
+{
+    if (TextInputContext) TextInputContext->CancelComposition();
 }
 
 uint64 SRmlUiWidget::GetResolvedMaterialDrawCount(int32 MaterialSlot) const
@@ -183,10 +210,54 @@ int32 SRmlUiWidget::GetReadySlateRhiGeometryCount() const
     return Count;
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+bool SRmlUiWidget::OverrideClipMaskOperationForTesting(uint32 OwnerNode, int32 Operation)
+{
+    if (!OwnerNode || Operation < RMLUE_CLIP_MASK_SET || Operation > RMLUE_CLIP_MASK_INTERSECT)
+        return false;
+    const TArray<FNativeMaskRef>* MaskRefs = NativeMaskIndicesByOwnerNode.Find(OwnerNode);
+    if (!MaskRefs || MaskRefs->IsEmpty()) return false;
+    bool bChanged = false;
+    for (const FNativeMaskRef& Ref : *MaskRefs)
+    {
+        if (!NativeDraws.IsValidIndex(Ref.DrawIndex) ||
+            !NativeDraws[Ref.DrawIndex].ClipMasks.IsValidIndex(Ref.MaskIndex))
+            return false;
+        FNativeMask& Mask = NativeDraws[Ref.DrawIndex].ClipMasks[Ref.MaskIndex];
+        Mask.Operation = Operation;
+        bChanged = true;
+    }
+    if (bChanged)
+    {
+        MarkSlatePaintCachePending();
+        Invalidate(EInvalidateWidgetReason::PaintAndVolatility);
+    }
+    return bChanged;
+}
+
+bool SRmlUiWidget::GetClipMaskOperationsForTesting(uint32 VisualNode, TArray<int32>& OutOperations) const
+{
+    OutOperations.Reset();
+    const TArray<int32>* DrawIndices = NativeDrawIndicesByVisualNode.Find(VisualNode);
+    if (!DrawIndices) return false;
+    for (const int32 DrawIndex : *DrawIndices)
+    {
+        if (!NativeDraws.IsValidIndex(DrawIndex) || NativeDraws[DrawIndex].ClipMasks.IsEmpty()) continue;
+        OutOperations.Reserve(NativeDraws[DrawIndex].ClipMasks.Num());
+        for (const FNativeMask& Mask : NativeDraws[DrawIndex].ClipMasks)
+            OutOperations.Add(Mask.Operation);
+        return true;
+    }
+    return false;
+}
+#endif
+
 void SRmlUiWidget::ShutdownNative()
 {
+    if (TextInputContext) TextInputContext->Shutdown();
     if (NativeView)
     {
+        FRmlUiUnrealModule::Get().GetAnimationRuntime().CancelViewAnimations(NativeView);
         OnNativeShutdown.Broadcast();
     }
     ReleaseUnrealRenderResources(true);
@@ -204,7 +275,11 @@ void SRmlUiWidget::ShutdownNative()
     ActiveTouches.Empty();
     PressedMouseButtons.Empty();
     NativeDraws.Reset();
+    bHasSlateCommandSnapshot = false;
+    NativeDrawIndicesByVisualNode.Reset();
+    NativeMaskIndicesByOwnerNode.Reset();
     NativeMaterialResources.Reset();
+    ResetSlateSchedule();
 }
 
 void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
@@ -215,8 +290,10 @@ void SRmlUiWidget::ReleaseUnrealRenderResources(bool bIncludeMaterials)
     Texture = nullptr;
     TextureBrush.Reset();
     TextureSize = FIntPoint::ZeroValue;
-    for (const auto& DrawElement : SlateRhiDrawElements) ResetRmlUiSlateRhiDraw(DrawElement);
-    SlateRhiDrawElements.Reset();
+    for (const auto& Submission : SlateRhiSubmissions) ResetRmlUiSlateRhiSubmission(Submission);
+    SlateRhiSubmissions.Reset();
+    SlateRhiSubmissionPaintFrame = MAX_uint64;
+    SlateRhiSubmissionIndex = 0;
     for (const auto& Pair : NativeGeometries) MarkRmlUiSlateRhiGeometryPendingDestroy(Pair.Value.RhiGeometry);
     NativeGeometries.Reset();
     for (const auto& Pair : NativeTextures) Registry.UnregisterUnreal(Pair.Value.RegistryId);
@@ -242,13 +319,21 @@ void SRmlUiWidget::ReparentMaterialResources(uint64 OwnerId)
 RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
 {
     check(IsInGameThread() && Replacement);
+    if (TextInputContext) TextInputContext->Deactivate(true);
     if (BaseStyleSheet && !RmlUE_SetBaseStyleSheet(Replacement, BaseStyleSheet))
     {
         UE_LOG(LogRmlUiUnreal, Warning, TEXT("Could not attach the base style sheet to a replacement view: %s"), UTF8_TO_TCHAR(RmlUE_GetLastError()));
     }
     RmlUE_View* Previous = NativeView;
+    if (Previous)
+    {
+        FRmlUiUnrealModule::Get().GetAnimationRuntime().CancelViewAnimations(Previous);
+    }
     ReleaseUnrealRenderResources(false);
     NativeDraws.Reset();
+    bHasSlateCommandSnapshot = false;
+    NativeDrawIndicesByVisualNode.Reset();
+    NativeMaskIndicesByOwnerNode.Reset();
     NativeMaterialResources.Reset();
     NativeView = Replacement;
     ReparentMaterialResources(RmlUE_GetViewResourceId(NativeView));
@@ -258,6 +343,7 @@ RmlUE_View* SRmlUiWidget::ExchangeNativeView(RmlUE_View* Replacement)
     FrameNumber = 0;
     ActiveTouches.Empty();
     PressedMouseButtons.Empty();
+    ResetSlateSchedule();
     return Previous;
 }
 
@@ -275,6 +361,7 @@ bool SRmlUiWidget::EnsureNativeView()
     const int32 Height = FMath::Clamp(FMath::RoundToInt(DesiredSize.Y), 1, MaxTextureDimension);
     NativeView = bUseSlateRenderer ? RmlUE_CreateSlateView(Width, Height, 1.0f) : RmlUE_CreateView(Width, Height, 1.0f);
     if (!CheckResult(NativeView != nullptr)) return false;
+    ResetSlateSchedule();
     ReparentMaterialResources(RmlUE_GetViewResourceId(NativeView));
     return !BaseStyleSheet || CheckResult(RmlUE_SetBaseStyleSheet(NativeView, BaseStyleSheet));
 }
@@ -302,6 +389,7 @@ bool SRmlUiWidget::LoadDocument(const FString& Path)
     SourcePath.Reset();
     const bool bLoaded = EnsureNativeView() && CheckResult(RmlUE_LoadDocument(NativeView, TCHAR_TO_UTF8(*DocumentPath)));
     DocumentError = bLoaded ? FString() : LastError;
+    if (bLoaded) RequestScheduledRender();
     return bLoaded;
 }
 
@@ -313,6 +401,7 @@ bool SRmlUiWidget::LoadDocumentFromString(const FString& Markup, const FString& 
     const bool bLoaded = EnsureNativeView() && CheckResult(RmlUE_LoadDocumentFromMemory(NativeView,
         TCHAR_TO_UTF8(*InlineDocument), TCHAR_TO_UTF8(*SourcePath)));
     DocumentError = bLoaded ? FString() : LastError;
+    if (bLoaded) RequestScheduledRender();
     return bLoaded;
 }
 
@@ -323,7 +412,10 @@ bool SRmlUiWidget::ReloadDocument()
 
 bool SRmlUiWidget::SetElementInnerRml(const FString& Id, const FString& Rml)
 {
-    return NativeView && CheckResult(RmlUE_SetInnerRml(NativeView, TCHAR_TO_UTF8(*Id), TCHAR_TO_UTF8(*Rml)));
+    const bool bChanged = NativeView && CheckResult(RmlUE_SetInnerRml(
+        NativeView, TCHAR_TO_UTF8(*Id), TCHAR_TO_UTF8(*Rml)));
+    if (bChanged) RequestScheduledRender();
+    return bChanged;
 }
 
 bool SRmlUiWidget::SetElementText(const FString& Id, const FString& Text)
@@ -336,12 +428,18 @@ bool SRmlUiWidget::SetElementText(const FString& Id, const FString& Text)
 
 bool SRmlUiWidget::SetElementProperty(const FString& Id, const FString& Property, const FString& Value)
 {
-    return NativeView && CheckResult(RmlUE_SetProperty(NativeView, TCHAR_TO_UTF8(*Id), TCHAR_TO_UTF8(*Property), TCHAR_TO_UTF8(*Value)));
+    const bool bChanged = NativeView && CheckResult(RmlUE_SetProperty(
+        NativeView, TCHAR_TO_UTF8(*Id), TCHAR_TO_UTF8(*Property), TCHAR_TO_UTF8(*Value)));
+    if (bChanged) RequestScheduledRender();
+    return bChanged;
 }
 
 bool SRmlUiWidget::SetElementAttribute(const FString& Id, const FString& Attribute, const FString& Value)
 {
-    return NativeView && CheckResult(RmlUE_SetAttribute(NativeView, TCHAR_TO_UTF8(*Id), TCHAR_TO_UTF8(*Attribute), TCHAR_TO_UTF8(*Value)));
+    const bool bChanged = NativeView && CheckResult(RmlUE_SetAttribute(
+        NativeView, TCHAR_TO_UTF8(*Id), TCHAR_TO_UTF8(*Attribute), TCHAR_TO_UTF8(*Value)));
+    if (bChanged) RequestScheduledRender();
+    return bChanged;
 }
 
 bool SRmlUiWidget::GetElementAttribute(const FString& Id, const FString& Attribute, FString& Value) const
@@ -375,8 +473,10 @@ void SRmlUiWidget::SetMaxTextureDimension(int32 InMaximum)
 void SRmlUiWidget::SetUseSlateRenderer(bool bInUseSlateRenderer)
 {
     if (bUseSlateRenderer == bInUseSlateRenderer) return;
+    if (TextInputContext) TextInputContext->Deactivate(true);
     bUseSlateRenderer = bInUseSlateRenderer;
     if (!NativeView) return;
+    FRmlUiUnrealModule::Get().GetAnimationRuntime().CancelViewAnimations(NativeView);
     OnNativeShutdown.Broadcast();
     ReleaseUnrealRenderResources(false);
     ReparentMaterialResources(0);
@@ -384,7 +484,11 @@ void SRmlUiWidget::SetUseSlateRenderer(bool bInUseSlateRenderer)
     NativeView = nullptr;
     bNativeShutdown = false;
     NativeDraws.Reset();
+    bHasSlateCommandSnapshot = false;
+    NativeDrawIndicesByVisualNode.Reset();
+    NativeMaskIndicesByOwnerNode.Reset();
     NativeMaterialResources.Reset();
+    ResetSlateSchedule();
     ReloadDocument();
 }
 
@@ -619,6 +723,44 @@ bool SRmlUiWidget::CanApplyMaterialOpacityAsBoxes(const FNativeDraw&, const FGeo
     return true;
 }
 
+void SRmlUiWidget::CaptureSlateClipTopology(TArray<uint64>& OutTokens, uint64& OutMaskRefs) const
+{
+    OutTokens.Reset();
+    OutMaskRefs = 0;
+    const auto AddFloat = [&OutTokens](float Value)
+    {
+        OutTokens.Add(FMath::AsUInt(Value));
+    };
+    const auto AddRect = [&AddFloat](const FSlateRect& Rect)
+    {
+        AddFloat(Rect.Left);
+        AddFloat(Rect.Top);
+        AddFloat(Rect.Right);
+        AddFloat(Rect.Bottom);
+    };
+    for (const FNativeDraw& Draw : NativeDraws)
+    {
+        if (!Draw.bScissor && Draw.ClipMasks.IsEmpty()) continue;
+        OutTokens.Add(0xd24a57e000000001ull);
+        OutTokens.Add(Draw.VisualNode);
+        OutTokens.Add(Draw.bScissor ? 1 : 0);
+        if (Draw.bScissor) AddRect(Draw.Scissor);
+        OutTokens.Add(Draw.ClipMasks.Num());
+        for (const FNativeMask& Mask : Draw.ClipMasks)
+        {
+            OutTokens.Add(0x4d41534b00000001ull);
+            OutTokens.Add(Mask.GeometryId);
+            OutTokens.Add(Mask.OwnerNode);
+            OutTokens.Add(static_cast<uint64>(Mask.Operation));
+            AddFloat(Mask.Translation.X);
+            AddFloat(Mask.Translation.Y);
+            OutTokens.Add(Mask.bScissor ? 1 : 0);
+            if (Mask.bScissor) AddRect(Mask.Scissor);
+            ++OutMaskRefs;
+        }
+    }
+}
+
 void SRmlUiWidget::SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet)
 {
     if (BaseStyleSheet == InStyleSheet) return;
@@ -630,42 +772,337 @@ void SRmlUiWidget::SetBaseStyleSheet(RmlUE_StyleSheet* InStyleSheet)
 
 void SRmlUiWidget::Tick(const FGeometry& Geometry, double InCurrentTime, float InDeltaTime)
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_Tick);
+    CSV_SCOPED_TIMING_STAT(RmlUi, Tick);
+    const ERmlUiPerformanceBackend Backend = bUseSlateRenderer
+        ? ERmlUiPerformanceBackend::Slate : ERmlUiPerformanceBackend::DX11;
+    FScopedRmlUiPerformanceTimer PerfTimer(Backend, ERmlUiPerformanceStage::Tick);
     SLeafWidget::Tick(Geometry, InCurrentTime, InDeltaTime);
     const FVector2D LocalSize = Geometry.GetLocalSize();
     if (LocalSize.X <= 0 || LocalSize.Y <= 0 || !NativeView) return;
     PixelScale = FMath::Max(0.01f, Geometry.GetAccumulatedLayoutTransform().GetScale());
     const double LongestEdge = FMath::Max(LocalSize.X, LocalSize.Y) * PixelScale;
     if (LongestEdge > MaxTextureDimension) PixelScale *= MaxTextureDimension / LongestEdge;
-    RenderFrame(FMath::Max(1, FMath::RoundToInt(LocalSize.X * PixelScale)),
-        FMath::Max(1, FMath::RoundToInt(LocalSize.Y * PixelScale)), PixelScale);
+    const int32 Width = FMath::Max(1, FMath::RoundToInt(LocalSize.X * PixelScale));
+    const int32 Height = FMath::Max(1, FMath::RoundToInt(LocalSize.Y * PixelScale));
+    if (!bUseSlateRenderer)
+    {
+        RenderFrame(Width, Height, PixelScale);
+    }
+    else if (!bHasSlateSchedule || Width != LastScheduledWidth || Height != LastScheduledHeight ||
+        !FMath::IsNearlyEqual(PixelScale, LastScheduledDpRatio))
+    {
+        FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ScheduledResizeWakes);
+        RenderFrame(Width, Height, PixelScale);
+    }
+    else
+    {
+        RmlUE_View* BeforeScript = NativeView;
+        const uint64 BeforeRenderCycles = BroadcastBeforeRender();
+        if (!NativeView) return;
+        if (BeforeScript != NativeView) ResetSlateSchedule();
+
+        RmlUE_SlateScheduleState State{};
+        if (!CheckResult(RmlUE_GetSlateScheduleState(NativeView, &State))) return;
+        const double NowSeconds = FPlatformTime::Seconds();
+        if (FMath::IsFinite(State.NextUpdateDelay))
+            NextScheduledUpdateTime = FMath::Min(NextScheduledUpdateTime,
+                NowSeconds + FMath::Max(0.0, State.NextUpdateDelay));
+
+        const bool bContentWake = !bHasSlateSchedule || !State.HasRecordedFrame ||
+            State.ContentRevision != LastScheduledContentRevision;
+        const bool bVisualWake = State.VisualRevision != LastScheduledVisualRevision;
+        const bool bDeadlineWake = NowSeconds >= NextScheduledUpdateTime;
+        const bool bExplicitWake = bScheduledRenderRequested;
+        if (bContentWake || bVisualWake || bDeadlineWake || bExplicitWake)
+        {
+            if (bContentWake) FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ScheduledContentWakes);
+            if (bVisualWake) FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ScheduledVisualWakes);
+            if (bDeadlineWake) FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ScheduledDeadlineWakes);
+            if (bExplicitWake) FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ScheduledExplicitWakes);
+            RenderFrameInternal(Width, Height, PixelScale, false, BeforeRenderCycles);
+        }
+        else
+        {
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ScheduledRenderSkips);
+        }
+    }
+    if (TextInputContext) TextInputContext->Update(Geometry, PixelScale);
+    UpdateSlatePaintCacheReadiness();
+    ArmScheduledActiveTimer(FPlatformTime::Seconds());
 }
 
 bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
 {
+    return RenderFrameInternal(Width, Height, DpRatio, true);
+}
+
+uint64 SRmlUiWidget::BroadcastBeforeRender()
+{
+    const ERmlUiPerformanceBackend Backend = bUseSlateRenderer
+        ? ERmlUiPerformanceBackend::Slate : ERmlUiPerformanceBackend::DX11;
+    const uint64 Start = FPlatformTime::Cycles64();
+    TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_BeforeRender);
+    FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::BeforeRender);
+    OnBeforeRender.Broadcast(FApp::GetDeltaTime());
+    return FPlatformTime::Cycles64() - Start;
+}
+
+void SRmlUiWidget::ResetSlateSchedule()
+{
+    if (const TSharedPtr<FActiveTimerHandle> Timer = ScheduledActiveTimer.Pin())
+    {
+        UnRegisterActiveTimer(Timer.ToSharedRef());
+    }
+    ScheduledActiveTimer.Reset();
+    ScheduledActiveTimerDeadline = TNumericLimits<double>::Max();
+    LastScheduledContentRevision = 0;
+    LastScheduledVisualRevision = 0;
+    NextScheduledUpdateTime = TNumericLimits<double>::Max();
+    LastScheduledWidth = 0;
+    LastScheduledHeight = 0;
+    LastScheduledDpRatio = 0.0f;
+    bHasSlateSchedule = false;
+    bScheduledRenderRequested = true;
+    bSlatePaintCacheEligible = bUsePaintCache;
+    bSlatePaintCacheReady = false;
+    bSlatePaintResourcesWaiting = false;
+    SlatePaintCacheRejectReason = bUsePaintCache
+        ? ERmlUiPaintCacheRejectReason::None : ERmlUiPaintCacheRejectReason::Disabled;
+    if (bUseSlateRenderer) ForceVolatile(true);
+    SetCanTick(true);
+}
+
+void SRmlUiWidget::CaptureSlateSchedule(double NowSeconds)
+{
+    if (!bUseSlateRenderer || !NativeView) return;
+    RmlUE_SlateScheduleState State{};
+    if (!RmlUE_GetSlateScheduleState(NativeView, &State)) return;
+    LastScheduledContentRevision = State.ContentRevision;
+    LastScheduledVisualRevision = State.VisualRevision;
+    NextScheduledUpdateTime = FMath::IsFinite(State.NextUpdateDelay)
+        ? NowSeconds + FMath::Max(0.0, State.NextUpdateDelay)
+        : TNumericLimits<double>::Max();
+    bHasSlateSchedule = State.HasRecordedFrame != 0;
+}
+
+bool SRmlUiWidget::AreSlatePaintResourcesReady() const
+{
+    for (const FNativeDraw& Draw : NativeDraws)
+    {
+        const bool bMaterialDraw = NativeMaterialResources.Contains(Draw.TextureId);
+        if (bMaterialDraw)
+        {
+            continue;
+        }
+
+        if (!NativeGeometries.Contains(Draw.GeometryId)) return false;
+        if (Draw.TextureId != 0)
+        {
+            const FTextureResource* TextureResource = NativeTextures.Find(Draw.TextureId);
+            const ::FTextureResource* RenderResource = TextureResource && TextureResource->Texture
+                ? TextureResource->Texture->GetResource() : nullptr;
+            if (!TextureResource || !TextureResource->Brush.IsValid() || !RenderResource ||
+                !RenderResource->TextureRHI.IsValid())
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+ERmlUiPaintCacheRejectReason SRmlUiWidget::EvaluateSlatePaintCache() const
+{
+    if (!bUsePaintCache) return ERmlUiPaintCacheRejectReason::Disabled;
+    for (const FNativeDraw& Draw : NativeDraws)
+    {
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 8
+        if (!NativeMaterialResources.Contains(Draw.TextureId))
+        {
+            const FTextureResource* TextureResource = NativeTextures.Find(Draw.TextureId);
+            if (TextureResource && TextureResource->bHasColoredTranslucentPixels)
+                return ERmlUiPaintCacheRejectReason::LegacyColoredTranslucentTexture;
+        }
+#endif
+    }
+    return ERmlUiPaintCacheRejectReason::None;
+}
+
+void SRmlUiWidget::MarkSlatePaintCachePending()
+{
+    if (!bUseSlateRenderer || !bSlatePaintCacheReady) return;
+    bSlatePaintCacheReady = false;
+    bSlatePaintResourcesWaiting = false;
+    FRmlUiPerformance::RecordPaintCache(NativeView ? RmlUE_GetViewResourceId(NativeView) : 0,
+        FrameNumber, ERmlUiPaintCacheEvent::Invalidated, SlatePaintCacheRejectReason, NativeDraws.Num());
+    ForceVolatile(true);
+    Invalidate(EInvalidateWidgetReason::PaintAndVolatility);
+}
+
+void SRmlUiWidget::UpdateSlatePaintCacheReadiness()
+{
+    if (!bUseSlateRenderer || !bUsePaintCache || !bSlatePaintCacheEligible || bSlatePaintCacheReady || !bHasSlateSchedule)
+    {
+        return;
+    }
+    if (!AreSlatePaintResourcesReady())
+    {
+        if (!bSlatePaintResourcesWaiting)
+        {
+            bSlatePaintResourcesWaiting = true;
+            FRmlUiPerformance::RecordPaintCache(NativeView ? RmlUE_GetViewResourceId(NativeView) : 0,
+                FrameNumber, ERmlUiPaintCacheEvent::ResourceWait, SlatePaintCacheRejectReason, NativeDraws.Num());
+        }
+        return;
+    }
+    bSlatePaintResourcesWaiting = false;
+    bSlatePaintCacheReady = true;
+    FRmlUiPerformance::RecordPaintCache(NativeView ? RmlUE_GetViewResourceId(NativeView) : 0,
+        FrameNumber, ERmlUiPaintCacheEvent::Activated, SlatePaintCacheRejectReason, NativeDraws.Num());
+    ForceVolatile(false);
+    Invalidate(EInvalidateWidgetReason::PaintAndVolatility);
+}
+
+void SRmlUiWidget::RequestScheduledRender()
+{
+    bScheduledRenderRequested = true;
+    ArmScheduledActiveTimer(FPlatformTime::Seconds());
+}
+
+void SRmlUiWidget::SetExternalWakeDeadline(const void* Owner, double AbsoluteTimeSeconds)
+{
+    if (!Owner) return;
+    if (FMath::IsFinite(AbsoluteTimeSeconds)) ExternalWakeDeadlines.Add(Owner, AbsoluteTimeSeconds);
+    else ExternalWakeDeadlines.Remove(Owner);
+    ArmScheduledActiveTimer(FPlatformTime::Seconds());
+}
+
+void SRmlUiWidget::ClearExternalWakeDeadline(const void* Owner)
+{
+    if (!Owner) return;
+    ExternalWakeDeadlines.Remove(Owner);
+    ArmScheduledActiveTimer(FPlatformTime::Seconds());
+}
+
+void SRmlUiWidget::ArmScheduledActiveTimer(double NowSeconds)
+{
+    if (!bUseSlateRenderer || bNativeShutdown)
+    {
+        SetCanTick(!bNativeShutdown);
+        return;
+    }
+
+    double Deadline = NextScheduledUpdateTime;
+    for (const auto& Pair : ExternalWakeDeadlines) Deadline = FMath::Min(Deadline, Pair.Value);
+    if (bUsePaintCache && bSlatePaintCacheEligible && !bSlatePaintCacheReady)
+        Deadline = FMath::Min(Deadline, NowSeconds + 1.0 / 60.0);
+    FRmlUiAnimationRuntime* AnimationRuntime = nullptr;
+    bool bHasActiveAnimations = false;
+    if (NativeView)
+    {
+        AnimationRuntime = &FRmlUiUnrealModule::Get().GetAnimationRuntime();
+        bHasActiveAnimations = AnimationRuntime->HasActiveAnimations(NativeView);
+        if (!bHasActiveAnimations)
+        {
+            const double AnimationWakeDelay = AnimationRuntime->GetNextWakeDelaySeconds(NativeView);
+            if (AnimationWakeDelay < TNumericLimits<double>::Max())
+            {
+                Deadline = FMath::Min(Deadline, NowSeconds + AnimationWakeDelay);
+            }
+        }
+    }
+    if (!bHasSlateSchedule || bScheduledRenderRequested || bHasActiveAnimations)
+    {
+        Deadline = NowSeconds;
+    }
+
+    if (!FMath::IsFinite(Deadline) || Deadline >= TNumericLimits<double>::Max())
+    {
+        if (const TSharedPtr<FActiveTimerHandle> Timer = ScheduledActiveTimer.Pin())
+            UnRegisterActiveTimer(Timer.ToSharedRef());
+        ScheduledActiveTimer.Reset();
+        ScheduledActiveTimerDeadline = TNumericLimits<double>::Max();
+        SetCanTick(false);
+        return;
+    }
+
+    if (const TSharedPtr<FActiveTimerHandle> Timer = ScheduledActiveTimer.Pin())
+    {
+        if (ScheduledActiveTimerDeadline <= Deadline + 0.0005)
+        {
+            SetCanTick(false);
+            return;
+        }
+        UnRegisterActiveTimer(Timer.ToSharedRef());
+    }
+    ScheduledActiveTimerDeadline = Deadline;
+    ScheduledActiveTimer = RegisterActiveTimer(
+        static_cast<float>(FMath::Max(0.0, Deadline - NowSeconds)),
+        FWidgetActiveTimerDelegate::CreateSP(this, &SRmlUiWidget::HandleScheduledActiveTimer));
+    SetCanTick(false);
+}
+
+EActiveTimerReturnType SRmlUiWidget::HandleScheduledActiveTimer(double, float)
+{
+    ScheduledActiveTimer.Reset();
+    ScheduledActiveTimerDeadline = TNumericLimits<double>::Max();
+    SetCanTick(true);
+    FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Slate,
+        ERmlUiPerformanceWork::ScheduledActiveTimerWakes);
+    return EActiveTimerReturnType::Stop;
+}
+
+bool SRmlUiWidget::RenderFrameInternal(int32 Width, int32 Height, float DpRatio,
+    bool bBroadcastBeforeRender, uint64 PrecomputedBeforeRenderCycles)
+{
+    TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_RenderFrame);
+    CSV_SCOPED_TIMING_STAT(RmlUi, RenderFrame);
+    const ERmlUiPerformanceBackend Backend = bUseSlateRenderer
+        ? ERmlUiPerformanceBackend::Slate : ERmlUiPerformanceBackend::DX11;
+    FScopedRmlUiPerformanceTimer RenderTimer(Backend, ERmlUiPerformanceStage::RenderFrame);
     if (!EnsureNativeView()) return false;
     Width = FMath::Clamp(Width, 1, MaxTextureDimension);
     Height = FMath::Clamp(Height, 1, MaxTextureDimension);
     PixelScale = FMath::Max(0.01f, DpRatio);
-    if (!CheckResult(RmlUE_Resize(NativeView, Width, Height, PixelScale))) return false;
+    {
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::Resize);
+        if (!CheckResult(RmlUE_Resize(NativeView, Width, Height, PixelScale))) return false;
+    }
     RmlUE_View* BeforeScript = NativeView;
-    OnBeforeRender.Broadcast(FApp::GetDeltaTime());
+    const uint64 BeforeRenderCycles = bBroadcastBeforeRender
+        ? BroadcastBeforeRender() : PrecomputedBeforeRenderCycles;
     if (!NativeView) return false;
     if (BeforeScript != NativeView && !CheckResult(RmlUE_Resize(NativeView, Width, Height, PixelScale))) return false;
     if (bUseSlateRenderer)
     {
         RmlUE_SlateFrame SlateFrame{};
-        if (!CheckResult(RmlUE_RenderSlate(NativeView, &SlateFrame))) return false;
+        const uint64 BridgeStart = FPlatformTime::Cycles64();
+        {
+            TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_Bridge_RenderSlate);
+            FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::BridgeRender);
+            if (!CheckResult(RmlUE_RenderSlate(NativeView, &SlateFrame))) return false;
+        }
+        const uint64 BridgeCycles = FPlatformTime::Cycles64() - BridgeStart;
         if (SlateFrame.AbiVersion != RMLUE_SLATE_ABI_VERSION)
         {
             LastError = TEXT("RmlUi Slate command ABI version mismatch.");
             return false;
         }
-        NativeDraws.Reset(SlateFrame.DrawCount);
+        if (SlateFrame.Replayed && (SlateFrame.GeometryDeltaCount != 0 || SlateFrame.TextureCount != 0))
+        {
+            LastError = TEXT("Retained Slate replay cannot contain resource deltas.");
+            return false;
+        }
+        const uint64 DecodeStart = FPlatformTime::Cycles64();
+        {
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::GeometryDeltas);
         for (uint32 Index = 0; Index < SlateFrame.GeometryDeltaCount; ++Index)
         {
             const RmlUE_SlateGeometryDelta& Source = SlateFrame.GeometryDeltas[Index];
             if (Source.Action == RMLUE_SLATE_RESOURCE_DESTROY)
             {
+                FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::GeometryDestroys);
                 if (const FGeometryResource* Existing = NativeGeometries.Find(Source.Id))
                     MarkRmlUiSlateRhiGeometryPendingDestroy(Existing->RhiGeometry);
                 NativeGeometries.Remove(Source.Id);
@@ -679,6 +1116,9 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             }
             if (const FGeometryResource* Existing = NativeGeometries.Find(Source.Id))
                 MarkRmlUiSlateRhiGeometryPendingDestroy(Existing->RhiGeometry);
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::GeometryCreates);
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::Vertices, Source.VertexCount);
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::Indices, Source.IndexCount);
             FGeometryResource Resource;
             Resource.Vertices.Reserve(Source.VertexCount * 8);
             for (uint32 VertexIndex = 0; VertexIndex < Source.VertexCount; ++VertexIndex)
@@ -716,11 +1156,15 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             }
             NativeGeometries.Add(Source.Id, MoveTemp(Resource));
         }
+        }
+        {
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::TextureDeltas);
         for (uint32 Index = 0; Index < SlateFrame.TextureCount; ++Index)
         {
             const RmlUE_SlateTexture& Source = SlateFrame.Textures[Index];
             if (Source.Action == RMLUE_SLATE_RESOURCE_DESTROY)
             {
+                FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::TextureDestroys);
                 NativeMaterialResources.Remove(Source.Id);
                 if (const FTextureResource* Existing = NativeTextures.Find(Source.Id))
                     FRmlUiResourceRegistry::Get().UnregisterUnreal(Existing->RegistryId);
@@ -757,6 +1201,8 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             NewTexture->LODGroup = TEXTUREGROUP_UI;
             NewTexture->UpdateResource();
             const SIZE_T ByteCount = static_cast<SIZE_T>(Source.Width) * Source.Height * 4;
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::TextureCreates);
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::TextureUploadBytes, ByteCount);
             uint8* Pixels = static_cast<uint8*>(FMemory::Malloc(ByteCount));
             for (SIZE_T Pixel = 0; Pixel < ByteCount; Pixel += 4)
             {
@@ -771,101 +1217,277 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
             FTextureResource Resource;
             Resource.Texture = NewTexture;
             Resource.Brush = FDeferredCleanupSlateBrush::CreateBrush(NewTexture);
+            for (SIZE_T Pixel = 0; Pixel < ByteCount; Pixel += 4)
+            {
+                const uint8 Alpha = Source.PremultipliedRGBA[Pixel + 3];
+                Resource.bHasColoredTranslucentPixels |= Alpha != 255 &&
+                    (Source.PremultipliedRGBA[Pixel] != Alpha ||
+                        Source.PremultipliedRGBA[Pixel + 1] != Alpha ||
+                        Source.PremultipliedRGBA[Pixel + 2] != Alpha);
+            }
             Resource.RegistryId = FRmlUiResourceRegistry::Get().RegisterUnreal(ERmlUiResourceType::UnrealTexture,
                 ERmlUiResourceBackend::Slate, RmlUE_GetViewResourceId(NativeView), ByteCount,
                 FString::Printf(TEXT("Slate texture %llu"), Source.Id), NewTexture);
             NativeTextures.Add(Source.Id, MoveTemp(Resource));
         }
+        }
         uint32 FrameUnsupportedFeatures = SlateFrame.UnsupportedFeatures;
-        for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
+        if (SlateFrame.Replayed) FrameUnsupportedFeatures |= UnsupportedSlateFeatures;
+        bool bClipTopologyChanged = false;
+        uint64 ClipTopologyMaskRefsBefore = 0;
+        uint64 ClipTopologyMaskRefsAfter = 0;
+        TArray<uint64> PreviousClipTopology;
+        const bool bCompareClipTopology = !SlateFrame.Replayed && bHasSlateCommandSnapshot &&
+            FRmlUiPerformance::IsEnabled();
+        if (bCompareClipTopology)
+            CaptureSlateClipTopology(PreviousClipTopology, ClipTopologyMaskRefsBefore);
         {
-            const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
-            if (!NativeGeometries.Contains(Source.GeometryId) ||
-                (Source.ClipMaskCount > 0 && SlateFrame.ClipMasks == nullptr) ||
-                Source.ClipMaskStart > SlateFrame.ClipMaskCount ||
-                Source.ClipMaskCount > SlateFrame.ClipMaskCount - Source.ClipMaskStart)
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::DrawDecode);
+        if (SlateFrame.Replayed)
+        {
+            if (SlateFrame.DrawCount != static_cast<uint32>(NativeDraws.Num()) ||
+                (SlateFrame.VisualDeltaCount > 0 && !SlateFrame.VisualDeltas))
             {
-                LastError = FString::Printf(TEXT("Slate draw references invalid geometry or clip-mask range for %llu."), Source.GeometryId);
+                LastError = TEXT("Invalid retained Slate replay frame.");
                 return false;
             }
-            FNativeDraw& Draw = NativeDraws.AddDefaulted_GetRef();
-            Draw.GeometryId = Source.GeometryId;
-            Draw.TextureId = Source.Texture;
-            Draw.Translation = FVector2f(Source.TranslateX, Source.TranslateY);
-            Draw.bTransform = Source.TransformEnabled != 0;
-            Draw.Transform = FMatrix2x2(Source.TransformM00, Source.TransformM10, Source.TransformM01, Source.TransformM11);
-            Draw.TransformTranslation = FVector2f(Source.TransformX, Source.TransformY);
-            Draw.bScissor = Source.ScissorEnabled != 0;
-            Draw.Scissor = FSlateRect(Source.ScissorX, Source.ScissorY, Source.ScissorX + Source.ScissorWidth, Source.ScissorY + Source.ScissorHeight);
-            Draw.ClipMasks.Reserve(Source.ClipMaskCount);
-            for (uint32 MaskIndex = 0; MaskIndex < Source.ClipMaskCount; ++MaskIndex)
+            for (uint32 DeltaIndex = 0; DeltaIndex < SlateFrame.VisualDeltaCount; ++DeltaIndex)
             {
-                const RmlUE_SlateClipMask& SourceMask = SlateFrame.ClipMasks[Source.ClipMaskStart + MaskIndex];
-                if (!NativeGeometries.Contains(SourceMask.GeometryId) || SourceMask.Operation < RMLUE_CLIP_MASK_SET ||
-                    SourceMask.Operation > RMLUE_CLIP_MASK_INTERSECT)
+                const RmlUE_SlateVisualDelta& Delta = SlateFrame.VisualDeltas[DeltaIndex];
+                if (!Delta.Node || (Delta.OpacityChanged != 0 && Delta.OpacityChanged != 1) ||
+                    (Delta.TransformChanged != 0 && Delta.TransformChanged != 1) ||
+                    (Delta.ClipMaskTransformChanged != 0 && Delta.ClipMaskTransformChanged != 1) ||
+                    (!Delta.OpacityChanged && !Delta.TransformChanged && !Delta.ClipMaskTransformChanged) ||
+                    ((Delta.TransformChanged || Delta.ClipMaskTransformChanged) &&
+                        Delta.TransformEnabled != 0 && Delta.TransformEnabled != 1) ||
+                    (Delta.OpacityChanged && !FMath::IsFinite(Delta.VisualOpacity)) ||
+                    ((Delta.TransformChanged || Delta.ClipMaskTransformChanged) &&
+                        (!FMath::IsFinite(Delta.TransformM00) || !FMath::IsFinite(Delta.TransformM01) ||
+                         !FMath::IsFinite(Delta.TransformM10) || !FMath::IsFinite(Delta.TransformM11) ||
+                         !FMath::IsFinite(Delta.TransformX) || !FMath::IsFinite(Delta.TransformY))))
                 {
-                    LastError = FString::Printf(TEXT("Slate draw references invalid clip-mask geometry %llu."), SourceMask.GeometryId);
+                    LastError = TEXT("Slate replay contains an invalid visual delta.");
                     return false;
                 }
-                FNativeMask& Mask = Draw.ClipMasks.AddDefaulted_GetRef();
-                Mask.GeometryId = SourceMask.GeometryId;
-                Mask.Operation = SourceMask.Operation;
-                Mask.Translation = FVector2f(SourceMask.TranslateX, SourceMask.TranslateY);
-                Mask.bTransform = SourceMask.TransformEnabled != 0;
-                Mask.Transform = FMatrix2x2(SourceMask.TransformM00, SourceMask.TransformM10,
-                    SourceMask.TransformM01, SourceMask.TransformM11);
-                Mask.TransformTranslation = FVector2f(SourceMask.TransformX, SourceMask.TransformY);
-                Mask.bScissor = SourceMask.ScissorEnabled != 0;
-                Mask.Scissor = FSlateRect(SourceMask.ScissorX, SourceMask.ScissorY,
-                    SourceMask.ScissorX + SourceMask.ScissorWidth, SourceMask.ScissorY + SourceMask.ScissorHeight);
-            }
-            if (NativeMaterialResources.Contains(Draw.TextureId) && !Draw.ClipMasks.IsEmpty())
-            {
-                int32 ClipPlaneCount = 0;
-                for (const FNativeMask& Mask : Draw.ClipMasks)
+                const TArray<int32>* DrawIndices = NativeDrawIndicesByVisualNode.Find(Delta.Node);
+                if ((Delta.OpacityChanged || Delta.TransformChanged) && !DrawIndices)
                 {
-                    const FGeometryResource* MaskGeometry = NativeGeometries.Find(Mask.GeometryId);
-                    if (Mask.Operation == RMLUE_CLIP_MASK_SET_INVERSE || !MaskGeometry || !MaskGeometry->bFilledConvex)
-                    {
-                        Draw.bMaterialClipSupported = false;
-                        break;
-                    }
-                    ClipPlaneCount += MaskGeometry->ConvexHull.Num() + (Mask.bScissor ? 1 : 0);
+                    LastError = FString::Printf(TEXT("Slate replay references unknown visual node %u."), Delta.Node);
+                    return false;
                 }
-                if (ClipPlaneCount > 240) Draw.bMaterialClipSupported = false;
-                if (!Draw.bMaterialClipSupported) FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
-            }
-            if (const FNativeMaterialResource* Binding = NativeMaterialResources.Find(Draw.TextureId))
-            {
-                const FMaterialResource* Material = Materials.Find(Binding->Alias);
-                FGeometryResource* DrawGeometry = NativeGeometries.Find(Draw.GeometryId);
-                if (Material && DrawGeometry)
+                if (DrawIndices) for (const int32 DrawIndex : *DrawIndices)
                 {
-                    for (int32 VertexOffset = 7; VertexOffset < DrawGeometry->Vertices.Num(); VertexOffset += 8)
+                    if (!NativeDraws.IsValidIndex(DrawIndex))
                     {
-                        if (DrawGeometry->Vertices[VertexOffset] < 254.5f)
+                        LastError = TEXT("Slate replay references an invalid retained draw index.");
+                        return false;
+                    }
+                    FNativeDraw& Draw = NativeDraws[DrawIndex];
+                    if (Delta.OpacityChanged)
+                        Draw.VisualOpacity = FMath::Max(Delta.VisualOpacity, 0.0f);
+                    if (Delta.TransformChanged)
+                    {
+                        Draw.bTransform = Delta.TransformEnabled != 0;
+                        Draw.Transform = FMatrix2x2(Delta.TransformM00, Delta.TransformM10,
+                            Delta.TransformM01, Delta.TransformM11);
+                        Draw.TransformTranslation = FVector2f(Delta.TransformX, Delta.TransformY);
+                    }
+                }
+                if (Delta.ClipMaskTransformChanged)
+                {
+                    const TArray<FNativeMaskRef>* MaskRefs = NativeMaskIndicesByOwnerNode.Find(Delta.Node);
+                    if (!MaskRefs)
+                    {
+                        LastError = FString::Printf(TEXT("Slate replay references unknown clip-mask owner node %u."), Delta.Node);
+                        return false;
+                    }
+                    for (const FNativeMaskRef& Ref : *MaskRefs)
+                    {
+                        if (!NativeDraws.IsValidIndex(Ref.DrawIndex) ||
+                            !NativeDraws[Ref.DrawIndex].ClipMasks.IsValidIndex(Ref.MaskIndex))
                         {
-                            AnalyzeMaterialOpacityGeometry(*DrawGeometry);
-                            if (!CanApplyMaterialOpacityAsBoxes(Draw, *DrawGeometry, *Binding, *Material))
-                                FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY;
+                            LastError = TEXT("Slate replay references an invalid retained clip-mask index.");
+                            return false;
+                        }
+                        FNativeMask& Mask = NativeDraws[Ref.DrawIndex].ClipMasks[Ref.MaskIndex];
+                        Mask.bTransform = Delta.TransformEnabled != 0;
+                        Mask.Transform = FMatrix2x2(Delta.TransformM00, Delta.TransformM10,
+                            Delta.TransformM01, Delta.TransformM11);
+                        Mask.TransformTranslation = FVector2f(Delta.TransformX, Delta.TransformY);
+                    }
+                }
+            }
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::DrawRecordsReused, NativeDraws.Num());
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::VisualDeltaUpdates, SlateFrame.VisualDeltaCount);
+        }
+        else
+        {
+            MarkSlatePaintCachePending();
+            if ((SlateFrame.DrawCount > 0 && !SlateFrame.Draws) || SlateFrame.VisualDeltaCount != 0)
+            {
+                LastError = TEXT("Invalid complete Slate command frame.");
+                return false;
+            }
+            bHasSlateCommandSnapshot = false;
+            NativeDraws.Reset(SlateFrame.DrawCount);
+            NativeDrawIndicesByVisualNode.Reset();
+            NativeMaskIndicesByOwnerNode.Reset();
+            for (uint32 Index = 0; Index < SlateFrame.DrawCount; ++Index)
+            {
+                const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
+                if (!NativeGeometries.Contains(Source.GeometryId) ||
+                    (Source.ClipMaskCount > 0 && SlateFrame.ClipMasks == nullptr) ||
+                    Source.ClipMaskStart > SlateFrame.ClipMaskCount ||
+                    Source.ClipMaskCount > SlateFrame.ClipMaskCount - Source.ClipMaskStart)
+                {
+                    LastError = FString::Printf(TEXT("Slate draw references invalid geometry or clip-mask range for %llu."), Source.GeometryId);
+                    return false;
+                }
+                FNativeDraw& Draw = NativeDraws.AddDefaulted_GetRef();
+                Draw.GeometryId = Source.GeometryId;
+                Draw.TextureId = Source.Texture;
+                Draw.Translation = FVector2f(Source.TranslateX, Source.TranslateY);
+                Draw.bTransform = Source.TransformEnabled != 0;
+                Draw.Transform = FMatrix2x2(Source.TransformM00, Source.TransformM10, Source.TransformM01, Source.TransformM11);
+                Draw.TransformTranslation = FVector2f(Source.TransformX, Source.TransformY);
+                Draw.bScissor = Source.ScissorEnabled != 0;
+                Draw.Scissor = FSlateRect(Source.ScissorX, Source.ScissorY, Source.ScissorX + Source.ScissorWidth, Source.ScissorY + Source.ScissorHeight);
+                Draw.VisualNode = Source.VisualNode;
+                Draw.VisualOpacity = FMath::Max(Source.VisualOpacity, 0.0f);
+                if (Draw.VisualNode) NativeDrawIndicesByVisualNode.FindOrAdd(Draw.VisualNode).Add(NativeDraws.Num() - 1);
+                Draw.ClipMasks.Reserve(Source.ClipMaskCount);
+                for (uint32 MaskIndex = 0; MaskIndex < Source.ClipMaskCount; ++MaskIndex)
+                {
+                    const RmlUE_SlateClipMask& SourceMask = SlateFrame.ClipMasks[Source.ClipMaskStart + MaskIndex];
+                    if (!NativeGeometries.Contains(SourceMask.GeometryId) || SourceMask.Operation < RMLUE_CLIP_MASK_SET ||
+                        SourceMask.Operation > RMLUE_CLIP_MASK_INTERSECT)
+                    {
+                        LastError = FString::Printf(TEXT("Slate draw references invalid clip-mask geometry %llu."), SourceMask.GeometryId);
+                        return false;
+                    }
+                    FNativeMask& Mask = Draw.ClipMasks.AddDefaulted_GetRef();
+                    Mask.GeometryId = SourceMask.GeometryId;
+                    Mask.OwnerNode = SourceMask.OwnerNode;
+                    Mask.Operation = SourceMask.Operation;
+                    Mask.Translation = FVector2f(SourceMask.TranslateX, SourceMask.TranslateY);
+                    Mask.bTransform = SourceMask.TransformEnabled != 0;
+                    Mask.Transform = FMatrix2x2(SourceMask.TransformM00, SourceMask.TransformM10,
+                        SourceMask.TransformM01, SourceMask.TransformM11);
+                    Mask.TransformTranslation = FVector2f(SourceMask.TransformX, SourceMask.TransformY);
+                    Mask.bScissor = SourceMask.ScissorEnabled != 0;
+                    Mask.Scissor = FSlateRect(SourceMask.ScissorX, SourceMask.ScissorY,
+                        SourceMask.ScissorX + SourceMask.ScissorWidth, SourceMask.ScissorY + SourceMask.ScissorHeight);
+                    if (Mask.OwnerNode)
+                        NativeMaskIndicesByOwnerNode.FindOrAdd(Mask.OwnerNode).Add(
+                            FNativeMaskRef{static_cast<int32>(Index), Draw.ClipMasks.Num() - 1});
+                }
+                if (NativeMaterialResources.Contains(Draw.TextureId) && !Draw.ClipMasks.IsEmpty())
+                {
+                    int32 ClipPlaneCount = 0;
+                    for (const FNativeMask& Mask : Draw.ClipMasks)
+                    {
+                        const FGeometryResource* MaskGeometry = NativeGeometries.Find(Mask.GeometryId);
+                        if (Mask.Operation == RMLUE_CLIP_MASK_SET_INVERSE || !MaskGeometry || !MaskGeometry->bFilledConvex)
+                        {
+                            Draw.bMaterialClipSupported = false;
                             break;
                         }
+                        ClipPlaneCount += MaskGeometry->ConvexHull.Num() + (Mask.bScissor ? 1 : 0);
                     }
+                    if (ClipPlaneCount > 240) Draw.bMaterialClipSupported = false;
+                    if (!Draw.bMaterialClipSupported) FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_CLIP_MASK;
+                }
+                if (const FNativeMaterialResource* Binding = NativeMaterialResources.Find(Draw.TextureId))
+                {
+                    const FMaterialResource* Material = Materials.Find(Binding->Alias);
+                    FGeometryResource* DrawGeometry = NativeGeometries.Find(Draw.GeometryId);
+                    if (Material && DrawGeometry)
+                        for (int32 VertexOffset = 7; VertexOffset < DrawGeometry->Vertices.Num(); VertexOffset += 8)
+                            if (DrawGeometry->Vertices[VertexOffset] < 254.5f)
+                            {
+                                AnalyzeMaterialOpacityGeometry(*DrawGeometry);
+                                if (!CanApplyMaterialOpacityAsBoxes(Draw, *DrawGeometry, *Binding, *Material))
+                                    FrameUnsupportedFeatures |= RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY;
+                                break;
+                            }
                 }
             }
+            bHasSlateCommandSnapshot = true;
+            if (bCompareClipTopology)
+            {
+                TArray<uint64> CurrentClipTopology;
+                CaptureSlateClipTopology(CurrentClipTopology, ClipTopologyMaskRefsAfter);
+                bClipTopologyChanged = PreviousClipTopology != CurrentClipTopology;
+            }
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::DrawRecordsDecoded, NativeDraws.Num());
+            SlatePaintCacheRejectReason = EvaluateSlatePaintCache();
+            bSlatePaintCacheEligible = SlatePaintCacheRejectReason == ERmlUiPaintCacheRejectReason::None;
+            bSlatePaintResourcesWaiting = false;
+            FRmlUiPerformance::RecordPaintCache(RmlUE_GetViewResourceId(NativeView), SlateFrame.Number,
+                ERmlUiPaintCacheEvent::Evaluated, SlatePaintCacheRejectReason, NativeDraws.Num());
+            if (!bSlatePaintCacheEligible)
+            {
+                bSlatePaintCacheReady = false;
+                ForceVolatile(true);
+                Invalidate(EInvalidateWidgetReason::PaintAndVolatility);
+            }
         }
+        }
+        const uint64 DecodeCycles = FPlatformTime::Cycles64() - DecodeStart;
+        uint64 ClipMaskCount = 0;
+        for (const FNativeDraw& Draw : NativeDraws) ClipMaskCount += Draw.ClipMasks.Num();
+        FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::Draws, NativeDraws.Num());
+        FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::ClipMasks, ClipMaskCount);
         if (FrameUnsupportedFeatures && FrameUnsupportedFeatures != UnsupportedSlateFeatures)
         {
             UE_LOG(LogRmlUiUnreal, Warning, TEXT("The experimental Slate renderer cannot reproduce RmlUi feature mask 0x%X. Use the DX11 compatibility renderer for visual parity."), FrameUnsupportedFeatures);
         }
         UnsupportedSlateFeatures = FrameUnsupportedFeatures;
         FrameNumber = SlateFrame.Number;
+        LastScheduledWidth = Width;
+        LastScheduledHeight = Height;
+        LastScheduledDpRatio = PixelScale;
+        bScheduledRenderRequested = false;
+        CaptureSlateSchedule(FPlatformTime::Seconds());
+        if (SlateFrame.Replayed && bSlatePaintCacheReady)
+        {
+            FRmlUiPerformance::RecordPaintCache(RmlUE_GetViewResourceId(NativeView), FrameNumber,
+                ERmlUiPaintCacheEvent::Invalidated, SlatePaintCacheRejectReason, NativeDraws.Num());
+        }
         Invalidate(EInvalidateWidgetReason::Paint);
-        DispatchEvents();
+        {
+            FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::EventDispatch);
+            DispatchEvents();
+        }
+        FRmlUiPerformanceFrame Metrics;
+        Metrics.ViewId = RmlUE_GetViewResourceId(NativeView);
+        Metrics.FrameId = FrameNumber;
+        Metrics.Backend = Backend;
+        Metrics.Width = Width;
+        Metrics.Height = Height;
+        Metrics.BridgeCycles = BridgeCycles;
+        Metrics.BeforeRenderCycles = BeforeRenderCycles;
+        Metrics.DecodeCycles = DecodeCycles;
+        Metrics.Draws = NativeDraws.Num();
+        Metrics.ClipMasks = ClipMaskCount;
+        Metrics.UnsupportedFeatures = FrameUnsupportedFeatures;
+        Metrics.ClipTopologyMaskRefsBefore = ClipTopologyMaskRefsBefore;
+        Metrics.ClipTopologyMaskRefsAfter = ClipTopologyMaskRefsAfter;
+        Metrics.bSlateReplayed = SlateFrame.Replayed != 0;
+        Metrics.bClipTopologyChanged = bClipTopologyChanged;
+        FRmlUiPerformance::RecordFrame(Metrics);
         return true;
     }
     RmlUE_Frame Frame{};
-    if (!CheckResult(RmlUE_Render(NativeView, &Frame)) || !Frame.Pixels || Frame.Width != Width || Frame.Height != Height)
+    const uint64 BridgeStart = FPlatformTime::Cycles64();
+    bool bRendered = false;
+    {
+        TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_Bridge_RenderDx11);
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::BridgeRender);
+        bRendered = CheckResult(RmlUE_Render(NativeView, &Frame));
+    }
+    const uint64 BridgeCycles = FPlatformTime::Cycles64() - BridgeStart;
+    if (!bRendered || !Frame.Pixels || Frame.Width != Width || Frame.Height != Height)
     {
         return false;
     }
@@ -896,8 +1518,13 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
 
     // The bridge reuses its frame buffer; the RHI consumes this copy asynchronously.
     const SIZE_T ByteCount = static_cast<SIZE_T>(Width) * Height * 4;
-    uint8* UploadPixels = static_cast<uint8*>(FMemory::Malloc(ByteCount));
-    FMemory::Memcpy(UploadPixels, Frame.Pixels, ByteCount);
+    uint8* UploadPixels = nullptr;
+    {
+        TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_Dx11UploadPrepare);
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::UploadPrepare);
+        UploadPixels = static_cast<uint8*>(FMemory::Malloc(ByteCount));
+        FMemory::Memcpy(UploadPixels, Frame.Pixels, ByteCount);
+    }
     FUpdateTextureRegion2D* Region = new FUpdateTextureRegion2D(0, 0, 0, 0, Width, Height);
     Texture->UpdateTextureRegions(0, 1, Region, Width * 4, 4, UploadPixels,
         [](uint8* Pixels, const FUpdateTextureRegion2D* Regions)
@@ -907,7 +1534,21 @@ bool SRmlUiWidget::RenderFrame(int32 Width, int32 Height, float DpRatio)
         });
     FrameNumber = Frame.Number;
     Invalidate(EInvalidateWidgetReason::Paint);
-    DispatchEvents();
+    {
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::EventDispatch);
+        DispatchEvents();
+    }
+    FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::FullFrameUploadBytes, ByteCount);
+    FRmlUiPerformanceFrame Metrics;
+    Metrics.ViewId = RmlUE_GetViewResourceId(NativeView);
+    Metrics.FrameId = FrameNumber;
+    Metrics.Backend = Backend;
+    Metrics.Width = Width;
+    Metrics.Height = Height;
+    Metrics.BridgeCycles = BridgeCycles;
+    Metrics.BeforeRenderCycles = BeforeRenderCycles;
+    Metrics.UploadBytes = ByteCount;
+    FRmlUiPerformance::RecordFrame(Metrics);
     return true;
 }
 
@@ -928,6 +1569,11 @@ FVector2D SRmlUiWidget::ComputeDesiredSize(float) const
 int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const FSlateRect& CullingRect,
     FSlateWindowElementList& Elements, int32 LayerId, const FWidgetStyle& Style, bool bParentEnabled) const
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_OnPaint);
+    CSV_SCOPED_TIMING_STAT(RmlUi, OnPaint);
+    const ERmlUiPerformanceBackend Backend = bUseSlateRenderer
+        ? ERmlUiPerformanceBackend::Slate : ERmlUiPerformanceBackend::DX11;
+    FScopedRmlUiPerformanceTimer PaintTimer(Backend, ERmlUiPerformanceStage::OnPaint);
     SlateRhiDrawCount = 0;
     SlateRhiMaskCount = 0;
     SlateMaterialClipDrawCount = 0;
@@ -935,8 +1581,31 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
     SlateFallbackDrawCount = 0;
     if (bUseSlateRenderer && NativeDraws.Num() > 0)
     {
+        if (SlateRhiSubmissionPaintFrame != GFrameCounter)
+        {
+            SlateRhiSubmissionPaintFrame = GFrameCounter;
+            SlateRhiSubmissionIndex = 0;
+        }
         const FSlateRenderTransform Transform = Geometry.GetAccumulatedRenderTransform();
-        int32 RhiDrawElementIndex = 0;
+        TArray<FRmlUiSlateRhiDrawDesc> PendingRhiDraws;
+        const auto FlushRhiSubmission = [&]()
+        {
+            if (PendingRhiDraws.IsEmpty()) return;
+            if (SlateRhiSubmissionIndex < SlateRhiSubmissions.Num())
+            {
+                UpdateRmlUiSlateRhiSubmission(
+                    SlateRhiSubmissions[SlateRhiSubmissionIndex], MoveTemp(PendingRhiDraws));
+            }
+            else
+            {
+                SlateRhiSubmissions.Add(CreateRmlUiSlateRhiSubmission(MoveTemp(PendingRhiDraws)));
+            }
+            FSlateDrawElement::MakeCustom(
+                Elements, LayerId++, SlateRhiSubmissions[SlateRhiSubmissionIndex]);
+            ++SlateRhiSubmissionIndex;
+            FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::RhiSubmissions);
+            PendingRhiDraws.Reset();
+        };
         for (const FNativeDraw& Draw : NativeDraws)
         {
             const FGeometryResource* GeometryResource = NativeGeometries.Find(Draw.GeometryId);
@@ -1029,7 +1698,8 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 bMasksReady &= MaskGeometry && IsRmlUiSlateRhiGeometryReady(MaskGeometry->RhiGeometry);
             }
             FTextureRHIRef TextureRhi;
-            if (!NativeMaterial && bMasksReady && IsRmlUiSlateRhiGeometryReady(GeometryResource->RhiGeometry))
+            if (!NativeMaterial && bMasksReady &&
+                IsRmlUiSlateRhiGeometryReady(GeometryResource->RhiGeometry))
             {
                 if (Draw.TextureId == 0)
                 {
@@ -1040,11 +1710,14 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                     TextureRhi = TextureResource->Texture->GetResource()->GetTextureRHI();
                 }
             }
+            const uint64 SlateRhiPaintStart = FRmlUiPerformance::IsEnabled() ? FPlatformTime::Cycles64() : 0;
             if (TextureRhi.IsValid())
             {
                 const FVector2f Origin = ToWindowPosition(FVector2f::ZeroVector, Draw.Translation, Draw.bTransform,
                     Draw.Transform, Draw.TransformTranslation);
                 FRmlUiSlateRhiDrawDesc RhiDraw;
+                RhiDraw.ViewId = NativeView ? RmlUE_GetViewResourceId(NativeView) : 0;
+                RhiDraw.FrameId = FrameNumber;
                 RhiDraw.Geometry = GeometryResource->RhiGeometry;
                 RhiDraw.Texture = TextureRhi;
                 RhiDraw.Origin = Origin;
@@ -1054,6 +1727,7 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                     Draw.Transform, Draw.TransformTranslation) - Origin;
                 RhiDraw.ScissorRect = ResolveScissor(Draw.bScissor, Draw.Scissor);
                 RhiDraw.GeometryId = Draw.GeometryId;
+                RhiDraw.VisualOpacity = Draw.VisualOpacity;
                 RhiDraw.ClipMasks.Reserve(Draw.ClipMasks.Num());
                 for (const FNativeMask& Mask : Draw.ClipMasks)
                 {
@@ -1074,25 +1748,22 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 if (RhiDraw.ScissorRect.Right > RhiDraw.ScissorRect.Left &&
                     RhiDraw.ScissorRect.Bottom > RhiDraw.ScissorRect.Top)
                 {
-                    if (RhiDrawElementIndex < SlateRhiDrawElements.Num())
-                    {
-                        UpdateRmlUiSlateRhiDraw(SlateRhiDrawElements[RhiDrawElementIndex], MoveTemp(RhiDraw));
-                    }
-                    else
-                    {
-                        SlateRhiDrawElements.Add(CreateRmlUiSlateRhiDraw(MoveTemp(RhiDraw)));
-                    }
-                    FSlateDrawElement::MakeCustom(Elements, LayerId++, SlateRhiDrawElements[RhiDrawElementIndex]);
-                    ++RhiDrawElementIndex;
+                    PendingRhiDraws.Add(MoveTemp(RhiDraw));
                     ++SlateRhiDrawCount;
                     SlateRhiMaskCount += Draw.ClipMasks.Num();
                 }
+                if (SlateRhiPaintStart)
+                    FRmlUiPerformance::AddCycles(Backend, ERmlUiPerformanceStage::PaintSlateRhi,
+                        FPlatformTime::Cycles64() - SlateRhiPaintStart);
                 continue;
             }
 
+            FlushRhiSubmission();
+            const uint64 SlateFallbackPaintStart = FRmlUiPerformance::IsEnabled() ? FPlatformTime::Cycles64() : 0;
             if (!Brush) Brush = FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
             const uint8 MaterialOpacity = NativeMaterial && GeometryResource->Vertices.Num() >= 8
-                ? static_cast<uint8>(GeometryResource->Vertices[7]) : 255;
+                ? static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(
+                    GeometryResource->Vertices[7] * Draw.VisualOpacity), 0, 255)) : 255;
             const bool bUseMaterialOpacityBoxes = NativeMaterial && ResolvedMaterial && MaterialOpacity < 255 &&
                 CanApplyMaterialOpacityAsBoxes(Draw, *GeometryResource, *NativeMaterial, *ResolvedMaterial);
             int32 PushedClipCount = 0;
@@ -1183,7 +1854,15 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                         static_cast<uint8>(GeometryResource->Vertices[Offset + 6]),
                         static_cast<uint8>(GeometryResource->Vertices[Offset + 7]));
                     if (ResolvedMaterial && !ResolvedMaterial->bUsePremultipliedVertexColor)
+                    {
                         Color = UnpremultiplyMaterialVertexColor(Color);
+                        Color.A = static_cast<uint8>(FMath::Clamp(
+                            FMath::RoundToInt(static_cast<float>(Color.A) * Draw.VisualOpacity), 0, 255));
+                    }
+                    else
+                    {
+                        Color = ApplyPremultipliedOpacity(Color, Draw.VisualOpacity);
+                    }
                     Vertices.Add(FSlateVertex::Make(Transform, Position,
                         FVector2f(GeometryResource->Vertices[Offset + 2],
                             GeometryResource->Vertices[Offset + 3]), Color));
@@ -1208,18 +1887,25 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 Elements.PopClip();
                 --PushedClipCount;
             }
+            if (SlateFallbackPaintStart)
+                FRmlUiPerformance::AddCycles(Backend,
+                    NativeMaterial ? ERmlUiPerformanceStage::PaintMaterial : ERmlUiPerformanceStage::PaintFallback,
+                    FPlatformTime::Cycles64() - SlateFallbackPaintStart);
         }
-        for (int32 Index = RhiDrawElementIndex; Index < SlateRhiDrawElements.Num(); ++Index)
-        {
-            ResetRmlUiSlateRhiDraw(SlateRhiDrawElements[Index]);
-        }
+        FlushRhiSubmission();
+        for (int32 Index = SlateRhiSubmissionIndex; Index < SlateRhiSubmissions.Num(); ++Index)
+            ResetRmlUiSlateRhiSubmission(SlateRhiSubmissions[Index]);
     }
     if (TextureBrush.IsValid())
     {
+        FScopedRmlUiPerformanceTimer Timer(Backend, ERmlUiPerformanceStage::PaintFallback);
         FSlateDrawElement::MakeBox(Elements, LayerId, Geometry.ToPaintGeometry(), TextureBrush->GetSlateBrush(),
             ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect,
             Style.GetColorAndOpacityTint());
     }
+    FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::MaterialDraws, SlateMaterialClipDrawCount);
+    FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::MaterialOpacitySections, SlateMaterialOpacitySectionDrawCount);
+    FRmlUiPerformance::AddWork(Backend, ERmlUiPerformanceWork::FallbackDraws, SlateFallbackDrawCount);
     const FString Error = GetLastError();
     const FVector2D Size = Geometry.GetLocalSize();
     if (!Error.IsEmpty() && Size.X > 80 && Size.Y > 24)
@@ -1251,6 +1937,7 @@ void SRmlUiWidget::UpdateMousePosition(const FGeometry& Geometry, const FPointer
     if (!NativeView) return;
     const FVector2D Position = Geometry.AbsoluteToLocal(Event.GetScreenSpacePosition()) * PixelScale;
     RmlUE_MouseMove(NativeView, FMath::RoundToInt(Position.X), FMath::RoundToInt(Position.Y), GetModifiers(Event));
+    RequestScheduledRender();
 }
 
 FReply SRmlUiWidget::OnMouseMove(const FGeometry& Geometry, const FPointerEvent& Event)
@@ -1267,6 +1954,7 @@ FReply SRmlUiWidget::OnMouseButtonDown(const FGeometry& Geometry, const FPointer
     UpdateMousePosition(Geometry, Event);
     PressedMouseButtons.Add(Button);
     RmlUE_MouseButton(NativeView, Button, 1, GetModifiers(Event));
+    RequestScheduledRender();
     return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse).CaptureMouse(SharedThis(this));
 }
 
@@ -1276,6 +1964,7 @@ FReply SRmlUiWidget::OnMouseButtonUp(const FGeometry& Geometry, const FPointerEv
     if (!NativeView || Button < 0) return FReply::Unhandled();
     UpdateMousePosition(Geometry, Event);
     RmlUE_MouseButton(NativeView, Button, 0, GetModifiers(Event));
+    RequestScheduledRender();
     PressedMouseButtons.Remove(Button);
     return PressedMouseButtons.IsEmpty() ? FReply::Handled().ReleaseMouseCapture() : FReply::Handled();
 }
@@ -1290,13 +1979,18 @@ FReply SRmlUiWidget::OnMouseWheel(const FGeometry& Geometry, const FPointerEvent
     if (!NativeView) return FReply::Unhandled();
     UpdateMousePosition(Geometry, Event);
     RmlUE_MouseWheel(NativeView, Event.GetWheelDelta(), GetModifiers(Event));
+    RequestScheduledRender();
     return FReply::Handled();
 }
 
 void SRmlUiWidget::OnMouseLeave(const FPointerEvent& Event)
 {
     SLeafWidget::OnMouseLeave(Event);
-    if (NativeView && !HasMouseCapture()) RmlUE_MouseLeave(NativeView);
+    if (NativeView && !HasMouseCapture())
+    {
+        RmlUE_MouseLeave(NativeView);
+        RequestScheduledRender();
+    }
 }
 
 void SRmlUiWidget::OnMouseCaptureLost(const FCaptureLostEvent& Event)
@@ -1307,29 +2001,35 @@ void SRmlUiWidget::OnMouseCaptureLost(const FCaptureLostEvent& Event)
         if (const FVector2D* TouchPosition = ActiveTouches.Find(Event.PointerIndex))
         {
             RmlUE_Touch(NativeView, Event.PointerIndex, TouchPosition->X, TouchPosition->Y, 3);
+            RequestScheduledRender();
             ActiveTouches.Remove(Event.PointerIndex);
         }
         else
         {
             for (int Button : PressedMouseButtons) RmlUE_MouseButton(NativeView, Button, 0, 0);
             PressedMouseButtons.Empty();
+            RequestScheduledRender();
         }
     }
 }
 
 FReply SRmlUiWidget::OnKeyDown(const FGeometry&, const FKeyEvent& Event)
 {
+    if (TextInputContext && TextInputContext->ConsumeCompositionKey(Event.GetKey())) return FReply::Handled();
     const int Key = GetVirtualKey(Event);
     if (!NativeView || !Key) return FReply::Unhandled();
     RmlUE_Key(NativeView, Key, 1, GetModifiers(Event));
+    RequestScheduledRender();
     return FReply::Handled();
 }
 
 FReply SRmlUiWidget::OnKeyUp(const FGeometry&, const FKeyEvent& Event)
 {
+    if (TextInputContext && TextInputContext->ConsumeCompositionKey(Event.GetKey())) return FReply::Handled();
     const int Key = GetVirtualKey(Event);
     if (!NativeView || !Key) return FReply::Unhandled();
     RmlUE_Key(NativeView, Key, 0, GetModifiers(Event));
+    RequestScheduledRender();
     return FReply::Handled();
 }
 
@@ -1337,6 +2037,11 @@ FReply SRmlUiWidget::OnKeyChar(const FGeometry&, const FCharacterEvent& Event)
 {
     if (!NativeView) return FReply::Unhandled();
     const TCHAR Character = Event.GetCharacter();
+    if (TextInputContext && TextInputContext->ConsumeCompositionCharacter(Character))
+    {
+        PendingHighSurrogate = 0;
+        return FReply::Handled();
+    }
     if (Character >= 0xd800 && Character <= 0xdbff)
     {
         PendingHighSurrogate = Character;
@@ -1349,17 +2054,29 @@ FReply SRmlUiWidget::OnKeyChar(const FGeometry&, const FCharacterEvent& Event)
     {
         Text.AppendChar(Character == '\r' ? '\n' : Character);
         RmlUE_Text(NativeView, TCHAR_TO_UTF8(*Text));
+        RequestScheduledRender();
     }
+    return FReply::Handled();
+}
+
+FReply SRmlUiWidget::OnFocusReceived(const FGeometry& Geometry, const FFocusEvent& Event)
+{
+    if (TextInputContext) TextInputContext->Update(Geometry, PixelScale);
     return FReply::Handled();
 }
 
 void SRmlUiWidget::OnFocusLost(const FFocusEvent& Event)
 {
     SLeafWidget::OnFocusLost(Event);
+    if (TextInputContext) TextInputContext->Deactivate(true);
     PendingHighSurrogate = 0;
     ActiveTouches.Empty();
     PressedMouseButtons.Empty();
-    if (NativeView) RmlUE_FocusLost(NativeView);
+    if (NativeView)
+    {
+        RmlUE_FocusLost(NativeView);
+        RequestScheduledRender();
+    }
 }
 
 FReply SRmlUiWidget::ForwardTouch(const FGeometry& Geometry, const FPointerEvent& Event, int32 Phase)
@@ -1369,6 +2086,7 @@ FReply SRmlUiWidget::ForwardTouch(const FGeometry& Geometry, const FPointerEvent
     if (Phase == 2) ActiveTouches.Remove(Event.GetPointerIndex());
     else ActiveTouches.Add(Event.GetPointerIndex(), Position);
     RmlUE_Touch(NativeView, Event.GetPointerIndex(), Position.X, Position.Y, Phase);
+    RequestScheduledRender();
     if (Phase == 0) return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse).CaptureMouse(SharedThis(this));
     return Phase == 2 ? FReply::Handled().ReleaseMouseCapture() : FReply::Handled();
 }

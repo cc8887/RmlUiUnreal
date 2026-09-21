@@ -5,6 +5,7 @@
 #include "RmlUiWidget.generated.h"
 
 class SRmlUiWidget;
+class SInvalidationPanel;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UTexture;
@@ -116,6 +117,7 @@ protected:
 private:
     void HandleDocumentEvent(const FString& Type, const FString& ElementId, const FString& Value);
     TSharedPtr<SRmlUiWidget> MyRmlWidget;
+    TSharedPtr<SInvalidationPanel> MyInvalidationPanel;
     UPROPERTY(Transient)
     TMap<FName, TObjectPtr<UMaterialInstanceDynamic>> MaterialInstances;
     TMap<FName, TMap<FName, TWeakObjectPtr<UTexture>>> MaterialTextureBindings;

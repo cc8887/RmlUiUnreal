@@ -8,10 +8,16 @@
 #include "RHIStaticStates.h"
 #include "RHIUtilities.h"
 #include "RmlUiBridge.h"
+#include "RmlUiPerformance.h"
 #include "RmlUiResourceRegistry.h"
 #include "ShaderParameterStruct.h"
-#include "Containers/Queue.h"
 #include "Misc/ScopeLock.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "ProfilingDebugging/RealtimeGPUProfiler.h"
+
+DECLARE_GPU_STAT_NAMED(RmlUiSlateRhi, TEXT("RmlUi Slate RHI"));
+DECLARE_GPU_STAT_NAMED(RmlUiSlateRhiMask, TEXT("RmlUi Slate RHI Mask"));
+DECLARE_GPU_STAT_NAMED(RmlUiSlateRhiContent, TEXT("RmlUi Slate RHI Content"));
 
 namespace
 {
@@ -70,6 +76,7 @@ public:
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         SHADER_PARAMETER_TEXTURE(Texture2D, InTexture)
         SHADER_PARAMETER_SAMPLER(SamplerState, TextureSampler)
+        SHADER_PARAMETER(float, VisualOpacity)
     END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -108,6 +115,8 @@ public:
 
     virtual void InitRHI(FRHICommandListBase& RHICmdList) override
     {
+        TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_GeometryInitRHI);
+        FScopedRmlUiPerformanceTimer Timer(ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceStage::GeometryInit);
         if (SourceVertices.IsEmpty() || SourceIndices.IsEmpty()) return;
 
         const FRHIBufferCreateDesc VertexDesc = FRHIBufferCreateDesc::CreateVertex<FRmlUiSlateRhiVertex>(
@@ -140,6 +149,8 @@ public:
 
     virtual void ReleaseRHI() override
     {
+        TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_GeometryReleaseRHI);
+        FScopedRmlUiPerformanceTimer Timer(ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceStage::GeometryRelease);
         bReady.Store(false);
         VertexBufferRHI.SafeRelease();
         IndexBufferRHI.SafeRelease();
@@ -173,63 +184,193 @@ private:
     TAtomic<bool> bPendingDestroy = false;
 };
 
-class FRmlUiSlateRhiDrawImpl final : public FRmlUiSlateRhiDraw, public FDeferredCleanupInterface
+namespace
+{
+bool EqualSlateRect(const FSlateRect& A, const FSlateRect& B)
+{
+    return A.Left == B.Left && A.Top == B.Top && A.Right == B.Right && A.Bottom == B.Bottom;
+}
+
+bool EqualClipChain(const FRmlUiSlateRhiDrawDesc& A, const FRmlUiSlateRhiDrawDesc& B)
+{
+    if (A.ClipMasks.Num() != B.ClipMasks.Num()) return false;
+    for (int32 Index = 0; Index < A.ClipMasks.Num(); ++Index)
+    {
+        const FRmlUiSlateRhiMaskDesc& Left = A.ClipMasks[Index];
+        const FRmlUiSlateRhiMaskDesc& Right = B.ClipMasks[Index];
+        if (Left.Geometry != Right.Geometry || Left.GeometryId != Right.GeometryId ||
+            Left.Operation != Right.Operation || Left.Origin != Right.Origin ||
+            Left.AxisX != Right.AxisX || Left.AxisY != Right.AxisY ||
+            !EqualSlateRect(Left.ScissorRect, Right.ScissorRect))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct FRmlUiSlateRhiDrawGroup
+{
+    int32 StartIndex = 0;
+    int32 EndIndex = 0;
+};
+
+struct FRmlUiSlateRhiSubmissionSnapshot
+{
+    explicit FRmlUiSlateRhiSubmissionSnapshot(TArray<FRmlUiSlateRhiDrawDesc> InDraws)
+        : Draws(MoveTemp(InDraws))
+    {
+        Groups.Reserve(Draws.Num());
+        for (int32 GroupStart = 0; GroupStart < Draws.Num();)
+        {
+            int32 GroupEnd = GroupStart + 1;
+            while (GroupEnd < Draws.Num() && EqualClipChain(Draws[GroupStart], Draws[GroupEnd]))
+                ++GroupEnd;
+            Groups.Add({GroupStart, GroupEnd});
+            GroupStart = GroupEnd;
+        }
+        FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Slate,
+            ERmlUiPerformanceWork::RhiGroupsCompiled, Groups.Num());
+    }
+
+    TArray<FRmlUiSlateRhiDrawDesc> Draws;
+    TArray<FRmlUiSlateRhiDrawGroup> Groups;
+};
+}
+
+class FRmlUiSlateRhiSubmissionImpl final : public FRmlUiSlateRhiSubmission, public FDeferredCleanupInterface
 {
 public:
-    explicit FRmlUiSlateRhiDrawImpl(FRmlUiSlateRhiDrawDesc InDesc) : Desc(MoveTemp(InDesc)) {}
+    explicit FRmlUiSlateRhiSubmissionImpl(TArray<FRmlUiSlateRhiDrawDesc> InDraws)
+        : DrawSnapshot(MakeShared<FRmlUiSlateRhiSubmissionSnapshot, ESPMode::ThreadSafe>(MoveTemp(InDraws))) {}
 
-    virtual void UpdateDesc(FRmlUiSlateRhiDrawDesc InDesc) override
+    virtual void UpdateDraws(TArray<FRmlUiSlateRhiDrawDesc> InDraws) override
     {
-        FScopeLock Lock(&DescMutex);
-        Desc = MoveTemp(InDesc);
+        TSharedPtr<const FRmlUiSlateRhiSubmissionSnapshot, ESPMode::ThreadSafe> NewSnapshot =
+            MakeShared<FRmlUiSlateRhiSubmissionSnapshot, ESPMode::ThreadSafe>(MoveTemp(InDraws));
+        FScopeLock Lock(&SnapshotMutex);
+        DrawSnapshot = MoveTemp(NewSnapshot);
     }
 
-    virtual void ResetDesc() override
+    virtual void ResetDraws() override
     {
-        UpdateDesc(FRmlUiSlateRhiDrawDesc());
-    }
-
-    virtual void PostCustomElementAdded(FSlateElementBatcher&) const override
-    {
-        FScopeLock Lock(&DescMutex);
-        PendingDraws.Enqueue(Desc);
+        FScopeLock Lock(&SnapshotMutex);
+        DrawSnapshot.Reset();
     }
 
     virtual void Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDrawPassInputs& Inputs) override
     {
         check(IsInRenderingThread());
-        FRmlUiSlateRhiDrawDesc Draw;
-        if (!PendingDraws.Dequeue(Draw) || !Draw.Geometry.IsValid() || !Draw.Geometry->IsReady() ||
-            !Draw.Texture.IsValid() || !Inputs.OutputTexture)
+        TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_Draw_RenderThread_Setup);
+        TSharedPtr<const FRmlUiSlateRhiSubmissionSnapshot, ESPMode::ThreadSafe> LocalSnapshot;
         {
+            FScopeLock Lock(&SnapshotMutex);
+            LocalSnapshot = DrawSnapshot;
+        }
+        if (!LocalSnapshot.IsValid()) return;
+        if (!Inputs.OutputTexture)
+        {
+            for (const FRmlUiSlateRhiDrawDesc& Draw : LocalSnapshot->Draws)
+                FRmlUiPerformance::RecordRenderThread(Draw.ViewId, Draw.FrameId, Draw.GeometryId, 0, 0, 0, 0, true);
             return;
         }
 
-        FRmlUiSlateRenderPassParameters* PassParameters = GraphBuilder.AllocParameters<FRmlUiSlateRenderPassParameters>();
-        PassParameters->RenderTargets[0] = FRenderTargetBinding(Inputs.OutputTexture, ERenderTargetLoadAction::ELoad);
         const FIntPoint Extent = Inputs.OutputTexture->Desc.Extent;
-        if (!Draw.ClipMasks.IsEmpty())
-        {
-            const FRDGTextureDesc StencilDesc = FRDGTextureDesc::Create2D(Extent, PF_DepthStencil,
-                FClearValueBinding(0.0f, 0), TexCreate_DepthStencilTargetable);
-            FRDGTextureRef StencilTexture = GraphBuilder.CreateTexture(StencilDesc, TEXT("RmlUiSlate.ClipStencil"));
-            PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(StencilTexture,
-                ERenderTargetLoadAction::ENoAction, ERenderTargetLoadAction::EClear,
-                FExclusiveDepthStencil::DepthNop_StencilWrite);
-        }
         const FVector2f ElementsOffset = Inputs.ElementsOffset;
         const FMatrix44f ViewProjection = Inputs.ElementsMatrix;
-
-        GraphBuilder.AddPass(RDG_EVENT_NAME("RmlUiSlateRhi Geometry=%llu", Draw.GeometryId), PassParameters,
-            ERDGPassFlags::Raster, [Draw, Extent, ElementsOffset, ViewProjection](FRHICommandList& RHICmdList)
+        RDG_EVENT_SCOPE_STAT(GraphBuilder, RmlUiSlateRhi, "RmlUiSlateRhi");
+        FRDGTextureRef SharedStencilTexture = nullptr;
+        for (const FRmlUiSlateRhiDrawGroup& Group : LocalSnapshot->Groups)
+        {
+            const int32 GroupStart = Group.StartIndex;
+            const int32 GroupEnd = Group.EndIndex;
+            const FRmlUiSlateRhiDrawDesc& Draw = LocalSnapshot->Draws[GroupStart];
+            bool bHasReadyContent = false;
+            for (int32 Index = GroupStart; Index < GroupEnd; ++Index)
             {
-                if (!Draw.Geometry->IsReady()) return;
+                const FRmlUiSlateRhiDrawDesc& ContentDraw = LocalSnapshot->Draws[Index];
+                bHasReadyContent |= ContentDraw.Geometry.IsValid() && ContentDraw.Geometry->IsReady() &&
+                    ContentDraw.Texture.IsValid();
+            }
+            if (!bHasReadyContent)
+            {
+                for (int32 Index = GroupStart; Index < GroupEnd; ++Index)
+                {
+                    const FRmlUiSlateRhiDrawDesc& SkippedDraw = LocalSnapshot->Draws[Index];
+                    FRmlUiPerformance::RecordRenderThread(SkippedDraw.ViewId, SkippedDraw.FrameId,
+                        SkippedDraw.GeometryId, 0, 0, 0, 0, true);
+                }
+                continue;
+            }
+
+            bool bMasksReady = true;
+            for (const FRmlUiSlateRhiMaskDesc& Mask : Draw.ClipMasks)
+                bMasksReady &= Mask.Geometry.IsValid() && Mask.Geometry->IsReady();
+            if (!bMasksReady)
+            {
+                for (int32 Index = GroupStart; Index < GroupEnd; ++Index)
+                {
+                    const FRmlUiSlateRhiDrawDesc& SkippedDraw = LocalSnapshot->Draws[Index];
+                    FRmlUiPerformance::RecordRenderThread(SkippedDraw.ViewId, SkippedDraw.FrameId,
+                        SkippedDraw.GeometryId, 0, 0, 0, 0, true);
+                }
+                continue;
+            }
+
+            FRmlUiSlateRenderPassParameters* PassParameters =
+                GraphBuilder.AllocParameters<FRmlUiSlateRenderPassParameters>();
+            PassParameters->RenderTargets[0] =
+                FRenderTargetBinding(Inputs.OutputTexture, ERenderTargetLoadAction::ELoad);
+            if (!Draw.ClipMasks.IsEmpty())
+            {
+                if (!SharedStencilTexture)
+                {
+                    const FRDGTextureDesc StencilDesc = FRDGTextureDesc::Create2D(Extent, PF_DepthStencil,
+                        FClearValueBinding(0.0f, 0), TexCreate_DepthStencilTargetable);
+                    SharedStencilTexture =
+                        GraphBuilder.CreateTexture(StencilDesc, TEXT("RmlUiSlate.ClipStencilScratch"));
+                    FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Slate,
+                        ERmlUiPerformanceWork::StencilTextures);
+                }
+                PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(SharedStencilTexture,
+                    ERenderTargetLoadAction::ENoAction, ERenderTargetLoadAction::EClear,
+                    FExclusiveDepthStencil::DepthNop_StencilWrite);
+            }
+
+            GraphBuilder.AddPass(RDG_EVENT_NAME("RmlUiSlateRhi Geometry=%llu Draws=%d",
+                Draw.GeometryId, GroupEnd - GroupStart), PassParameters, ERDGPassFlags::Raster,
+                [LocalSnapshot, GroupStart, GroupEnd, Extent, ElementsOffset, ViewProjection](FRHICommandList& RHICmdList)
+                {
+                TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_Draw_RenderThread);
+                RHI_BREADCRUMB_EVENT_STAT(RHICmdList, RmlUiSlateRhi, "RmlUiSlateRhiGroup");
+                FScopedRmlUiPerformanceTimer Timer(ERmlUiPerformanceBackend::Slate,
+                    ERmlUiPerformanceStage::RenderThreadDraw);
+                const FRmlUiSlateRhiDrawDesc& ClipOwner = LocalSnapshot->Draws[GroupStart];
+                FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Slate,
+                    ERmlUiPerformanceWork::RhiRasterPasses);
+                if (!ClipOwner.ClipMasks.IsEmpty())
+                    FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Slate,
+                        ERmlUiPerformanceWork::RhiClipBuilds);
+                bool bGroupReady = true;
+                for (const FRmlUiSlateRhiMaskDesc& Mask : ClipOwner.ClipMasks)
+                    bGroupReady &= Mask.Geometry.IsValid() && Mask.Geometry->IsReady();
+                if (!bGroupReady)
+                {
+                    for (int32 Index = GroupStart; Index < GroupEnd; ++Index)
+                    {
+                        const FRmlUiSlateRhiDrawDesc& SkippedDraw = LocalSnapshot->Draws[Index];
+                        FRmlUiPerformance::RecordRenderThread(SkippedDraw.ViewId, SkippedDraw.FrameId,
+                            SkippedDraw.GeometryId, 0, 0, 0, 0, true);
+                    }
+                    return;
+                }
                 RHICmdList.SetViewport(0, 0, 0.0f, Extent.X, Extent.Y, 1.0f);
                 TShaderMapRef<FRmlUiSlateVertexShader> VertexShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
                 TShaderMapRef<FRmlUiSlatePixelShader> PixelShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
                 FRmlUiSlatePixelShader::FParameters PixelParameters;
-                PixelParameters.InTexture = Draw.Texture;
+                PixelParameters.InTexture = ClipOwner.Texture;
                 PixelParameters.TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+                PixelParameters.VisualOpacity = ClipOwner.VisualOpacity;
 
                 const auto SetScissor = [&](const FSlateRect& Rect)
                 {
@@ -269,53 +410,81 @@ public:
                 };
 
                 uint32 StencilReference = 0;
-                if (!Draw.ClipMasks.IsEmpty())
+                uint32 MaskTriangles = 0;
+                if (!ClipOwner.ClipMasks.IsEmpty())
                 {
+                    RHI_BREADCRUMB_EVENT_STAT(RHICmdList, RmlUiSlateRhiMask, "RmlUiSlateRhiMask");
                     FRHIBlendState* NoColor = TStaticBlendState<CW_NONE>::GetRHI();
                     FRHIDepthStencilState* ReplaceStencil = TStaticDepthStencilState<false, CF_Always,
                         true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
                         true, CF_Always, SO_Keep, SO_Keep, SO_Replace>::GetRHI();
-                    FRHIDepthStencilState* IncrementStencil = TStaticDepthStencilState<false, CF_Always,
-                        true, CF_Always, SO_Keep, SO_Keep, SO_SaturatedIncrement,
-                        true, CF_Always, SO_Keep, SO_Keep, SO_SaturatedIncrement>::GetRHI();
-                    for (const FRmlUiSlateRhiMaskDesc& Mask : Draw.ClipMasks)
+                    FRHIDepthStencilState* IncrementMatchingStencil = TStaticDepthStencilState<false, CF_Always,
+                        true, CF_Equal, SO_Keep, SO_Keep, SO_SaturatedIncrement,
+                        true, CF_Equal, SO_Keep, SO_Keep, SO_SaturatedIncrement>::GetRHI();
+                    for (const FRmlUiSlateRhiMaskDesc& Mask : ClipOwner.ClipMasks)
                     {
-                        if (!Mask.Geometry.IsValid() || !Mask.Geometry->IsReady()) return;
+                        MaskTriangles += Mask.Geometry->IndexCount / 3;
                         if (Mask.Operation == RMLUE_CLIP_MASK_SET || Mask.Operation == RMLUE_CLIP_MASK_SET_INVERSE)
                         {
                             StencilReference = Mask.Operation == RMLUE_CLIP_MASK_SET ? 1u : 0u;
                             SetPipeline(NoColor, ReplaceStencil);
-                            RHICmdList.SetStencilRef(1);
+                            RHICmdList.SetStencilRef(
+                                Mask.Operation == RMLUE_CLIP_MASK_SET ? 1u : 255u);
                         }
                         else
                         {
+                            SetPipeline(NoColor, IncrementMatchingStencil);
+                            RHICmdList.SetStencilRef(StencilReference);
                             StencilReference = FMath::Min(StencilReference + 1u, 255u);
-                            SetPipeline(NoColor, IncrementStencil);
-                            RHICmdList.SetStencilRef(1);
                         }
                         if (SetScissor(Mask.ScissorRect))
                             DrawGeometry(Mask.Geometry, Mask.Origin, Mask.AxisX, Mask.AxisY);
                     }
                 }
 
-                FRHIDepthStencilState* ContentDepthStencil = Draw.ClipMasks.IsEmpty()
+                FRHIDepthStencilState* ContentDepthStencil = ClipOwner.ClipMasks.IsEmpty()
                     ? TStaticDepthStencilState<false, CF_Always>::GetRHI()
                     : TStaticDepthStencilState<false, CF_Always,
                         true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
                         true, CF_Equal, SO_Keep, SO_Keep, SO_Keep, 0xff, 0x00>::GetRHI();
-                SetPipeline(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha,
-                    BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI(), ContentDepthStencil);
-                RHICmdList.SetStencilRef(StencilReference);
-                if (SetScissor(Draw.ScissorRect))
-                    DrawGeometry(Draw.Geometry, Draw.Origin, Draw.AxisX, Draw.AxisY);
+                bool bFirstContentDraw = true;
+                {
+                    RHI_BREADCRUMB_EVENT_STAT(RHICmdList, RmlUiSlateRhiContent, "RmlUiSlateRhiContent");
+                    for (int32 Index = GroupStart; Index < GroupEnd; ++Index)
+                    {
+                        const FRmlUiSlateRhiDrawDesc& ContentDraw = LocalSnapshot->Draws[Index];
+                        if (!ContentDraw.Geometry.IsValid() || !ContentDraw.Geometry->IsReady() ||
+                            !ContentDraw.Texture.IsValid())
+                        {
+                            FRmlUiPerformance::RecordRenderThread(ContentDraw.ViewId, ContentDraw.FrameId,
+                                ContentDraw.GeometryId, 0, 0, 0, 0, true);
+                            continue;
+                        }
+                        PixelParameters.InTexture = ContentDraw.Texture;
+                        PixelParameters.VisualOpacity = ContentDraw.VisualOpacity;
+                        SetPipeline(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha,
+                            BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI(), ContentDepthStencil);
+                        RHICmdList.SetStencilRef(StencilReference);
+                        if (SetScissor(ContentDraw.ScissorRect))
+                            DrawGeometry(ContentDraw.Geometry, ContentDraw.Origin, ContentDraw.AxisX, ContentDraw.AxisY);
+                        FRmlUiPerformance::RecordRenderThread(ContentDraw.ViewId, ContentDraw.FrameId,
+                            ContentDraw.GeometryId, 1,
+                            bFirstContentDraw ? ClipOwner.ClipMasks.Num() : 0,
+                            ContentDraw.Geometry->IndexCount / 3 + (bFirstContentDraw ? MaskTriangles : 0),
+                            bFirstContentDraw && !ClipOwner.ClipMasks.IsEmpty()
+                                ? static_cast<uint32>(Extent.X * Extent.Y) : 0,
+                            false);
+                        bFirstContentDraw = false;
+                    }
+                }
                 RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
-            });
+                });
+        }
     }
 
 private:
-    mutable FCriticalSection DescMutex;
-    FRmlUiSlateRhiDrawDesc Desc;
-    mutable TQueue<FRmlUiSlateRhiDrawDesc, EQueueMode::Spsc> PendingDraws;
+    mutable FCriticalSection SnapshotMutex;
+    TSharedPtr<const FRmlUiSlateRhiSubmissionSnapshot, ESPMode::ThreadSafe> DrawSnapshot;
 };
 
 TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> CreateRmlUiSlateRhiGeometry(
@@ -369,19 +538,25 @@ bool IsRmlUiSlateRhiGeometryReady(
     return Geometry.IsValid() && Geometry->IsReady();
 }
 
-TSharedRef<FRmlUiSlateRhiDraw, ESPMode::ThreadSafe> CreateRmlUiSlateRhiDraw(FRmlUiSlateRhiDrawDesc Desc)
+TSharedRef<FRmlUiSlateRhiSubmission, ESPMode::ThreadSafe> CreateRmlUiSlateRhiSubmission(
+    TArray<FRmlUiSlateRhiDrawDesc> Draws)
 {
-    return MakeShareable<FRmlUiSlateRhiDraw>(new FRmlUiSlateRhiDrawImpl(MoveTemp(Desc)),
-        [](FRmlUiSlateRhiDraw* Draw) { BeginCleanup(static_cast<FRmlUiSlateRhiDrawImpl*>(Draw)); });
+    return MakeShareable<FRmlUiSlateRhiSubmission>(new FRmlUiSlateRhiSubmissionImpl(MoveTemp(Draws)),
+        [](FRmlUiSlateRhiSubmission* Submission)
+        {
+            BeginCleanup(static_cast<FRmlUiSlateRhiSubmissionImpl*>(Submission));
+        });
 }
 
-void UpdateRmlUiSlateRhiDraw(const TSharedPtr<FRmlUiSlateRhiDraw, ESPMode::ThreadSafe>& Draw,
-    FRmlUiSlateRhiDrawDesc Desc)
+void UpdateRmlUiSlateRhiSubmission(
+    const TSharedPtr<FRmlUiSlateRhiSubmission, ESPMode::ThreadSafe>& Submission,
+    TArray<FRmlUiSlateRhiDrawDesc> Draws)
 {
-    if (Draw.IsValid()) Draw->UpdateDesc(MoveTemp(Desc));
+    if (Submission.IsValid()) Submission->UpdateDraws(MoveTemp(Draws));
 }
 
-void ResetRmlUiSlateRhiDraw(const TSharedPtr<FRmlUiSlateRhiDraw, ESPMode::ThreadSafe>& Draw)
+void ResetRmlUiSlateRhiSubmission(
+    const TSharedPtr<FRmlUiSlateRhiSubmission, ESPMode::ThreadSafe>& Submission)
 {
-    if (Draw.IsValid()) Draw->ResetDesc();
+    if (Submission.IsValid()) Submission->ResetDraws();
 }

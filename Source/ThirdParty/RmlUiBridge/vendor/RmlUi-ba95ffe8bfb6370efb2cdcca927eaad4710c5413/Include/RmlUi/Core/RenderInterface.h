@@ -7,6 +7,8 @@
 
 namespace Rml {
 
+class Element;
+
 enum class ClipMaskOperation {
 	Set,        // Set the clip mask to the area of the rendered geometry, clearing any existing clip mask.
 	SetInverse, // Set the clip mask to the area *outside* the rendered geometry, clearing any existing clip mask.
@@ -84,6 +86,8 @@ public:
 	/// @note The clip mask applies exclusively to all other functions that render with a geometry handle, in addition
 	/// to the `CompositeLayers` function while rendering to its destination.
 	virtual void RenderToClipMask(ClipMaskOperation operation, CompiledGeometryHandle geometry, Vector2f translation);
+	/// Optional host hook identifying the element which owns subsequent clip-mask geometry.
+	virtual void SetClipMaskOwner(Element* element);
 
 	/// Called by RmlUi when it wants the renderer to use a new transform matrix.
 	/// @param[in] transform The new transform to apply, or nullptr if no transform applies to the current element.
@@ -91,6 +95,13 @@ public:
 	/// multiplication with the transform.
 	/// @note The transform applies to all functions that render with a geometry handle, and only those.
 	virtual void SetTransform(const Matrix4f* transform);
+
+	/// Optional host hook bracketing all rendering emitted directly by one element.
+	/// Nested elements receive their own begin/end pair.
+	virtual void BeginElement(Element* element);
+	virtual void EndElement(Element* element);
+	/// Optional host hook notifying retained renderers that an element changed its visual output.
+	virtual void OnElementRenderDirty(Element* element);
 
 	/// Called by RmlUi when it wants to push a new layer onto the render stack, setting it as the new render target.
 	/// @return An application-specified handle representing the new layer. The value 'zero' is reserved for the initial base layer.

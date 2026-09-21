@@ -19,6 +19,8 @@ struct FRmlUiSlateRhiMaskDesc
 
 struct FRmlUiSlateRhiDrawDesc
 {
+    uint64 ViewId = 0;
+    uint64 FrameId = 0;
     TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> Geometry;
     FTextureRHIRef Texture;
     FVector2f Origin = FVector2f::ZeroVector;
@@ -26,14 +28,15 @@ struct FRmlUiSlateRhiDrawDesc
     FVector2f AxisY = FVector2f(0.0f, 1.0f);
     FSlateRect ScissorRect;
     uint64 GeometryId = 0;
+    float VisualOpacity = 1.0f;
     TArray<FRmlUiSlateRhiMaskDesc> ClipMasks;
 };
 
-class FRmlUiSlateRhiDraw : public ICustomSlateElement
+class FRmlUiSlateRhiSubmission : public ICustomSlateElement
 {
 public:
-    virtual void UpdateDesc(FRmlUiSlateRhiDrawDesc Desc) = 0;
-    virtual void ResetDesc() = 0;
+    virtual void UpdateDraws(TArray<FRmlUiSlateRhiDrawDesc> Draws) = 0;
+    virtual void ResetDraws() = 0;
 };
 
 TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe> CreateRmlUiSlateRhiGeometry(
@@ -46,7 +49,10 @@ void MarkRmlUiSlateRhiGeometryPendingDestroy(
 bool IsRmlUiSlateRhiGeometryReady(
     const TSharedPtr<FRmlUiSlateRhiGeometry, ESPMode::ThreadSafe>& Geometry);
 
-TSharedRef<FRmlUiSlateRhiDraw, ESPMode::ThreadSafe> CreateRmlUiSlateRhiDraw(FRmlUiSlateRhiDrawDesc Desc);
-void UpdateRmlUiSlateRhiDraw(const TSharedPtr<FRmlUiSlateRhiDraw, ESPMode::ThreadSafe>& Draw,
-    FRmlUiSlateRhiDrawDesc Desc);
-void ResetRmlUiSlateRhiDraw(const TSharedPtr<FRmlUiSlateRhiDraw, ESPMode::ThreadSafe>& Draw);
+TSharedRef<FRmlUiSlateRhiSubmission, ESPMode::ThreadSafe> CreateRmlUiSlateRhiSubmission(
+    TArray<FRmlUiSlateRhiDrawDesc> Draws);
+void UpdateRmlUiSlateRhiSubmission(
+    const TSharedPtr<FRmlUiSlateRhiSubmission, ESPMode::ThreadSafe>& Submission,
+    TArray<FRmlUiSlateRhiDrawDesc> Draws);
+void ResetRmlUiSlateRhiSubmission(
+    const TSharedPtr<FRmlUiSlateRhiSubmission, ESPMode::ThreadSafe>& Submission);

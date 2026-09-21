@@ -161,8 +161,9 @@ void ElementEffects::ReloadEffectsData()
 			}
 		}
 
-		if (filter_compile_failed)
+		if (filter_compile_failed && !filter_compile_warning_emitted)
 			Log::Message(Log::LT_WARNING, "Could not compile filter on element: %s", element->GetAddress().c_str());
+		filter_compile_warning_emitted = filter_compile_failed;
 	}
 }
 

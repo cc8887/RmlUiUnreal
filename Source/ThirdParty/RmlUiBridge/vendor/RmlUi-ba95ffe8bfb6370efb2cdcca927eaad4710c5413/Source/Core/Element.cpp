@@ -184,6 +184,10 @@ void Element::Render()
 	RMLUI_ZoneScoped;
 	RMLUI_ZoneText(name.c_str(), name.size());
 #endif
+	RenderManager* render_manager = GetRenderManager();
+	RenderInterface* render_interface = render_manager ? render_manager->GetRenderInterface() : nullptr;
+	if (render_interface)
+		render_interface->BeginElement(this);
 
 	UpdateAbsoluteOffsetAndRenderBoxData();
 
@@ -211,6 +215,9 @@ void Element::Render()
 
 	ElementUtilities::ApplyTransform(*this);
 	meta->effects.RenderEffects(RenderStage::Exit);
+
+	if (render_interface)
+		render_interface->EndElement(this);
 }
 
 ElementPtr Element::Clone() const
@@ -761,6 +768,47 @@ const TransformState* Element::GetTransformState() const noexcept
 	return transform_state.get();
 }
 
+void Element::SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y, float rotation_degrees)
+{
+	animation_transform_2d_active = true;
+	animation_transform_2d[0] = translation_x;
+	animation_transform_2d[1] = translation_y;
+	animation_transform_2d[2] = scale_x;
+	animation_transform_2d[3] = scale_y;
+	animation_transform_2d[4] = rotation_degrees;
+	DirtyTransformState(false, true);
+}
+
+void Element::ClearAnimationTransform2D()
+{
+	if (!animation_transform_2d_active)
+		return;
+	animation_transform_2d_active = false;
+	DirtyTransformState(false, true);
+}
+
+bool Element::HasAnimationTransform2D() const noexcept
+{
+	return animation_transform_2d_active;
+}
+
+void Element::SynchronizeTransformStateTree()
+{
+	UpdateAbsoluteOffsetAndRenderBoxData();
+	if (stacking_context_dirty)
+		BuildLocalStackingContext();
+	UpdateTransformState();
+	for (const ElementPtr& child : children)
+		child->SynchronizeTransformStateTree();
+}
+
+void Element::SynchronizeAnimationTransformStateTree()
+{
+	UpdateTransformState();
+	for (const ElementPtr& child : children)
+		child->SynchronizeAnimationTransformStateTree();
+}
+
 bool Element::Project(Vector2f& point) const noexcept
 {
 	if (!transform_state || !transform_state->GetTransform())
@@ -1005,6 +1053,7 @@ void Element::SetScrollLeft(float scroll_left)
 	if (new_offset != scroll_offset.x)
 	{
 		scroll_offset.x = new_offset;
+		NotifyRenderDirty();
 		meta->scroll.UpdateScrollbar(ElementScroll::HORIZONTAL);
 		DirtyAbsoluteOffset();
 
@@ -1023,6 +1072,7 @@ void Element::SetScrollTop(float scroll_top)
 	if (new_offset != scroll_offset.y)
 	{
 		scroll_offset.y = new_offset;
+		NotifyRenderDirty();
 		meta->scroll.UpdateScrollbar(ElementScroll::VERTICAL);
 		DirtyAbsoluteOffset();
 
@@ -1354,6 +1404,7 @@ Element* Element::AppendChild(ElementPtr child, bool dom_element)
 	}
 	// Set parent just after inserting into children. This allows us to eg. get our previous sibling in SetParent.
 	child_ptr->SetParent(this);
+	NotifyRenderDirty();
 
 	Element* ancestor = child_ptr;
 	for (int i = 0; i <= ChildNotifyLevels && ancestor; i++, ancestor = ancestor->GetParentNode())
@@ -1467,6 +1518,7 @@ ElementPtr Element::RemoveChild(Element* child)
 
 			ElementPtr detached_child = std::move(*itr);
 			children.erase(itr);
+			NotifyRenderDirty();
 
 			// Remove the child element as the focused child of this element.
 			if (child == focus)
@@ -1809,6 +1861,8 @@ void Element::OnAttributeChange(const ElementAttributes& changed_attributes)
 void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
 {
 	RMLUI_ZoneScoped;
+	if (!changed_properties.Empty())
+		NotifyRenderDirty();
 	const bool top_right_bottom_left_changed = (           //
 		changed_properties.Contains(PropertyId::Top) ||    //
 		changed_properties.Contains(PropertyId::Right) ||  //
@@ -1985,8 +2039,16 @@ void Element::OnChildRemove(Element* /*child*/) {}
 
 void Element::DirtyLayout()
 {
+	NotifyRenderDirty();
 	if (Element* document = GetOwnerDocument())
 		document->DirtyLayout();
+}
+
+void Element::NotifyRenderDirty()
+{
+	if (RenderManager* render_manager = GetRenderManager())
+		if (RenderInterface* render_interface = render_manager->GetRenderInterface())
+			render_interface->OnElementRenderDirty(this);
 }
 
 bool Element::IsLayoutDirty()
@@ -2577,6 +2639,14 @@ bool Element::Animate(PropertyId id, const Property& target_value, float duratio
 	return result;
 }
 
+void Element::CancelAnimation(const String& property_name)
+{
+	const auto id = StyleSheetSpecification::GetPropertyId(property_name);
+	animations.erase(std::remove_if(animations.begin(), animations.end(), [id](const ElementAnimation& item) {
+		return item.GetPropertyId() == id;
+	}), animations.end());
+}
+
 bool Element::AddAnimationKey(const String& property_name, const Property& target_value, float duration, Tween tween)
 {
 	return AddAnimationKey(StyleSheetSpecification::GetPropertyId(property_name), target_value, duration, tween);
@@ -2978,7 +3048,34 @@ void Element::UpdateTransformState()
 		bool have_transform = false;
 		Matrix4f transform = Matrix4f::Identity();
 
-		if (TransformPtr transform_ptr = computed.transform())
+		if (animation_transform_2d_active)
+		{
+			Vector3f transform_origin(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f, 0.f);
+			if (computed.transform_origin_x().type == Style::TransformOrigin::Percentage)
+				transform_origin.x = pos.x + computed.transform_origin_x().value * size.x * 0.01f;
+			else
+				transform_origin.x = pos.x + computed.transform_origin_x().value;
+			if (computed.transform_origin_y().type == Style::TransformOrigin::Percentage)
+				transform_origin.y = pos.y + computed.transform_origin_y().value * size.y * 0.01f;
+			else
+				transform_origin.y = pos.y + computed.transform_origin_y().value;
+			const float angle = Math::DegreesToRadians(animation_transform_2d[4]);
+			const float cosine = Math::Cos(angle);
+			const float sine = Math::Sin(angle);
+			const float m00 = cosine * animation_transform_2d[2];
+			const float m01 = -sine * animation_transform_2d[3];
+			const float m10 = sine * animation_transform_2d[2];
+			const float m11 = cosine * animation_transform_2d[3];
+			const float translation_x = transform_origin.x + animation_transform_2d[0] -
+				m00 * transform_origin.x - m01 * transform_origin.y;
+			const float translation_y = transform_origin.y + animation_transform_2d[1] -
+				m10 * transform_origin.x - m11 * transform_origin.y;
+			transform = Matrix4f::FromRows(
+				{m00, m01, 0.f, translation_x}, {m10, m11, 0.f, translation_y},
+				{0.f, 0.f, 1.f, 0.f}, {0.f, 0.f, 0.f, 1.f});
+			have_transform = true;
+		}
+		else if (TransformPtr transform_ptr = computed.transform())
 		{
 			// First find the current element's transform
 			const int n = transform_ptr->GetNumPrimitives();

@@ -112,6 +112,7 @@ void ElementText::SetText(const String& _text)
 	if (text != _text)
 	{
 		text = _text;
+		NotifyRenderDirty();
 
 		if (dirty_layout_on_change)
 			DirtyLayout();

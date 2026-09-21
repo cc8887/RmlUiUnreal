@@ -151,6 +151,36 @@ img { position: absolute; left: 180px; top: 70px; width: 40px; height: 40px; }
     Require(RmlUE_GetAttribute(View, "field", "disabled", Value, sizeof(Value)) != 0 && std::strcmp(Value, "true") == 0, "boolean attribute presence");
     Require(RmlUE_SetAttribute(View, "field", "disabled", "false") != 0, "clear boolean attribute");
     Require(RmlUE_GetAttribute(View, "field", "disabled", Value, sizeof(Value)) != 0 && std::strcmp(Value, "false") == 0, "boolean attribute absence");
+    const RmlUE_Node SvgHost = RmlUE_CreateNode(View, 0, "div");
+    Require(SvgHost != 0 && RmlUE_InsertNode(View, SvgHost, RmlUE_GetRootNode(View), 0) != 0, "insert SVG host node");
+    Require(RmlUE_SetNodeProperty(View, SvgHost, "position", "absolute") != 0 &&
+        RmlUE_SetNodeProperty(View, SvgHost, "left", "220px") != 0 &&
+        RmlUE_SetNodeProperty(View, SvgHost, "top", "180px") != 0 &&
+        RmlUE_SetNodeProperty(View, SvgHost, "width", "24px") != 0 &&
+        RmlUE_SetNodeProperty(View, SvgHost, "height", "24px") != 0,
+        "position SVG host node");
+    Require(RmlUE_SetNodeInnerRml(View, SvgHost,
+        "<svg width=\"24\" height=\"24\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"24\" height=\"24\" fill=\"#00ff00\"/></svg>") != 0,
+        "set generated SVG markup");
+    Require(RmlUE_Render(View, &Frame) != 0, "render generated SVG");
+    Pixel = Frame.Pixels + (190 * Frame.Width + 230) * 4;
+    Require(Pixel[0] < 10 && Pixel[1] > 245 && Pixel[2] < 10 && Pixel[3] > 245, "generated SVG green pixels");
+    Require(RmlUE_SetNodeInnerRml(View, SvgHost,
+        "<svg width=\"24\" height=\"24\" xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"24\" height=\"24\" fill=\"#ff0000\"/></svg>") != 0,
+        "update generated SVG markup");
+    Require(RmlUE_Render(View, &Frame) != 0, "render updated SVG");
+    Pixel = Frame.Pixels + (190 * Frame.Width + 230) * 4;
+    Require(Pixel[0] < 10 && Pixel[1] < 10 && Pixel[2] > 245 && Pixel[3] > 245, "updated SVG red pixels");
+    Require(RmlUE_SetNodeInnerRml(View, SvgHost,
+        "<svg width=\"24\" height=\"24\" xmlns=\"http://www.w3.org/2000/svg\"><defs><mask id=\"m\"><rect width=\"24\" height=\"24\" fill=\"white\"/><rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" fill=\"black\"/></mask></defs><rect width=\"24\" height=\"24\" fill=\"#ffd34e\" mask=\"url(#m)\"/></svg>") != 0,
+        "set SVG mask markup");
+    Require(RmlUE_Render(View, &Frame) != 0, "render SVG mask");
+    const auto* MaskEdgePixel = Frame.Pixels + (182 * Frame.Width + 222) * 4;
+    const auto* MaskCenterPixel = Frame.Pixels + (192 * Frame.Width + 232) * 4;
+    Require(MaskEdgePixel[0] > 40 && MaskEdgePixel[1] > 160 && MaskEdgePixel[2] > 220,
+        "SVG mask preserves the gold edge pixels");
+    Require(!(MaskCenterPixel[0] > 40 && MaskCenterPixel[1] > 160 && MaskCenterPixel[2] > 220),
+        "SVG mask cuts out the center pixels");
     Require(RmlUE_LoadDocument(View, "this-file-does-not-exist.rml") == 0, "failed reload");
     RmlUE_Rect PreservedRect{};
     Require(RmlUE_GetElementRect(View, "button", &PreservedRect) != 0, "preserve old document after failed reload");
@@ -433,6 +463,72 @@ body { margin: 0; font-family: LatoLatin; font-size: 16px; }
         Require(RmlUE_SetProperty(MotionView, "hover-grow", "transition", "transform 0.3s cubic-out") != 0,
             "RmlUi accepts adapted Hover.css transition shorthand");
 
+        // The Transitions.dev menu-dropdown keeps the surface hidden until the trigger is hovered.
+        RmlUE_FocusLost(MotionView);
+        RmlUE_MouseMove(MotionView, 790, 470, 0);
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown reset frame");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown settled closed frame");
+        RmlUE_Rect DropdownTrigger{};
+        Require(RmlUE_GetElementRect(MotionView, "dropdown-trigger", &DropdownTrigger) != 0,
+            "Transitions.dev dropdown trigger layout");
+        RmlUE_Rect DropdownSurfaceRect{};
+        Require(RmlUE_GetElementRect(MotionView, "dropdown-surface", &DropdownSurfaceRect) != 0,
+            "Transitions.dev dropdown surface layout");
+        const int DropdownProbeX = int(DropdownSurfaceRect.X + DropdownSurfaceRect.Width * 0.99f);
+        const int DropdownProbeY = int(DropdownSurfaceRect.Y + DropdownSurfaceRect.Height * 0.5f);
+        const int DropdownClosed = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        const int TriggerProbeX = int(DropdownTrigger.X + DropdownTrigger.Width * 0.5f);
+        const int TriggerProbeY = int(DropdownTrigger.Y + DropdownTrigger.Height * 0.5f);
+        const int TriggerRest = Brightness(Frame, TriggerProbeX, TriggerProbeY);
+        RmlUE_MouseMove(MotionView, TriggerProbeX, TriggerProbeY, 0);
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown hover frame");
+        const int TriggerHover = Brightness(Frame, TriggerProbeX, TriggerProbeY);
+        Require(TriggerHover > TriggerRest + 30, "Transitions.dev dropdown trigger responds to hover");
+        RmlUE_MouseMove(MotionView, 790, 470, 0);
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown hover reset frame");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown hover reset settled frame");
+        const auto DropdownMenu = RmlUE_FindNode(MotionView, "dropdown-menu");
+        Require(DropdownMenu != 0, "Transitions.dev dropdown menu node");
+        Require(RmlUE_SetNodeClass(MotionView, DropdownMenu, "is-open", 1) != 0,
+            "Transitions.dev dropdown open state");
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown open start frame");
+        const int DropdownStart = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown open middle frame");
+        const int DropdownMiddle = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(180));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown settled open frame");
+        const int DropdownOpen = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        std::printf("Transitions.dev dropdown brightness closed=%d start=%d middle=%d open=%d\n",
+            DropdownClosed, DropdownStart, DropdownMiddle, DropdownOpen);
+        std::fflush(stdout);
+        Require(DropdownClosed < 180, "Transitions.dev dropdown starts visually closed");
+        Require(DropdownMiddle > DropdownStart + 40, "Transitions.dev dropdown has an animated middle frame");
+        Require(DropdownOpen > DropdownClosed + 500, "Transitions.dev dropdown reaches its open surface");
+
+        Require(RmlUE_SetNodeClass(MotionView, DropdownMenu, "is-open", 0) != 0 &&
+                RmlUE_SetNodeClass(MotionView, DropdownMenu, "is-closing", 1) != 0,
+            "Transitions.dev dropdown close state");
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown close start frame");
+        const int DropdownCloseStart = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown close middle frame");
+        const int DropdownCloseMiddle = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        Require(RmlUE_Render(MotionView, &Frame) != 0, "Transitions.dev dropdown settled closed class frame");
+        const int DropdownCloseSettled = Brightness(Frame, DropdownProbeX, DropdownProbeY);
+        std::printf("Transitions.dev dropdown brightness closed=%d hover=%d start=%d middle=%d open=%d close-start=%d close-middle=%d close-settled=%d\n",
+            DropdownClosed, TriggerHover, DropdownStart, DropdownMiddle, DropdownOpen,
+            DropdownCloseStart, DropdownCloseMiddle, DropdownCloseSettled);
+        std::fflush(stdout);
+        Require(DropdownCloseStart > DropdownCloseSettled + 500, "Transitions.dev dropdown close starts from its open surface");
+        Require(DropdownCloseMiddle < DropdownCloseStart - 40, "Transitions.dev dropdown has an animated closing frame");
+        Require(DropdownCloseSettled < 180, "Transitions.dev dropdown settles visually closed");
+        Require(RmlUE_SetNodeClass(MotionView, DropdownMenu, "is-closing", 0) != 0,
+            "Transitions.dev dropdown clears close state");
+
         RmlUE_FocusLost(MotionView);
         RmlUE_MouseMove(MotionView, 790, 470, 0);
         Require(RmlUE_Render(MotionView, &Frame) != 0, "Hover.css reset frame");
@@ -454,6 +550,45 @@ body { margin: 0; font-family: LatoLatin; font-size: 16px; }
         Require(std::abs(ButtonStart - ButtonBefore) < 24, "Hover.css adapted Grow does not jump on hover");
         Require(ButtonMiddle > ButtonStart + 80, "Hover.css adapted Grow expands smoothly across rendered frames");
         RmlUE_DestroyView(MotionView);
+
+        auto* FirstSlateMotionView = RmlUE_CreateSlateView(800, 480, 1);
+        auto* SecondSlateMotionView = RmlUE_CreateSlateView(800, 480, 1);
+        Require(FirstSlateMotionView && SecondSlateMotionView, "two Slate motion views");
+        Require(RmlUE_LoadDocument(FirstSlateMotionView, MotionPath.c_str()) != 0 &&
+                RmlUE_LoadDocument(SecondSlateMotionView, MotionPath.c_str()) != 0,
+            "two Slate motion views load identical box-shadow content");
+        RmlUE_SlateFrame FirstSlateMotionFrame{}, SecondSlateMotionFrame{};
+        Require(RmlUE_RenderSlate(FirstSlateMotionView, &FirstSlateMotionFrame) != 0 &&
+                FirstSlateMotionFrame.DrawCount > 0,
+            "first Slate motion view renders");
+        Require(RmlUE_RenderSlate(SecondSlateMotionView, &SecondSlateMotionFrame) != 0 &&
+                SecondSlateMotionFrame.DrawCount > 0,
+            "second Slate motion view renders with its own render-manager resources");
+        RmlUE_DestroyView(FirstSlateMotionView);
+        Require(RmlUE_RenderSlate(SecondSlateMotionView, &SecondSlateMotionFrame) != 0 &&
+                SecondSlateMotionFrame.DrawCount > 0,
+            "second Slate motion view survives destruction of the peer render manager");
+        RmlUE_DestroyView(SecondSlateMotionView);
+
+        const char* SlateSvgMarkup = R"(<rml><head><style>body{margin:0}</style></head><body>
+            <svg width="24" height="24" xmlns="http://www.w3.org/2000/svg">
+                <rect width="24" height="24" fill="#00ff00"/>
+            </svg></body></rml>)";
+        auto* FirstSlateSvgView = RmlUE_CreateSlateView(64, 64, 1);
+        auto* SecondSlateSvgView = RmlUE_CreateSlateView(64, 64, 1);
+        Require(FirstSlateSvgView && SecondSlateSvgView, "two Slate SVG views");
+        Require(RmlUE_LoadDocumentFromMemory(FirstSlateSvgView, SlateSvgMarkup, "memory-svg-a.rml") != 0 &&
+                RmlUE_LoadDocumentFromMemory(SecondSlateSvgView, SlateSvgMarkup, "memory-svg-b.rml") != 0,
+            "two Slate SVG views load identical SVG content");
+        RmlUE_SlateFrame FirstSlateSvgFrame{}, SecondSlateSvgFrame{};
+        Require(RmlUE_RenderSlate(FirstSlateSvgView, &FirstSlateSvgFrame) != 0 && FirstSlateSvgFrame.DrawCount > 0,
+            "first Slate SVG view renders");
+        Require(RmlUE_RenderSlate(SecondSlateSvgView, &SecondSlateSvgFrame) != 0 && SecondSlateSvgFrame.DrawCount > 0,
+            "second Slate SVG view renders with its own render-manager resources");
+        RmlUE_DestroyView(FirstSlateSvgView);
+        Require(RmlUE_RenderSlate(SecondSlateSvgView, &SecondSlateSvgFrame) != 0 && SecondSlateSvgFrame.DrawCount > 0,
+            "second Slate SVG view survives destruction of the peer render manager");
+        RmlUE_DestroyView(SecondSlateSvgView);
     }
     Require(RmlUE_GetResourceSnapshot(nullptr, 0) == 0, "all explicitly released resources leave the registry");
     Require(Events.Created == Events.Destroyed, "resource create and destroy events are balanced");

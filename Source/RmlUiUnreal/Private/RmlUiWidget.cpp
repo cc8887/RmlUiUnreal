@@ -7,6 +7,7 @@
 #include "RmlUiUnrealModule.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Widgets/SInvalidationPanel.h"
 
 TSharedRef<SWidget> URmlUiWidget::RebuildWidget()
 {
@@ -25,9 +26,15 @@ TSharedRef<SWidget> URmlUiWidget::RebuildWidget()
         .DesiredSize(DesiredSize)
         .MaxTextureDimension(MaxTextureDimension)
         .UseSlateRenderer(bUseSlateRenderer)
+        .UsePaintCache(true)
         .BaseStyleSheet(GetBaseStyleSheet())
         .OnDocumentEvent(FOnSlateRmlUiDocumentEvent::CreateUObject(this, &URmlUiWidget::HandleDocumentEvent));
-    return MyRmlWidget.ToSharedRef();
+    MyInvalidationPanel = SNew(SInvalidationPanel)
+        .DebugName(TEXT("RmlUi Document Paint Cache"))
+        [
+            MyRmlWidget.ToSharedRef()
+        ];
+    return MyInvalidationPanel.ToSharedRef();
 }
 
 void URmlUiWidget::SynchronizeProperties()
@@ -60,6 +67,7 @@ void URmlUiWidget::SynchronizeProperties()
 void URmlUiWidget::ReleaseSlateResources(bool bReleaseChildren)
 {
     Super::ReleaseSlateResources(bReleaseChildren);
+    MyInvalidationPanel.Reset();
     MyRmlWidget.Reset();
 }
 

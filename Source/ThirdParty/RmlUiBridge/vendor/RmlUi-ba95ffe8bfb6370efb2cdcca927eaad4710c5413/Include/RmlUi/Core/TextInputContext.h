@@ -27,6 +27,13 @@ public:
 	/// @return True if the bounds can be successfully retrieved, false otherwise.
 	virtual bool GetBoundingBox(Rectanglef& out_rectangle) const = 0;
 
+	// Host IME queries. Default implementations preserve third-party handler compatibility.
+	virtual Element* GetElement() const { return nullptr; }
+	virtual String GetText() const { return {}; }
+	virtual int GetCursorPosition() const { int start = 0, end = 0; GetSelectionRange(start, end); return end; }
+	virtual bool GetTextBounds(int, int, Rectanglef& bounds) const { return GetBoundingBox(bounds); }
+	virtual int GetCharacterIndexAtPoint(Vector2f) const { return -1; }
+
 	/// Retrieve the selection range.
 	/// @param[out] start The first character selected.
 	/// @param[out] end The first character *after* the selection.

@@ -128,7 +128,7 @@ void RenderManager::DisableClipMask()
 void RenderManager::SetClipMask(ClipMaskOperation operation, Geometry* geometry, Vector2f translation)
 {
 	RMLUI_ASSERT(geometry && geometry->render_manager == this);
-	state.clip_mask_list = {ClipMaskGeometry{operation, geometry, translation, nullptr}};
+	state.clip_mask_list = {ClipMaskGeometry{operation, geometry, translation, nullptr, nullptr}};
 	ApplyClipMask(state.clip_mask_list);
 }
 
@@ -165,10 +165,12 @@ void RenderManager::ApplyClipMask(const ClipMaskGeometryList& clip_elements)
 		for (const ClipMaskGeometry& element_clip : clip_elements)
 		{
 			RMLUI_ASSERT(element_clip.geometry->render_manager == this);
+			render_interface->SetClipMaskOwner(element_clip.owner_element);
 			SetTransform(element_clip.transform);
 			if (CompiledGeometryHandle handle = GetCompiledGeometryHandle(element_clip.geometry->resource_handle))
 				render_interface->RenderToClipMask(element_clip.operation, handle, element_clip.absolute_offset);
 		}
+		render_interface->SetClipMaskOwner(nullptr);
 
 		// Apply the initially set transform in case it was changed.
 		SetTransform(&initial_transform);

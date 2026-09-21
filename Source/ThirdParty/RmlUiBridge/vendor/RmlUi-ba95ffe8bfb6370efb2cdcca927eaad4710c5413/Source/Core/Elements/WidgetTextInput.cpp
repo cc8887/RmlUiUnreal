@@ -18,6 +18,7 @@
 #include "../Clock.h"
 #include "../ElementStyle.h"
 #include "ElementTextSelection.h"
+#include "../TransformState.h"
 #include <algorithm>
 #include <limits.h>
 
@@ -60,6 +61,11 @@ public:
 	~WidgetTextInputContext();
 
 	bool GetBoundingBox(Rectanglef& out_rectangle) const override;
+	Element* GetElement() const override { return element; }
+	String GetText() const override { return owner->GetAttributeValue(); }
+	int GetCursorPosition() const override;
+	bool GetTextBounds(int start, int end, Rectanglef& bounds) const override;
+	int GetCharacterIndexAtPoint(Vector2f point) const override;
 	void GetSelectionRange(int& start, int& end) const override;
 	void SetSelectionRange(int start, int end) override;
 	void SetCursorPosition(int position) override;
@@ -85,6 +91,71 @@ WidgetTextInputContext::~WidgetTextInputContext()
 bool WidgetTextInputContext::GetBoundingBox(Rectanglef& out_rectangle) const
 {
 	return ElementUtilities::GetBoundingBox(out_rectangle, element, BoxArea::Border);
+}
+
+int WidgetTextInputContext::GetCursorPosition() const
+{
+	return StringUtilities::ConvertByteOffsetToCharacterOffset(owner->GetValue(), owner->absolute_cursor_index);
+}
+
+bool WidgetTextInputContext::GetTextBounds(int start, int end, Rectanglef& bounds) const
+{
+	if (owner->lines.empty() || !owner->text_element->GetFontFaceHandle()) return false;
+	const String& value = owner->GetValue();
+	const int begin = StringUtilities::ConvertCharacterOffsetToByteOffset(value, Math::Max(0, start));
+	const int finish = StringUtilities::ConvertCharacterOffsetToByteOffset(value, Math::Max(start, end));
+	const Vector2f origin = element->GetAbsoluteOffset() - Vector2f(element->GetScrollLeft(), element->GetScrollTop());
+	bool found = false;
+	const bool is_cursor = start == end && start == GetCursorPosition();
+	if (is_cursor)
+	{
+		bounds = Rectanglef::FromPositionSize(origin + owner->cursor_position, owner->cursor_size);
+		found = true;
+	}
+	for (int index = 0; !is_cursor && index < (int)owner->lines.size(); ++index)
+	{
+		const auto& line = owner->lines[index];
+		const int line_end = line.value_offset + line.editable_length;
+		if (finish < line.value_offset || begin > line_end) continue;
+		if (start == end && begin == line_end && index + 1 < (int)owner->lines.size() &&
+			owner->lines[index + 1].value_offset == begin && owner->cursor_wrap_down) continue;
+		const int first = Math::Clamp(begin - line.value_offset, 0, line.editable_length);
+		const int last = Math::Clamp(finish - line.value_offset, 0, line.editable_length);
+		const float x0 = (float)ElementUtilities::GetStringWidth(owner->text_element, StringView(value, line.value_offset, first));
+		const float x1 = (float)ElementUtilities::GetStringWidth(owner->text_element, StringView(value, line.value_offset, last));
+		const Vector2f position = origin + Vector2f(x0 + owner->GetAlignmentSpecificTextOffset(line), index * owner->GetLineHeight());
+		const Rectanglef part = Rectanglef::FromPositionSize(position,
+			Vector2f(Math::Max(owner->cursor_size.x, x1 - x0), owner->GetLineHeight()));
+		bounds = found ? bounds.Join(part) : part;
+		found = true;
+		if (start == end) break;
+	}
+	if (!found) return false;
+	const TransformState* state = element->GetTransformState();
+	const Matrix4f* transform = state ? state->GetTransform() : nullptr;
+	if (transform)
+	{
+		Vector2f corners[] = {bounds.TopLeft(), bounds.TopRight(), bounds.BottomRight(), bounds.BottomLeft()};
+		for (int i = 0; i < 4; ++i)
+		{
+			const Vector4f p = *transform * Vector4f(corners[i].x, corners[i].y, 0, 1);
+			if (p.w <= 0.00001f) return false;
+			const Vector2f projected(p.x / p.w, p.y / p.w);
+			bounds = i == 0 ? Rectanglef::FromPosition(projected) : bounds.Join(projected);
+		}
+	}
+	return true;
+}
+
+int WidgetTextInputContext::GetCharacterIndexAtPoint(Vector2f point) const
+{
+	if (owner->lines.empty() || !element->Project(point)) return -1;
+	point -= element->GetAbsoluteOffset() - Vector2f(element->GetScrollLeft(), element->GetScrollTop());
+	const int line = owner->CalculateLineIndex(point.y);
+	const bool previous_ideal = owner->ideal_cursor_position_to_the_right_of_cursor;
+	const int offset = owner->CalculateCharacterIndex(line, point.x) + owner->lines[line].value_offset;
+	owner->ideal_cursor_position_to_the_right_of_cursor = previous_ideal;
+	return StringUtilities::ConvertByteOffsetToCharacterOffset(owner->GetValue(), offset);
 }
 
 void WidgetTextInputContext::GetSelectionRange(int& start, int& end) const
@@ -141,9 +212,9 @@ void WidgetTextInputContext::CommitComposition(StringView composition)
 		int composition_length = (int)StringUtilities::LengthUTF8(composition);
 
 		// The requested text value would exceed the length restriction after replacing the original value.
-		if (value_length + composition_length - (start - end) > owner->GetMaxLength())
+		if (value_length + composition_length - (end - start) > owner->GetMaxLength())
 		{
-			int new_length = owner->GetMaxLength() - (value_length - composition_length);
+			int new_length = Math::Max(0, owner->GetMaxLength() - (value_length - (end - start)));
 			int new_length_byte = StringUtilities::ConvertCharacterOffsetToByteOffset(composition, new_length);
 			composition = StringView(composition.begin(), composition.begin() + new_length_byte);
 		}

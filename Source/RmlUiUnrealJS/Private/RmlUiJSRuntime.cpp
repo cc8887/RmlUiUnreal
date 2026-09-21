@@ -10,10 +10,14 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RmlUiBridge.h"
+#include "RmlUiPerformance.h"
 #include "RmlUiWidget.h"
 #include "SRmlUiWidget.h"
 #include "Serialization/JsonSerializer.h"
 #include "Windows/WindowsHWrapper.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "RmlUiCapabilityCatalog.inl"
+#include "Misc/AutomationTest.h"
 #include <bcrypt.h>
 
 namespace {
@@ -59,6 +63,53 @@ struct FVueVersion
 {
     FString Path, Directory, Version, Entry, Document;
     TSharedPtr<FJsonObject> Manifest;
+    bool bStrictCapabilities = false;
+    bool ValidateCapabilities(bool bSlate, FString& Error)
+    {
+        // Existing ABI-1 bundles predate capability declarations and retain their
+        // original behaviour. New bundles must declare an executable profile.
+        bStrictCapabilities = false;
+        if (!Manifest->HasField(TEXT("capabilities"))) return true;
+        const TSharedPtr<FJsonObject>* Capabilities = nullptr;
+        auto Reject = [&Error](const FString& Reason) {
+            Error = TEXT("UI capability rejection; previous page retained. ") + Reason; return false;
+        };
+        if (!Manifest->TryGetObjectField(TEXT("capabilities"), Capabilities)) return Reject(TEXT("Invalid capabilities object."));
+        const auto& C = **Capabilities;
+        double Schema = 0, HostAbi = 0, SlateAbi = 0;
+        FString Profile, Compiler, Diagnostics;
+        const TArray<TSharedPtr<FJsonValue>> *Required = nullptr, *Degraded = nullptr;
+        const TSharedPtr<FJsonObject>* Files = nullptr;
+        if (!C.TryGetNumberField(TEXT("schemaVersion"), Schema) || Schema != RmlUiCapabilitySchemaVersion ||
+            !C.TryGetStringField(TEXT("compiler"), Compiler) || Compiler != TEXT("rmlui-css/2.0.0") ||
+            !C.TryGetNumberField(TEXT("minimumHostAbi"), HostAbi) || HostAbi < RmlUiMinimumHostAbi || HostAbi != FMath::FloorToDouble(HostAbi) || HostAbi > RmlUE_GetHostAbiVersion() ||
+            !C.TryGetStringField(TEXT("profile"), Profile) ||
+            !C.TryGetArrayField(TEXT("requiredFeatures"), Required) || !C.TryGetArrayField(TEXT("degradedFeatures"), Degraded) ||
+            !C.TryGetStringField(TEXT("diagnostics"), Diagnostics) || !RelativeFile(Diagnostics) ||
+            !Manifest->TryGetObjectField(TEXT("files"), Files) || !(*Files)->HasField(Diagnostics))
+            return Reject(TEXT("Unsupported schema/compiler/Host ABI or missing hashed diagnostics."));
+        if (Profile != (bSlate ? TEXT("slate-rhi") : TEXT("dx11-compat")))
+            return Reject(TEXT("Renderer profile does not match this View: ") + Profile);
+        if (bSlate && (!C.TryGetNumberField(TEXT("minimumSlateAbi"), SlateAbi) || SlateAbi < RmlUiMinimumSlateAbi ||
+            SlateAbi != FMath::FloorToDouble(SlateAbi) || SlateAbi > RMLUE_SLATE_ABI_VERSION))
+            return Reject(TEXT("Unsupported Slate ABI."));
+        TSet<FString> RequiredSet;
+        for (const auto& Value : *Required) {
+            FString Feature;
+            if (!Value->TryGetString(Feature) || !RmlUiProfileHasFeature(Profile, Feature) || RequiredSet.Contains(Feature))
+                return Reject(TEXT("Required feature is unavailable: ") + Feature);
+            RequiredSet.Add(Feature);
+        }
+        TSet<FString> DegradedSet;
+        for (const auto& Value : *Degraded) {
+            FString Feature;
+            if (!Value->TryGetString(Feature) || !RmlUiKnownFeature(Feature) || RequiredSet.Contains(Feature) || DegradedSet.Contains(Feature))
+                return Reject(TEXT("Invalid or contradictory degraded feature: ") + Feature);
+            DegradedSet.Add(Feature);
+        }
+        bStrictCapabilities = true;
+        return true;
+    }
     bool Read(const FString& Input, FString& Error)
     {
         Path = FPaths::ConvertRelativePathToFull(Input);
@@ -99,6 +150,46 @@ struct FVueVersion
 };
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiCapabilityManifestTest, "RmlUiUnreal.JS.CapabilityManifest",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FRmlUiCapabilityManifestTest::RunTest(const FString&)
+{
+    auto Make = []() {
+        FVueVersion Version;
+        ParseJson(TEXT(R"JSON({"files":{"compile-diagnostics.json":"hash-already-validated-by-Read"},"capabilities":{
+            "schemaVersion":1,"compiler":"rmlui-css/2.0.0","profile":"slate-rhi",
+            "minimumHostAbi":2,"minimumSlateAbi":5,"requiredFeatures":["css.variables","layout.measure","input.ime"],
+            "degradedFeatures":["render.layers"],"diagnostics":"compile-diagnostics.json"}})JSON"), Version.Manifest);
+        return Version;
+    };
+    FString Error;
+    auto Version = Make();
+    TestTrue(TEXT("A supported profile enables strict native writes"), Version.ValidateCapabilities(true, Error) && Version.bStrictCapabilities);
+    TestFalse(TEXT("Profile is checked against the actual View renderer"), Version.ValidateCapabilities(false, Error));
+    Version = Make(); Version.Manifest->RemoveField(TEXT("capabilities"));
+    TestTrue(TEXT("Legacy bundles remain readable without a new capability promise"), Version.ValidateCapabilities(true, Error) && !Version.bStrictCapabilities);
+    for (double Abi : {0.0, 1.0, 2.5, 999.0}) {
+        Version = Make(); Version.Manifest->GetObjectField(TEXT("capabilities"))->SetNumberField(TEXT("minimumHostAbi"), Abi);
+        TestFalse(TEXT("Invalid or newer host ABI is rejected"), Version.ValidateCapabilities(true, Error));
+    }
+    for (const TCHAR* Feature : {TEXT("browser.dom"), TEXT("render.filters")}) {
+        Version = Make();
+        Version.Manifest->GetObjectField(TEXT("capabilities"))->SetArrayField(TEXT("requiredFeatures"), {MakeShared<FJsonValueString>(Feature)});
+        TestFalse(TEXT("Unknown and unavailable required features are rejected"), Version.ValidateCapabilities(true, Error));
+    }
+    Version = Make(); Version.Manifest->GetObjectField(TEXT("capabilities"))->SetArrayField(TEXT("degradedFeatures"), {MakeShared<FJsonValueString>(TEXT("css.variables"))});
+    TestFalse(TEXT("A feature cannot be both required and degraded"), Version.ValidateCapabilities(true, Error));
+    Version = Make(); Version.Manifest->GetObjectField(TEXT("files"))->RemoveField(TEXT("compile-diagnostics.json"));
+    TestFalse(TEXT("Diagnostics must be included in hashed resources"), Version.ValidateCapabilities(true, Error));
+    Version = Make(); Version.Manifest->GetObjectField(TEXT("capabilities"))->SetNumberField(TEXT("minimumSlateAbi"), 999);
+    TestFalse(TEXT("Newer Slate packet ABI is rejected"), Version.ValidateCapabilities(true, Error));
+    Version = Make(); Version.Manifest->GetObjectField(TEXT("capabilities"))->SetStringField(TEXT("profile"), TEXT("dx11-compat"));
+    TestTrue(TEXT("DX11 compatibility renderer accepts its own declared profile"), Version.ValidateCapabilities(false, Error));
+    return true;
+}
+#endif
+
 FString URmlUiJSRuntime::DefaultManifestPath()
 {
     return FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("RmlUiUnreal"))->GetContentDir(), TEXT("Vue/current.json"));
@@ -108,6 +199,7 @@ bool URmlUiJSRuntime::Fail(const FString& Message)
     LastError = Message;
     UE_LOG(LogTemp, Warning, TEXT("RmlUiJS update: %s"), *Message);
     OnStatus.Broadcast(Message);
+    RefreshWidgetWake();
     return false;
 }
 bool URmlUiJSRuntime::Start(URmlUiWidget* Widget, const FString& ManifestPath, bool bWatch)
@@ -115,6 +207,8 @@ bool URmlUiJSRuntime::Start(URmlUiWidget* Widget, const FString& ManifestPath, b
     check(IsInGameThread());
     Stop();
     JsonHostRequestCount = 0;
+    AdvanceCount = 0;
+    AdvanceSkipCount = 0;
     if (!Widget) return Fail(TEXT("A RmlUi widget is required."));
     Target = Widget;
     Widget->TakeWidget();
@@ -122,10 +216,13 @@ bool URmlUiJSRuntime::Start(URmlUiWidget* Widget, const FString& ManifestPath, b
     WatchedManifest = ManifestPath.IsEmpty() ? DefaultManifestPath() : ManifestPath;
     FFileHelper::LoadFileToString(WatchedText, *WatchedManifest);
     bWatchFiles = bWatch;
+    NextWatchTime = bWatchFiles ? FPlatformTime::Seconds() + 0.25 : 0.0;
     auto Slate = SlateWidget.Pin();
     if (!Slate || !Activate(WatchedManifest)) { Target = nullptr; SlateWidget.Reset(); return false; }
     FrameHandle = Slate->OnBeforeRender.AddUObject(this, &URmlUiJSRuntime::Advance);
     ShutdownHandle = Slate->OnNativeShutdown.AddUObject(this, &URmlUiJSRuntime::Stop);
+    LastAdvanceTime = FPlatformTime::Seconds();
+    RefreshWidgetWake();
     return true;
 }
 bool URmlUiJSRuntime::RegisterService(const FString& Name, UObject* Service)
@@ -151,14 +248,20 @@ void URmlUiJSRuntime::ClearServices()
 }
 bool URmlUiJSRuntime::Activate(const FString& Path)
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_JS_Activate);
+    FScopedRmlUiPerformanceTimer Timer(ERmlUiPerformanceBackend::Unattributed,
+        ERmlUiPerformanceStage::JsActivate);
     auto Slate = SlateWidget.Pin();
     if (!Slate) return Fail(TEXT("RmlUi widget has been destroyed."));
     FVueVersion Version;
     FString Error;
-    if (!Version.Read(Path, Error)) return Fail(Error);
+    if (!Version.Read(Path, Error) || !Version.ValidateCapabilities(Slate->IsUsingSlateRenderer(), Error)) return Fail(Error);
     FString State = Active ? Active->CaptureState() : TEXT("{}");
-    RmlUE_View* NewView = RmlUE_CreateView(1280, 800, 1);
+    RmlUE_View* NewView = Slate->IsUsingSlateRenderer()
+        ? RmlUE_CreateSlateView(1280, 800, 1)
+        : RmlUE_CreateView(1280, 800, 1);
     if (!NewView) return Fail(UTF8_TO_TCHAR(RmlUE_GetLastError()));
+    RmlUE_SetStrictCapabilities(NewView, Version.bStrictCapabilities);
     const TArray<TSharedPtr<FJsonValue>>* Fonts = nullptr;
     if (Version.Manifest->TryGetArrayField(TEXT("fonts"), Fonts)) {
         static TSet<FString> LoadedFontHashes;
@@ -177,6 +280,7 @@ bool URmlUiJSRuntime::Activate(const FString& Path)
         RmlUE_DestroyView(NewView); return Fail(Error);
     }
     Candidate = NewObject<URmlUiJSContext>(this);
+    Candidate->SetWakeCallback([this]() { RefreshWidgetWake(); });
     TArray<TPair<FString, UObject*>> ServiceArguments;
     ServiceArguments.Reserve(Services.Num());
     for (const auto& Pair : Services) {
@@ -190,7 +294,11 @@ bool URmlUiJSRuntime::Activate(const FString& Path)
         Candidate->Dispose(); Candidate = nullptr; RmlUE_DestroyView(NewView);
         return Fail(TEXT("Candidate UI rejected; previous page retained. ") + Error);
     }
-    RmlUE_Update(NewView);
+    if (!RmlUE_Update(NewView) || !Candidate->LastError.IsEmpty()) {
+        Error = Candidate->LastError.IsEmpty() ? UTF8_TO_TCHAR(RmlUE_GetLastError()) : Candidate->LastError;
+        Candidate->Dispose(); Candidate = nullptr; RmlUE_DestroyView(NewView);
+        return Fail(TEXT("Candidate UI rejected after initial layout; previous page retained. ") + Error);
+    }
     RmlUE_View* OldView = Slate->ExchangeNativeView(NewView);
     if (Active) Active->Dispose();
     if (OldView) RmlUE_DestroyView(OldView);
@@ -203,12 +311,17 @@ bool URmlUiJSRuntime::Activate(const FString& Path)
     ++ReloadCount;
     LastError.Reset();
     Active->ActivateHostRequests();
+    LastAdvanceTime = FPlatformTime::Seconds();
+    RefreshWidgetWake();
     UE_LOG(LogTemp, Display, TEXT("RmlUiJS activated %s"), *ActiveVersion);
     OnStatus.Broadcast(TEXT("Activated ") + ActiveVersion);
     return true;
 }
 void URmlUiJSRuntime::Advance(float DeltaSeconds)
 {
+    TRACE_CPUPROFILER_EVENT_SCOPE(RmlUi_JS_RuntimeAdvance);
+    FScopedRmlUiPerformanceTimer Timer(ERmlUiPerformanceBackend::Unattributed,
+        ERmlUiPerformanceStage::JsAdvance);
     if (bAdvancing) return;
     TGuardValue<bool> Guard(bAdvancing, true);
     if (!bDownloading && !Requests.IsEmpty()) {
@@ -223,17 +336,51 @@ void URmlUiJSRuntime::Advance(float DeltaSeconds)
         NextWatchTime = Now + 0.25;
         FString Text;
         if (FFileHelper::LoadFileToString(Text, *WatchedManifest) && Text != WatchedText) {
-            WatchedText = Text; PendingManifest = WatchedManifest;
+            WatchedText = Text; QueueManifest(WatchedManifest);
         }
     }
     if (!PendingManifest.IsEmpty()) {
         FString Path = MoveTemp(PendingManifest); PendingManifest.Reset(); Activate(Path);
     }
-    if (Active) Active->Advance(DeltaSeconds);
+    bool bAdvanced = false;
+    if (Active && Active->NeedsAdvance(Now)) {
+        if (Active->HasDispatchWake())
+            FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Unattributed, ERmlUiPerformanceWork::JsDispatchWakes);
+        if (Active->HasAnimationFrameWake())
+            FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Unattributed, ERmlUiPerformanceWork::JsFrameWakes);
+        if (Active->HasTimerWake(Now))
+            FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Unattributed, ERmlUiPerformanceWork::JsTimerWakes);
+        const double Elapsed = LastAdvanceTime > 0.0 ? Now - LastAdvanceTime : static_cast<double>(DeltaSeconds);
+        Active->Advance(static_cast<float>(FMath::Max(0.0, Elapsed)));
+        LastAdvanceTime = Now;
+        ++AdvanceCount;
+        bAdvanced = true;
+    }
+    if (!bAdvanced) {
+        ++AdvanceSkipCount;
+        FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Unattributed, ERmlUiPerformanceWork::JsAdvanceSkips);
+    }
+    RefreshWidgetWake();
 }
-void URmlUiJSRuntime::Reload() { PendingManifest = WatchedManifest; }
-void URmlUiJSRuntime::LoadVersion(const FString& Path) { PendingManifest = Path; }
-void URmlUiJSRuntime::Rollback() { if (!PreviousManifest.IsEmpty()) PendingManifest = PreviousManifest; }
+void URmlUiJSRuntime::RefreshWidgetWake()
+{
+    auto Slate = SlateWidget.Pin();
+    if (!Slate) return;
+    const double Now = FPlatformTime::Seconds();
+    double Deadline = Active ? Active->GetNextWakeTimeSeconds(Now) : TNumericLimits<double>::Max();
+    if (bWatchFiles) Deadline = FMath::Min(Deadline, NextWatchTime > 0.0 ? NextWatchTime : Now);
+    if (!bDownloading && !Requests.IsEmpty()) Deadline = Now;
+    if (!PendingManifest.IsEmpty()) Deadline = Now;
+    Slate->SetExternalWakeDeadline(this, Deadline);
+}
+void URmlUiJSRuntime::QueueManifest(const FString& Path)
+{
+    PendingManifest = Path;
+    RefreshWidgetWake();
+}
+void URmlUiJSRuntime::Reload() { QueueManifest(WatchedManifest); }
+void URmlUiJSRuntime::LoadVersion(const FString& Path) { QueueManifest(Path); }
+void URmlUiJSRuntime::Rollback() { if (!PreviousManifest.IsEmpty()) QueueManifest(PreviousManifest); }
 void URmlUiJSRuntime::ForwardHostRequest(int32 RequestId, const FString& Method, const FString& Json)
 {
     if (!Active) return;
@@ -256,6 +403,7 @@ void URmlUiJSRuntime::Stop()
     Requests.Empty(); bDownloading = false;
     HostRequests.Empty();
     if (auto Slate = SlateWidget.Pin()) {
+        Slate->ClearExternalWakeDeadline(this);
         Slate->OnBeforeRender.Remove(FrameHandle);
         Slate->OnNativeShutdown.Remove(ShutdownHandle);
     }
@@ -263,6 +411,8 @@ void URmlUiJSRuntime::Stop()
     if (Candidate) Candidate->Dispose();
     Active = nullptr; Candidate = nullptr; Target = nullptr;
     SlateWidget.Reset(); PendingManifest.Reset();
+    NextWatchTime = 0.0;
+    LastAdvanceTime = 0.0;
 }
 void URmlUiJSRuntime::BeginDestroy() { Stop(); Super::BeginDestroy(); }
 
@@ -328,7 +478,7 @@ void URmlUiJSRuntime::FetchUpdate(const FString& Url)
                     if (!FFileHelper::SaveStringToFile(State->ManifestText, *Manifest, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)) {
                         Fail(TEXT("Cannot publish downloaded UI manifest.")); return;
                     }
-                    PendingManifest = Manifest;
+                    QueueManifest(Manifest);
                 }
             });
             if (!FileRequest->ProcessRequest()) { State->Failed = true; bDownloading = false; Fail(TEXT("Cannot start resource download.")); return; }

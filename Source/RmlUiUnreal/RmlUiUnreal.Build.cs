@@ -7,7 +7,7 @@ public class RmlUiUnreal : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "Slate", "SlateCore", "UMG", "InputCore" });
-        PrivateDependencyModuleNames.AddRange(new[] { "Projects", "ImageWrapper", "RenderCore", "RHI", "ApplicationCore", "TraceLog" });
+        PrivateDependencyModuleNames.AddRange(new[] { "Projects", "ImageWrapper", "RenderCore", "RHI", "ApplicationCore", "TraceLog", "MovieScene" });
         PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "RmlUiBridge", "include"));
         if (Target.Platform != UnrealTargetPlatform.Win64)
         {

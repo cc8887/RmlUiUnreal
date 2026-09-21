@@ -60,6 +60,8 @@ private:
 	bool effects_dirty = false;
 	// If set, element data of all decorators need to be regenerated.
 	bool effects_data_dirty = false;
+	// Avoid repeating the same backend capability warning whenever unrelated style data dirties the effect.
+	bool filter_compile_warning_emitted = false;
 };
 
 } // namespace Rml

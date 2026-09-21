@@ -21,7 +21,15 @@ void RenderInterface::EnableClipMask(bool /*enable*/) {}
 
 void RenderInterface::RenderToClipMask(ClipMaskOperation /*operation*/, CompiledGeometryHandle /*geometry*/, Vector2f /*translation*/) {}
 
+void RenderInterface::SetClipMaskOwner(Element* /*element*/) {}
+
 void RenderInterface::SetTransform(const Matrix4f* /*transform*/) {}
+
+void RenderInterface::BeginElement(Element* /*element*/) {}
+
+void RenderInterface::EndElement(Element* /*element*/) {}
+
+void RenderInterface::OnElementRenderDirty(Element* /*element*/) {}
 
 LayerHandle RenderInterface::PushLayer()
 {

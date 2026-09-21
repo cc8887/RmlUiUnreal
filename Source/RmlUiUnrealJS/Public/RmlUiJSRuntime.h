@@ -19,6 +19,8 @@ public:
     UPROPERTY(BlueprintReadOnly, Category="RmlUi|JavaScript|State") FString ActiveManifest;
     UPROPERTY(BlueprintReadOnly, Category="RmlUi|JavaScript|State") int32 ReloadCount = 0;
     UPROPERTY(BlueprintReadOnly, Category="RmlUi|JavaScript|State") int32 JsonHostRequestCount = 0;
+    UPROPERTY(BlueprintReadOnly, Category="RmlUi|JavaScript|State") int32 AdvanceCount = 0;
+    UPROPERTY(BlueprintReadOnly, Category="RmlUi|JavaScript|State") int32 AdvanceSkipCount = 0;
     UPROPERTY(BlueprintReadOnly, Category="RmlUi|JavaScript|State") bool bDownloading = false;
     UPROPERTY(BlueprintAssignable, Category="RmlUi|JavaScript|Events") FRmlJsHostRequest OnHostRequest;
     UPROPERTY(BlueprintAssignable, Category="RmlUi|JavaScript|Events") FRmlJsMessage OnStatus;
@@ -39,6 +41,8 @@ public:
     virtual void BeginDestroy() override;
 private:
     void Advance(float DeltaSeconds);
+    void RefreshWidgetWake();
+    void QueueManifest(const FString& Path);
     bool Activate(const FString& Path);
     bool Fail(const FString& Message);
     UFUNCTION() void ForwardHostRequest(int32 RequestId, const FString& Method, const FString& Json);
@@ -54,6 +58,7 @@ private:
     FDelegateHandle FrameHandle;
     FDelegateHandle ShutdownHandle;
     double NextWatchTime = 0;
+    double LastAdvanceTime = 0;
     bool bWatchFiles = false;
     bool bAdvancing = false;
     TArray<TSharedPtr<IHttpRequest, ESPMode::ThreadSafe>> Requests;

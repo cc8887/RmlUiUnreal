@@ -9,14 +9,16 @@ namespace Style {
 	class ComputedValues;
 }
 struct BoxShadowGeometryInfo;
+class RenderManager;
 
 struct BoxShadowRenderable : NonCopyMoveable {
-	BoxShadowRenderable(const BoxShadowGeometryInfo& geometry_info);
+	BoxShadowRenderable(RenderManager& render_manager, const BoxShadowGeometryInfo& geometry_info);
 	~BoxShadowRenderable();
 
 	CallbackTexture texture;
 	Geometry geometry;
 	Geometry background_border_geometry;
+	RenderManager* render_manager;
 	const BoxShadowGeometryInfo& cache_key;
 };
 

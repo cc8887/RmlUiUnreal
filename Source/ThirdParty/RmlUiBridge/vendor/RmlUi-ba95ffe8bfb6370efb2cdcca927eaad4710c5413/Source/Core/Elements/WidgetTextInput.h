@@ -133,6 +133,7 @@ protected:
 	void DispatchChangeEvent(bool linebreak = false);
 
 private:
+	friend class WidgetTextInputContext;
 	struct Line {
 		// Offset into the text field's value.
 		int value_offset;

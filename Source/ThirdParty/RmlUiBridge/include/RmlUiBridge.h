@@ -15,6 +15,7 @@ extern "C" {
 typedef struct RmlUE_View RmlUE_View;
 typedef struct RmlUE_StyleSheet RmlUE_StyleSheet;
 typedef uint32_t RmlUE_Node;
+typedef uint64_t RmlUE_AnimationTarget;
 
 typedef struct RmlUE_NodeEvent {
     RmlUE_Node Target;
@@ -28,11 +29,21 @@ typedef struct RmlUE_NodeEvent {
     float X, Y;
     int Checked;
     const char* KeyName;
+    // Host ABI 2 extension. Existing leading fields retain their layout.
+    const char* Code;
+    const char* PointerType;
+    const char* Data;
+    RmlUE_Node RelatedTarget;
+    int Repeat, Buttons, PointerId, IsComposing, Cancelable, DefaultPrevented;
+    float LocalX, LocalY, WheelX, WheelY;
+    double Timestamp;
+    uint32_t AbiVersion, StructSize;
 } RmlUE_NodeEvent;
 
 // Synchronous, owner-thread callback. Strings are valid only during the callback.
-// Return 1 to stop propagation, 2 to stop immediate propagation. RmlUi has no
-// independent DOM preventDefault operation. Do not destroy/reload the view here.
+// Return 1 to stop propagation, 2 to stop immediate propagation.
+// Bit 8 cancels native default actions without stopping listener propagation.
+// Do not destroy/reload the view here.
 // Bit 4 suppresses the following Enter text character; this is a text-input bridge operation.
 typedef int (*RmlUE_NodeEventCallback)(void* User, uint32_t Listener, const RmlUE_NodeEvent* Event);
 
@@ -53,6 +64,8 @@ RMLUE_API int RmlUE_GetNodeText(RmlUE_View* View, RmlUE_Node Node, char* Text, s
 RMLUE_API int RmlUE_SetNodeAttribute(RmlUE_View* View, RmlUE_Node Node, const char* Name, const char* Value);
 RMLUE_API int RmlUE_GetNodeAttribute(RmlUE_View* View, RmlUE_Node Node, const char* Name, char* Value, size_t Capacity);
 RMLUE_API int RmlUE_SetNodeProperty(RmlUE_View* View, RmlUE_Node Node, const char* Name, const char* Value);
+// Replaces a node's children with trusted RML. Intended for locally generated SVG output.
+RMLUE_API int RmlUE_SetNodeInnerRml(RmlUE_View* View, RmlUE_Node Node, const char* Rml);
 RMLUE_API int RmlUE_ListenNode(RmlUE_View* View, RmlUE_Node Node, const char* Type, uint32_t Listener, int Capture);
 RMLUE_API void RmlUE_UnlistenNode(RmlUE_View* View, uint32_t Listener);
 RMLUE_API void RmlUE_SetNodeEventCallback(RmlUE_View* View, RmlUE_NodeEventCallback Callback, void* User);
@@ -61,6 +74,90 @@ RMLUE_API void RmlUE_GetNodeCounts(RmlUE_View* View, int* Nodes, int* Listeners)
 RMLUE_API int RmlUE_ScrollNode(RmlUE_View* View, RmlUE_Node Node, float Top);
 RMLUE_API float RmlUE_NodeScrollRemaining(RmlUE_View* View, RmlUE_Node Node);
 RMLUE_API int RmlUE_FocusNode(RmlUE_View* View, RmlUE_Node Node);
+
+#define RMLUE_HOST_ABI_VERSION 3u
+RMLUE_API uint32_t RmlUE_GetHostAbiVersion(void);
+RMLUE_API RmlUE_Node RmlUE_QueryNode(RmlUE_View* View, RmlUE_Node Root, const char* Selector);
+// Returns total count; writes at most Capacity entries. -1 indicates invalid input.
+RMLUE_API int RmlUE_QueryNodes(RmlUE_View* View, RmlUE_Node Root, const char* Selector, RmlUE_Node* Nodes, int Capacity);
+RMLUE_API int RmlUE_ChildNodes(RmlUE_View* View, RmlUE_Node Parent, RmlUE_Node* Nodes, int Capacity);
+RMLUE_API int RmlUE_ContainsNode(RmlUE_View* View, RmlUE_Node Parent, RmlUE_Node Child);
+RMLUE_API RmlUE_Node RmlUE_ActiveNode(RmlUE_View* View);
+RMLUE_API int RmlUE_BlurNode(RmlUE_View* View, RmlUE_Node Node);
+RMLUE_API int RmlUE_GetComputedProperty(RmlUE_View* View, RmlUE_Node Node, const char* Name, char* Value, size_t Capacity);
+RMLUE_API int RmlUE_SetNodeClass(RmlUE_View* View, RmlUE_Node Node, const char* Name, int Enabled);
+RMLUE_API int RmlUE_SetModalRoot(RmlUE_View* View, RmlUE_Node Root, RmlUE_Node InitialFocus);
+// Pointer 0 is the mouse; touch pointer ids are native touch id + 1.
+RMLUE_API int RmlUE_CaptureNode(RmlUE_View* View, RmlUE_Node Node, int PointerId);
+RMLUE_API int RmlUE_ReleaseCaptureNode(RmlUE_View* View, RmlUE_Node Node, int PointerId);
+RMLUE_API int RmlUE_AnimateNode(RmlUE_View* View, RmlUE_Node Node, const char* Property, const char* From, const char* To, float Duration, int Iterations);
+RMLUE_API int RmlUE_CancelAnimation(RmlUE_View* View, RmlUE_Node Node, const char* Property);
+
+#define RMLUE_ANIMATED_PROPERTY_OPACITY 1u
+#define RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D 2u
+#define RMLUE_FLOAT_PROPERTY_OPACITY RMLUE_ANIMATED_PROPERTY_OPACITY
+typedef struct RmlUE_AnimatedPropertyUpdate {
+    RmlUE_View* View;
+    RmlUE_Node Node;
+    uint32_t Property;
+    // Opacity uses Values[0]. Transform2D uses translation x/y in px,
+    // scale x/y, then clockwise rotation in degrees.
+    float Values[5];
+    // Optional binding-time target. Zero preserves the Node lookup path.
+    RmlUE_AnimationTarget Target;
+} RmlUE_AnimatedPropertyUpdate;
+// Targets are owned by one view and remain valid until released, the element dies,
+// or the view replaces its document. Resolve once when creating an animation binding.
+RMLUE_API RmlUE_AnimationTarget RmlUE_ResolveAnimationTarget(RmlUE_View* View, RmlUE_Node Node);
+// Moves visual-sink allocation and retained topology lookup to binding time where supported.
+RMLUE_API int RmlUE_PrepareAnimationTargetProperty(
+    RmlUE_View* View, RmlUE_AnimationTarget Target, uint32_t Property);
+RMLUE_API int RmlUE_IsAnimationTargetValid(RmlUE_View* View, RmlUE_AnimationTarget Target);
+RMLUE_API int RmlUE_ReleaseAnimationTarget(RmlUE_View* View, RmlUE_AnimationTarget Target);
+// Validates the entire tagged batch before applying any update. Returns Count on success.
+RMLUE_API int RmlUE_ApplyAnimatedProperties(const RmlUE_AnimatedPropertyUpdate* Updates, int Count);
+// Applies compositor-style visual overrides where supported. Accepted receives one byte per update.
+// Unsupported updates are left untouched for a later property sink. Returns -1 for an invalid batch.
+RMLUE_API int RmlUE_ApplyAnimatedVisualProperties(
+    const RmlUE_AnimatedPropertyUpdate* Updates, int Count, uint8_t* Accepted);
+typedef struct RmlUE_AnimatedVisualCommitStats {
+    uint64_t ValidateNanoseconds;
+    uint64_t PrepareNanoseconds;
+    uint64_t ApplyNanoseconds;
+    uint64_t SynchronizeNanoseconds;
+    uint64_t PublishNanoseconds;
+} RmlUE_AnimatedVisualCommitStats;
+// Instrumented variant for profiling. Timing collection is omitted by the regular entry point.
+RMLUE_API int RmlUE_ApplyAnimatedVisualPropertiesProfiled(
+    const RmlUE_AnimatedPropertyUpdate* Updates, int Count, uint8_t* Accepted,
+    RmlUE_AnimatedVisualCommitStats* Stats);
+// Removes visual overrides after their final value has been committed to the property tree.
+RMLUE_API int RmlUE_ClearAnimatedVisualProperties(
+    const RmlUE_AnimatedPropertyUpdate* Updates, int Count);
+
+typedef struct RmlUE_FloatPropertyUpdate {
+    RmlUE_View* View;
+    RmlUE_Node Node;
+    uint32_t Property;
+    float Value;
+} RmlUE_FloatPropertyUpdate;
+// Validates the entire batch before applying any update. Returns Count on success.
+RMLUE_API int RmlUE_ApplyFloatProperties(const RmlUE_FloatPropertyUpdate* Updates, int Count);
+RMLUE_API void RmlUE_SetStrictCapabilities(RmlUE_View* View, int Enabled);
+
+typedef struct RmlUE_NodeMetrics {
+    RmlUE_Node Node;
+    int Valid, Visible;
+    float X, Y, Width, Height; // transformed border AABB, view pixels
+    float LayoutX, LayoutY, LayoutWidth, LayoutHeight;
+    float ScrollTop, ScrollLeft, ScrollWidth, ScrollHeight, ClientWidth, ClientHeight;
+    float ClipX, ClipY, ClipWidth, ClipHeight; // viewport intersected with scrolling ancestors
+} RmlUE_NodeMetrics;
+typedef struct RmlUE_LayoutInfo { uint64_t Revision; int Width, Height; float Dpi; } RmlUE_LayoutInfo;
+// Read-only snapshots of the last completed layout. Never forces layout per node.
+RMLUE_API int RmlUE_MeasureNodes(RmlUE_View* View, const RmlUE_Node* Nodes, int Count, RmlUE_NodeMetrics* Metrics, RmlUE_LayoutInfo* Info);
+typedef void (*RmlUE_LayoutCallback)(void* User, uint64_t Revision);
+RMLUE_API void RmlUE_SetLayoutCallback(RmlUE_View* View, RmlUE_LayoutCallback Callback, void* User);
 
 // All calls and callbacks execute on the thread that initializes the bridge.
 // Returned buffers are copied synchronously, then released through FreeBuffer.
@@ -100,10 +197,25 @@ typedef struct RmlUE_SlateDraw {
     float ScissorX, ScissorY, ScissorWidth, ScissorHeight;
     // Range in RmlUE_SlateFrame::ClipMasks which must be rebuilt before this draw.
     uint32_t ClipMaskStart, ClipMaskCount;
+    // Stable host node producing this draw, when tracked, and an encoded-premultiplied color multiplier.
+    RmlUE_Node VisualNode;
+    float VisualOpacity;
 } RmlUE_SlateDraw;
+
+typedef struct RmlUE_SlateVisualDelta {
+    RmlUE_Node Node;
+    float VisualOpacity;
+    int OpacityChanged;
+    int TransformChanged;
+    int ClipMaskTransformChanged;
+    int TransformEnabled;
+    float TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY;
+} RmlUE_SlateVisualDelta;
 
 typedef struct RmlUE_SlateClipMask {
     uint64_t GeometryId;
+    // Stable host node owning this mask geometry. Used by retained visual updates.
+    RmlUE_Node OwnerNode;
     // 0 = Set, 1 = SetInverse, 2 = Intersect.
     int Operation;
     float TranslateX, TranslateY;
@@ -139,6 +251,10 @@ typedef struct RmlUE_SlateFrame {
     uint32_t AbiVersion;
     const RmlUE_SlateDraw* Draws;
     uint32_t DrawCount;
+    // Visual-only updates for a retained draw snapshot. Replayed is nonzero when consumers should reuse their mirror.
+    const RmlUE_SlateVisualDelta* VisualDeltas;
+    uint32_t VisualDeltaCount;
+    int Replayed;
     // Clip-mask snapshots referenced by draw ranges. Geometry uses the same incremental cache as ordinary draws.
     const RmlUE_SlateClipMask* ClipMasks;
     uint32_t ClipMaskCount;
@@ -152,6 +268,21 @@ typedef struct RmlUE_SlateFrame {
     // Nonzero when the document requested effects which need the legacy renderer.
     uint32_t UnsupportedFeatures;
 } RmlUE_SlateFrame;
+
+typedef struct RmlUE_SlateReplayStats {
+    uint64_t ContentRevision;
+    uint64_t FullRenderFrames;
+    uint64_t ReplayedFrames;
+} RmlUE_SlateReplayStats;
+
+typedef struct RmlUE_SlateScheduleState {
+    uint64_t ContentRevision;
+    uint64_t VisualRevision;
+    // Relative seconds requested by the last Context::Update. May be infinity.
+    double NextUpdateDelay;
+    int HasRecordedFrame;
+    int CanReplay;
+} RmlUE_SlateScheduleState;
 
 #define RMLUE_MATERIAL_SLOT_NONE (-1)
 #define RMLUE_MATERIAL_SLOT_BACKGROUND 0
@@ -168,7 +299,7 @@ typedef struct RmlUE_SlateFrame {
 #define RMLUE_UNSUPPORTED_FILTER (1u << 3)
 #define RMLUE_UNSUPPORTED_SHADER (1u << 4)
 #define RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY (1u << 5)
-#define RMLUE_SLATE_ABI_VERSION 5u
+#define RMLUE_SLATE_ABI_VERSION 9u
 
 typedef struct RmlUE_Event {
     char Type[32];
@@ -233,6 +364,8 @@ RMLUE_API int RmlUE_Resize(RmlUE_View* View, int Width, int Height, float DpRati
 RMLUE_API int RmlUE_Render(RmlUE_View* View, RmlUE_Frame* Frame);
 // Pointers remain valid until the next render or destruction of this view.
 RMLUE_API int RmlUE_RenderSlate(RmlUE_View* View, RmlUE_SlateFrame* Frame);
+RMLUE_API void RmlUE_GetSlateReplayStats(RmlUE_View* View, RmlUE_SlateReplayStats* Stats);
+RMLUE_API int RmlUE_GetSlateScheduleState(RmlUE_View* View, RmlUE_SlateScheduleState* State);
 RMLUE_API int RmlUE_PollEvent(RmlUE_View* View, RmlUE_Event* Event);
 RMLUE_API int RmlUE_SetInnerRml(RmlUE_View* View, const char* Id, const char* Rml);
 RMLUE_API int RmlUE_SetProperty(RmlUE_View* View, const char* Id, const char* Property, const char* Value);

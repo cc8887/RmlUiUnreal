@@ -249,6 +249,8 @@ public:
 	/// @return True if a new animation key was added.
 	bool AddAnimationKey(const String& property_name, const Property& target_value, float duration, Tween tween = Tween{});
 	bool AddAnimationKey(PropertyId id, const Property& target_value, float duration, Tween tween = Tween{});
+	/// Unreal host extension: cancel an animation, retaining its current property value.
+	void CancelAnimation(const String& property_name);
 
 	/// Iterator for the local (non-inherited) properties defined on this element.
 	/// @param[in] filter_inherited_by If set, only iterates properties that are inherited by the given element.
@@ -574,6 +576,16 @@ public:
 	Element* GetClosestScrollableContainer();
 	/// Returns the element's transform state.
 	const TransformState* GetTransformState() const noexcept;
+	/// Unreal host extension: replace the computed 2D transform for animation sampling without mutating style.
+	void SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y, float rotation_degrees);
+	/// Unreal host extension: restore the computed transform after a visual animation override.
+	void ClearAnimationTransform2D();
+	bool HasAnimationTransform2D() const noexcept;
+	/// Synchronize transform caches after completed layout, without rendering or running layout again.
+	/// The host calls this parent-first traversal before publishing geometry snapshots.
+	void SynchronizeTransformStateTree();
+	// Refresh compositor-only animation transforms against an unchanged layout and stacking tree.
+	void SynchronizeAnimationTransformStateTree();
 	/// Returns the data model of this element.
 	DataModel* GetDataModel() const;
 	//@}
@@ -635,6 +647,8 @@ protected:
 	virtual void DirtyLayout();
 	/// Returns true if the element has been marked as needing a re-layout.
 	virtual bool IsLayoutDirty();
+	/// Notifies retained render backends that this element's visual output can no longer be replayed unchanged.
+	void NotifyRenderDirty();
 
 	/// Returns the RML of this element and all children.
 	/// @param[out] content The content of this element and those under it, in XML form.
@@ -724,6 +738,8 @@ private:
 	bool dirty_transition : 1;
 	bool dirty_transform : 1;
 	bool dirty_perspective : 1;
+	bool animation_transform_2d_active = false;
+	float animation_transform_2d[5] = {0.f, 0.f, 1.f, 1.f, 0.f};
 
 	OwnedElementList children;
 	int num_non_dom_children;

@@ -9,6 +9,7 @@
 namespace Rml {
 
 class Geometry;
+class Element;
 class CompiledFilter;
 class CompiledShader;
 class TextureDatabase;
@@ -20,10 +21,12 @@ struct ClipMaskGeometry {
 	Geometry* geometry;
 	Vector2f absolute_offset;
 	const Matrix4f* transform;
+	Element* owner_element;
 };
 inline bool operator==(const ClipMaskGeometry& a, const ClipMaskGeometry& b)
 {
-	return a.operation == b.operation && a.geometry == b.geometry && a.absolute_offset == b.absolute_offset && a.transform == b.transform;
+	return a.operation == b.operation && a.geometry == b.geometry && a.absolute_offset == b.absolute_offset && a.transform == b.transform &&
+		a.owner_element == b.owner_element;
 }
 inline bool operator!=(const ClipMaskGeometry& a, const ClipMaskGeometry& b)
 {
@@ -60,6 +63,7 @@ public:
 	void SetClipMask(ClipMaskOperation operation, Geometry* geometry, Vector2f translation);
 
 	void SetTransform(const Matrix4f* new_transform);
+	RenderInterface* GetRenderInterface() const { return render_interface; }
 
 	// Retrieves the cached render state. If setting this state again, ensure the lifetimes of referenced objects are
 	// still valid. Possibly invalidating actions include destroying an element, or altering its transform property.

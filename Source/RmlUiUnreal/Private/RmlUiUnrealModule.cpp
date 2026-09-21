@@ -8,16 +8,30 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RmlUiBridge.h"
+#include "RmlUiAnimationRuntime.h"
+#include "UObject/UObjectBase.h"
 #include "RmlUiResourceRegistry.h"
 #include "SRmlUiWidget.h"
 #include "ShaderCore.h"
 #include "RenderingThread.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Misc/CoreDelegates.h"
+#include "Runtime/Launch/Resources/Version.h"
 
 DEFINE_LOG_CATEGORY(LogRmlUiUnreal);
 IMPLEMENT_MODULE(FRmlUiUnrealModule, RmlUiUnreal)
 
 namespace
 {
+FSimpleMulticastDelegate& GetPostEngineInitDelegate()
+{
+#if ENGINE_MAJOR_VERSION > 5 || ENGINE_MINOR_VERSION >= 8
+    return FCoreDelegates::GetOnPostEngineInit();
+#else
+    return FCoreDelegates::OnPostEngineInit;
+#endif
+}
+
 int ReadFile(void*, const char* Path, unsigned char** Data, size_t* Size)
 {
     TArray<uint8> Bytes;
@@ -98,6 +112,9 @@ int GetClipboard(void*, unsigned char** Data, size_t* Size)
 }
 }
 
+FRmlUiUnrealModule::FRmlUiUnrealModule() = default;
+FRmlUiUnrealModule::~FRmlUiUnrealModule() = default;
+
 FRmlUiUnrealModule& FRmlUiUnrealModule::Get()
 {
     return FModuleManager::LoadModuleChecked<FRmlUiUnrealModule>(TEXT("RmlUiUnreal"));
@@ -105,6 +122,10 @@ FRmlUiUnrealModule& FRmlUiUnrealModule::Get()
 
 void FRmlUiUnrealModule::StartupModule()
 {
+    PostEngineInitHandle = GetPostEngineInitDelegate().AddRaw(
+        this, &FRmlUiUnrealModule::TryRegisterAnimationTick);
+    TryRegisterAnimationTick();
+
     const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("RmlUiUnreal"));
     if (!Plugin)
     {
@@ -149,6 +170,16 @@ void FRmlUiUnrealModule::StartupModule()
 
 void FRmlUiUnrealModule::ShutdownModule()
 {
+    if (PostEngineInitHandle.IsValid())
+    {
+        GetPostEngineInitDelegate().Remove(PostEngineInitHandle);
+        PostEngineInitHandle.Reset();
+    }
+    if (AnimationTickHandle.IsValid() && FSlateApplication::IsInitialized())
+    {
+        FSlateApplication::Get().OnPreTick().Remove(AnimationTickHandle);
+        AnimationTickHandle.Reset();
+    }
     for (const TWeakPtr<SRmlUiWidget>& WeakWidget : Widgets)
     {
         if (const TSharedPtr<SRmlUiWidget> Widget = WeakWidget.Pin())
@@ -157,6 +188,7 @@ void FRmlUiUnrealModule::ShutdownModule()
         }
     }
     Widgets.Empty();
+    AnimationRuntime.Reset();
     FlushRenderingCommands();
     if (bInitialized)
     {
@@ -197,6 +229,54 @@ FString FRmlUiUnrealModule::ResolveDocumentPath(const FString& Path) const
 
 void FRmlUiUnrealModule::RegisterWidget(const TSharedRef<SRmlUiWidget>& Widget)
 {
+    TryRegisterAnimationTick();
     Widgets.RemoveAll([](const TWeakPtr<SRmlUiWidget>& Item) { return !Item.IsValid(); });
     Widgets.Add(Widget);
+}
+
+FRmlUiAnimationRuntime& FRmlUiUnrealModule::GetAnimationRuntime()
+{
+    check(UObjectInitialized());
+    if (!AnimationRuntime)
+    {
+        AnimationRuntime = MakeUnique<FRmlUiAnimationRuntime>();
+        AnimationRuntime->SetWakeCallback([this](RmlUE_View* View) { WakeAnimationView(View); });
+    }
+    TryRegisterAnimationTick();
+    return *AnimationRuntime;
+}
+
+void FRmlUiUnrealModule::TryRegisterAnimationTick()
+{
+    if (!AnimationRuntime && UObjectInitialized())
+    {
+        AnimationRuntime = MakeUnique<FRmlUiAnimationRuntime>();
+        AnimationRuntime->SetWakeCallback([this](RmlUE_View* View) { WakeAnimationView(View); });
+    }
+    if (AnimationRuntime && !AnimationTickHandle.IsValid() && FSlateApplication::IsInitialized())
+    {
+        AnimationTickHandle = FSlateApplication::Get().OnPreTick().AddRaw(
+            this, &FRmlUiUnrealModule::TickAnimations);
+    }
+}
+
+void FRmlUiUnrealModule::TickAnimations(float DeltaSeconds)
+{
+    if (AnimationRuntime)
+    {
+        AnimationRuntime->Advance(DeltaSeconds);
+    }
+}
+
+void FRmlUiUnrealModule::WakeAnimationView(RmlUE_View* View)
+{
+    Widgets.RemoveAll([](const TWeakPtr<SRmlUiWidget>& Item) { return !Item.IsValid(); });
+    for (const TWeakPtr<SRmlUiWidget>& WeakWidget : Widgets)
+    {
+        if (const TSharedPtr<SRmlUiWidget> Widget = WeakWidget.Pin(); Widget && Widget->GetNativeView() == View)
+        {
+            Widget->RequestScheduledRender();
+            break;
+        }
+    }
 }
