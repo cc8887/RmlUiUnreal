@@ -817,14 +817,15 @@ public:
             const FString Document = TEXT(R"RML(
 <rml><head><style>
 body { width:200px; height:170px; margin:0; background:#000; }
-#box { display:block; position:absolute; left:20px; top:20px; width:80px; height:80px; background:#fff; opacity:1; }
+#box { display:block; position:absolute; left:20px; top:20px; width:80px; height:80px; opacity:1; }
+#box-child { display:block; width:80px; height:80px; background:#fff; }
 #clip { display:block; position:absolute; left:110px; top:20px; width:30px; height:30px; overflow:hidden; border-radius:8px; transform-origin:0 0; transform:translate(0px,0px); }
 #clip-child { display:block; width:60px; height:30px; background:#0f0; }
 #nested-root { display:block; position:absolute; left:20px; top:125px; width:60px; height:35px; transform-origin:0 0; transform:translate(0px,0px); }
 #nested-outer { display:block; width:50px; height:30px; overflow:hidden; border-radius:8px; }
 #nested-inner { display:block; position:relative; left:8px; top:5px; width:30px; height:20px; overflow:hidden; border-radius:5px; transform-origin:0 0; transform:translate(0px,0px); }
 #nested-fill { display:block; width:60px; height:30px; background:#00f; }
-</style></head><body><div id="box"/><div id="clip"><div id="clip-child"/></div><div id="nested-root"><div id="nested-outer"><div id="nested-inner"><div id="nested-fill"/></div></div></div></body></rml>
+</style></head><body><div id="box"><div id="box-child"/></div><div id="clip"><div id="clip-child"/></div><div id="nested-root"><div id="nested-outer"><div id="nested-inner"><div id="nested-fill"/></div></div></div></body></rml>
 )RML");
             Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
                 .SourcePath(TEXT("/animation-visual-opacity.rml")).DesiredSize(FVector2D(200, 170));

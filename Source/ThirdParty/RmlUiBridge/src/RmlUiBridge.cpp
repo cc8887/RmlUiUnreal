@@ -289,12 +289,17 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
     RmlUE_Node CurrentClipMaskOwnerNode = 0;
     std::vector<RmlUE_SlateClipMask> ActiveClipMasks;
     std::function<RmlUE_Node(Rml::Element*)> ResolveNode;
+    struct OpacityDrawNode
+    {
+        RmlUE_Node Node = 0;
+        std::vector<size_t> DrawIndices;
+        uint32_t VisualSlot = UINT32_MAX;
+    };
     struct VisualOpacityState
     {
         float Opacity = 1.f;
         uint64_t TopologyGeneration = 0;
-        std::vector<size_t> DrawIndices;
-        uint32_t VisualSlot = UINT32_MAX;
+        std::vector<OpacityDrawNode> DrawNodes;
         uint32_t BindingRefCount = 0;
         bool Active = false;
     };
@@ -311,7 +316,6 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
         VisualTransformState PendingTransform;
         bool OpacityPending = false;
         bool TransformPending = false;
-        bool RemoveOpacityOverrideAfterReplay = false;
         bool Queued = false;
     };
     std::unordered_map<RmlUE_Node, VisualOpacityState> VisualOpacityOverrides;
@@ -365,10 +369,11 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
         uint32_t SubtreeEnd = 0;
         uint8_t SubtreeHasScissorDependency : 1;
         uint8_t SubtreeHasClipMaskDependency : 1;
+        uint8_t HasLocalOpacity : 1;
         uint8_t Dirty : 1;
         uint8_t BatchPublishRoot : 1;
         uint8_t BatchPublished : 1;
-        TransformPropertySlot() : SubtreeHasScissorDependency(0), SubtreeHasClipMaskDependency(0), Dirty(0),
+        TransformPropertySlot() : SubtreeHasScissorDependency(0), SubtreeHasClipMaskDependency(0), HasLocalOpacity(0), Dirty(0),
             BatchPublishRoot(0), BatchPublished(0) {}
     };
     std::vector<TransformPropertySlot> TransformPropertySlots;
@@ -448,18 +453,40 @@ public:
         Slot.Queued = true;
         PendingVisualSlots.push_back(SlotIndex);
     }
-    void RefreshVisualOpacityTopology(RmlUE_Node Node, VisualOpacityState& State)
+    bool RefreshVisualOpacityTopology(RmlUE_Node Node, VisualOpacityState& State)
     {
-        if (State.TopologyGeneration == TopologyGeneration) return;
+        if (State.TopologyGeneration == TopologyGeneration) return false;
         State.TopologyGeneration = TopologyGeneration;
-        State.DrawIndices.clear();
-        State.VisualSlot = UINT32_MAX;
-        const auto DrawState = DrawIndicesByNode.find(Node);
-        if (DrawState != DrawIndicesByNode.end())
+        State.DrawNodes.clear();
+        const auto RootIt = TransformPropertySlotByNode.find(Node);
+        if (RootIt == TransformPropertySlotByNode.end()) return true;
+        const uint32_t RootIndex = RootIt->second;
+        if (RootIndex >= TransformPropertySlots.size()) return true;
+        const uint32_t SubtreeEnd = TransformPropertySlots[RootIndex].SubtreeEnd;
+        for (uint32_t Index = RootIndex; Index < SubtreeEnd;)
         {
-            State.DrawIndices = DrawState->second.DrawIndices;
-            State.VisualSlot = DrawState->second.VisualSlot;
+            const TransformPropertySlot& PropertySlot = TransformPropertySlots[Index];
+            if (Index != RootIndex)
+            {
+                const auto Override = VisualOpacityOverrides.find(PropertySlot.Node);
+                const bool HasIndependentOverride = Override != VisualOpacityOverrides.end() &&
+                    (Override->second.Active || Override->second.BindingRefCount);
+                if (PropertySlot.HasLocalOpacity || HasIndependentOverride)
+                {
+                    Index = PropertySlot.SubtreeEnd;
+                    continue;
+                }
+            }
+            const auto DrawState = DrawIndicesByNode.find(PropertySlot.Node);
+            if (DrawState != DrawIndicesByNode.end() && !DrawState->second.DrawIndices.empty())
+                State.DrawNodes.push_back({PropertySlot.Node, DrawState->second.DrawIndices, DrawState->second.VisualSlot});
+            ++Index;
         }
+        return true;
+    }
+    void InvalidateVisualOpacityBindingTopology()
+    {
+        for (auto& Pair : VisualOpacityOverrides) Pair.second.TopologyGeneration = 0;
     }
     void* RetainVisualOpacityBinding(RmlUE_Node Node)
     {
@@ -467,6 +494,7 @@ public:
         auto Existing = VisualOpacityOverrides.try_emplace(Node).first;
         VisualOpacityState& State = Existing->second;
         ++State.BindingRefCount;
+        InvalidateVisualOpacityBindingTopology();
         RefreshVisualOpacityTopology(Node, State);
         return &State;
     }
@@ -477,6 +505,7 @@ public:
         VisualOpacityState& State = Existing->second;
         if (State.BindingRefCount) --State.BindingRefCount;
         if (!State.BindingRefCount && !State.Active) VisualOpacityOverrides.erase(Existing);
+        InvalidateVisualOpacityBindingTopology();
     }
     bool SetVisualOpacity(RmlUE_Node Node, float Opacity, float BaseOpacity,
         void* PreparedState = nullptr)
@@ -491,23 +520,26 @@ public:
             Inserted = Result.second;
         }
         VisualOpacityState& State = *StatePtr;
-        if (!Inserted && State.Active && State.Opacity == Opacity) return true;
+        const bool TopologyChanged = RefreshVisualOpacityTopology(Node, State);
+        if (HasRecordedFrame && State.DrawNodes.empty()) return false;
+        if (!TopologyChanged && !Inserted && State.Active && State.Opacity == Opacity) return true;
         State.Opacity = Opacity;
         State.Active = true;
         if (++VisualRevision == 0) VisualRevision = 1;
-        RefreshVisualOpacityTopology(Node, State);
-        if (BaseOpacity > 1.f / 255.f && !State.DrawIndices.empty())
+        if (BaseOpacity > 1.f / 255.f && !State.DrawNodes.empty())
         {
             const float Multiplier = std::max(0.f, Opacity / BaseOpacity);
-            for (size_t Index : State.DrawIndices)
-                if (Index < Draws.size()) Draws[Index].VisualOpacity = Multiplier;
-            if (State.VisualSlot < VisualNodeSlots.size())
+            for (const OpacityDrawNode& DrawNode : State.DrawNodes)
             {
-                VisualNodeSlot& Slot = VisualNodeSlots[State.VisualSlot];
-                Slot.PendingOpacity = Multiplier;
-                Slot.OpacityPending = true;
-                Slot.RemoveOpacityOverrideAfterReplay = false;
-                QueueVisualSlot(State.VisualSlot);
+                for (size_t Index : DrawNode.DrawIndices)
+                    if (Index < Draws.size()) Draws[Index].VisualOpacity = Multiplier;
+                if (DrawNode.VisualSlot < VisualNodeSlots.size())
+                {
+                    VisualNodeSlot& Slot = VisualNodeSlots[DrawNode.VisualSlot];
+                    Slot.PendingOpacity = Multiplier;
+                    Slot.OpacityPending = true;
+                    QueueVisualSlot(DrawNode.VisualSlot);
+                }
             }
         }
         return true;
@@ -520,20 +552,19 @@ public:
         State.Active = false;
         if (++VisualRevision == 0) VisualRevision = 1;
         RefreshVisualOpacityTopology(Node, State);
-        if (!State.DrawIndices.empty())
+        for (const OpacityDrawNode& DrawNode : State.DrawNodes)
         {
-            for (size_t Index : State.DrawIndices)
+            for (size_t Index : DrawNode.DrawIndices)
                 if (Index < Draws.size()) Draws[Index].VisualOpacity = 1.f;
-            if (State.VisualSlot < VisualNodeSlots.size())
+            if (DrawNode.VisualSlot < VisualNodeSlots.size())
             {
-                VisualNodeSlot& Slot = VisualNodeSlots[State.VisualSlot];
+                VisualNodeSlot& Slot = VisualNodeSlots[DrawNode.VisualSlot];
                 Slot.PendingOpacity = 1.f;
                 Slot.OpacityPending = true;
-                Slot.RemoveOpacityOverrideAfterReplay = true;
-                QueueVisualSlot(State.VisualSlot);
+                QueueVisualSlot(DrawNode.VisualSlot);
             }
         }
-        else if (!State.BindingRefCount) VisualOpacityOverrides.erase(Existing);
+        if (!State.BindingRefCount) VisualOpacityOverrides.erase(Existing);
         return true;
     }
     static bool ReadElementTransform(Rml::Element* Element, VisualTransformState& State)
@@ -612,6 +643,7 @@ public:
                 Slot.Element = Frame.Element->GetObserverPtr();
                 Slot.Node = ResolveNode(Frame.Element);
                 Slot.Parent = Frame.Parent;
+                Slot.HasLocalOpacity = Frame.Element->GetLocalProperty(Rml::PropertyId::Opacity) != nullptr;
                 TransformPropertySlotByElement.emplace(Frame.Element, Frame.Slot);
                 if (Slot.Node) TransformPropertySlotByNode.emplace(Slot.Node, Frame.Slot);
             }
@@ -1185,11 +1217,19 @@ public:
         const RmlUE_Node Node = ResolveNode(Element);
         if (!Node) return;
         CurrentElementVisual.Node = Node;
-        const float BaseOpacity = Element->GetComputedValues().opacity();
-        const auto Override = VisualOpacityOverrides.find(Node);
-        if (Override == VisualOpacityOverrides.end() || !Override->second.Active) return;
-        if (BaseOpacity <= 1.f / 255.f) return;
-        CurrentElementVisual.Opacity = std::max(0.f, Override->second.Opacity / BaseOpacity);
+        for (Rml::Element* Cursor = Element; Cursor; Cursor = Cursor->GetParentNode())
+        {
+            const RmlUE_Node CursorNode = ResolveNode(Cursor);
+            const auto Override = VisualOpacityOverrides.find(CursorNode);
+            if (Override != VisualOpacityOverrides.end() && Override->second.Active)
+            {
+                const float BaseOpacity = Cursor->GetComputedValues().opacity();
+                if (BaseOpacity > 1.f / 255.f)
+                    CurrentElementVisual.Opacity = std::max(0.f, Override->second.Opacity / BaseOpacity);
+                return;
+            }
+            if (Cursor->GetLocalProperty(Rml::PropertyId::Opacity)) return;
+        }
     }
     void EndElement(Rml::Element*) override
     {
@@ -1301,8 +1341,6 @@ public:
                 Delta.VisualOpacity = Slot.PendingOpacity;
                 Delta.OpacityChanged = 1;
                 Slot.OpacityPending = false;
-                if (Slot.RemoveOpacityOverrideAfterReplay) VisualOpacityOverrides.erase(Slot.Node);
-                Slot.RemoveOpacityOverrideAfterReplay = false;
                 Changed = true;
             }
             if (Slot.TransformPending)

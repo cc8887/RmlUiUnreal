@@ -470,10 +470,11 @@ static void TestAnimationTargets()
 
 static void TestAnimatedVisualBatch()
 {
-    const char* Markup = R"(<rml><head><style>body{margin:0;}#box{display:block;width:40px;height:30px;background:#fff;opacity:1;}</style></head><body><div id="box"/></body></rml>)";
+    const char* Markup = R"(<rml><head><style>body{margin:0;}#box{display:block;width:40px;height:30px;opacity:1;}#box-child{display:block;width:40px;height:30px;background:#fff;}</style></head><body><div id="box"><div id="box-child"/></div></body></rml>)";
     Fixture Slate(Markup, true);
     Slate.Update();
     const auto Box = Slate.Node("box");
+    const auto BoxChild = Slate.Node("box-child");
     RmlUE_AnimatedPropertyUpdate Update{Slate.View, Box, RMLUE_ANIMATED_PROPERTY_OPACITY,
         {0.25f, 0.f, 0.f, 0.f, 0.f}, RmlUE_ResolveAnimationTarget(Slate.View, Box)};
     Require(Update.Target != 0, "resolve visual animation target");
@@ -496,11 +497,11 @@ static void TestAnimatedVisualBatch()
     for (uint32_t Index = 0; Index < Frame.DrawCount; ++Index)
     {
         const RmlUE_SlateDraw& Draw = Frame.Draws[Index];
-        if (Draw.VisualNode == Box)
+        if (Draw.VisualNode == BoxChild)
         {
             FoundVisualDraw = true;
             Require(Near(Draw.VisualOpacity, 0.25f, 0.001f),
-                "tracked element draw carries absolute visual opacity ratio");
+                "child draw inherits the target parent visual opacity ratio");
         }
     }
     Require(FoundVisualDraw, "visual node identity reaches Slate draw ABI");
@@ -528,15 +529,15 @@ static void TestAnimatedVisualBatch()
     Require(RmlUE_RenderSlate(Slate.View, &Frame) != 0 && Frame.Replayed == 1 &&
         Frame.GeometryDeltaCount == 0 && Frame.TextureCount == 0,
         "visual-only frame replays without resource deltas");
-    Require(Frame.VisualDeltaCount == 1 && Frame.VisualDeltas && Frame.VisualDeltas[0].Node == Box &&
+    Require(Frame.VisualDeltaCount == 1 && Frame.VisualDeltas && Frame.VisualDeltas[0].Node == BoxChild &&
         Near(Frame.VisualDeltas[0].VisualOpacity, 0.4f, 0.001f),
-        "visual-only replay coalesces repeated writes to the latest node delta");
+        "visual-only replay coalesces repeated parent writes to the inherited child delta");
     RmlUE_GetSlateReplayStats(Slate.View, &ReplayStats);
     Require(ReplayStats.FullRenderFrames == 1 && ReplayStats.ReplayedFrames == 1,
         "visual-only frame skips full element render traversal");
     FoundVisualDraw = false;
     for (uint32_t Index = 0; Index < Frame.DrawCount; ++Index)
-        if (Frame.Draws[Index].VisualNode == Box)
+        if (Frame.Draws[Index].VisualNode == BoxChild)
         {
             FoundVisualDraw = true;
             Require(Near(Frame.Draws[Index].VisualOpacity, 0.4f, 0.001f),
@@ -546,14 +547,14 @@ static void TestAnimatedVisualBatch()
 
     Require(RmlUE_ClearAnimatedVisualProperties(&Update, 1) == 1 &&
         RmlUE_RenderSlate(Slate.View, &Frame) != 0 && Frame.Replayed == 1 &&
-        Frame.VisualDeltaCount == 1 && Frame.VisualDeltas && Frame.VisualDeltas[0].Node == Box &&
+        Frame.VisualDeltaCount == 1 && Frame.VisualDeltas && Frame.VisualDeltas[0].Node == BoxChild &&
         Near(Frame.VisualDeltas[0].VisualOpacity, 1.f, 0.001f),
         "cleared override emits one neutral replay delta");
     Update.Values[0] = 0.5f;
     Accepted = 0;
     Require(RmlUE_ApplyAnimatedVisualProperties(&Update, 1, &Accepted) == 1 && Accepted == 1 &&
         RmlUE_RenderSlate(Slate.View, &Frame) != 0 && Frame.Replayed == 1 &&
-        Frame.VisualDeltaCount == 1 && Frame.VisualDeltas && Frame.VisualDeltas[0].Node == Box &&
+        Frame.VisualDeltaCount == 1 && Frame.VisualDeltas && Frame.VisualDeltas[0].Node == BoxChild &&
         Near(Frame.VisualDeltas[0].VisualOpacity, 0.5f, 0.001f),
         "visual override can reactivate after its neutral delta was consumed");
 
@@ -573,9 +574,57 @@ static void TestAnimatedVisualBatch()
     Require(ReplayStats.FullRenderFrames == 2 && ReplayStats.ReplayedFrames == 3,
         "property commit invalidates retained snapshot and records a full frame");
     for (uint32_t Index = 0; Index < Frame.DrawCount; ++Index)
-        if (Frame.Draws[Index].VisualNode == Box)
+        if (Frame.Draws[Index].VisualNode == BoxChild)
             Require(Near(Frame.Draws[Index].VisualOpacity, 1.f, 0.001f),
                 "cleared override keeps source identity with neutral visual opacity");
+
+    const char* TreeMarkup = R"(<rml><head><style>
+body{margin:0;}
+#parent{display:block;width:80px;height:60px;background:#f00;opacity:1;}
+#child{display:block;width:60px;height:20px;background:#0f0;}
+#local{display:block;width:60px;height:20px;background:#00f;opacity:0.6;}
+#local-child{display:block;width:40px;height:10px;background:#fff;}
+</style></head><body><div id="parent"><div id="child"/><div id="local"><div id="local-child"/></div></div></body></rml>)";
+    Fixture Tree(TreeMarkup, true);
+    Tree.Update();
+    RmlUE_SlateFrame TreeFrame{};
+    Require(RmlUE_RenderSlate(Tree.View, &TreeFrame) != 0 && TreeFrame.Replayed == 0,
+        "record opacity subtree fixture");
+    const auto Parent = Tree.Node("parent");
+    const auto Child = Tree.Node("child");
+    const auto Local = Tree.Node("local");
+    const auto LocalChild = Tree.Node("local-child");
+    RmlUE_AnimatedPropertyUpdate TreeUpdate{Tree.View, Parent, RMLUE_ANIMATED_PROPERTY_OPACITY,
+        {0.25f, 0.f, 0.f, 0.f, 0.f}, RmlUE_ResolveAnimationTarget(Tree.View, Parent)};
+    Accepted = 0;
+    Require(TreeUpdate.Target && RmlUE_ApplyAnimatedVisualProperties(&TreeUpdate, 1, &Accepted) == 1 && Accepted == 1,
+        "parent opacity enters retained subtree visual sink");
+    Require(RmlUE_RenderSlate(Tree.View, &TreeFrame) != 0 && TreeFrame.Replayed == 1 &&
+        TreeFrame.VisualDeltaCount == 2,
+        "parent opacity replay updates direct and inherited child visual slots");
+    bool FoundParentDraw = false;
+    bool FoundChildDraw = false;
+    bool FoundLocalDraw = false;
+    bool FoundLocalChildDraw = false;
+    for (uint32_t Index = 0; Index < TreeFrame.DrawCount; ++Index)
+    {
+        const RmlUE_SlateDraw& Draw = TreeFrame.Draws[Index];
+        if (Draw.VisualNode == Parent) { FoundParentDraw = true; Require(Near(Draw.VisualOpacity, 0.25f, 0.001f), "parent draw receives opacity ratio"); }
+        if (Draw.VisualNode == Child) { FoundChildDraw = true; Require(Near(Draw.VisualOpacity, 0.25f, 0.001f), "inherited child draw receives parent opacity ratio"); }
+        if (Draw.VisualNode == Local) { FoundLocalDraw = true; Require(Near(Draw.VisualOpacity, 1.f, 0.001f), "local opacity branch remains an independent baked value"); }
+        if (Draw.VisualNode == LocalChild) { FoundLocalChildDraw = true; Require(Near(Draw.VisualOpacity, 1.f, 0.001f), "descendants of local opacity branch remain independent"); }
+    }
+    Require(FoundParentDraw && FoundChildDraw && FoundLocalDraw && FoundLocalChildDraw,
+        "opacity subtree fixture exposes every expected visual node");
+    for (uint32_t Index = 0; Index < TreeFrame.VisualDeltaCount; ++Index)
+        Require(TreeFrame.VisualDeltas[Index].Node != Local && TreeFrame.VisualDeltas[Index].Node != LocalChild,
+            "parent opacity delta stops at a local opacity boundary");
+    Require(RmlUE_ClearAnimatedVisualProperties(&TreeUpdate, 1) == 1 &&
+        RmlUE_RenderSlate(Tree.View, &TreeFrame) != 0 && TreeFrame.Replayed == 1 &&
+        TreeFrame.VisualDeltaCount == 2,
+        "clearing parent opacity resets every inherited subtree visual slot");
+    Require(RmlUE_ReleaseAnimationTarget(Tree.View, TreeUpdate.Target),
+        "release opacity subtree animation target");
 
     Fixture Dx11(Markup);
     Dx11.Update();
