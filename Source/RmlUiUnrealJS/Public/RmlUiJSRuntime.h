@@ -39,7 +39,6 @@ public:
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript") bool UnregisterService(const FString& Name);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript") void ClearServices();
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Host") void ResolveHostRequest(int32 RequestId, const FString& Json, bool bSuccess);
-    static FString DefaultManifestPath();
     virtual void BeginDestroy() override;
 private:
     void Advance(float DeltaSeconds);

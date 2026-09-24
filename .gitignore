@@ -1,6 +1,9 @@
 /Binaries/
 /Intermediate/
 /Frontend/node_modules/
+/Samples/Frontend/node_modules/
+/Samples/RmlUiUnrealSamples/Binaries/
+/Samples/RmlUiUnrealSamples/Intermediate/
 /Tools/node_modules/
 /.vs/
 *.sln

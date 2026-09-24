@@ -2,6 +2,8 @@
 
 The `RmlUiUnrealJS` module adds Vue 3 to the unified Win64 `RmlUiUnreal` plugin using its required Puerts/V8 dependency. Vue's official `createRenderer` reconciles native RmlUi elements; the existing Taffy Grid and DX11 rendering backend remain in use. No Unreal Engine source modifications are required.
 
+Since the 2026-09-24 split, the core module contains only the reusable runtime and bridge. Actor Observer, Chat, the editor tab, example pages and their npm dependencies live under `Samples`; [Samples/README.md](Samples/README.md) describes installation. The feature walkthrough below predates the split, so references to `RmlUiUnrealJSEditor`, `Frontend/src/actors`, and plugin-core `Content/ActorObserver` mean `RmlUiUnrealSamplesEditor`, `Samples/Frontend/src/actors`, and the installed samples plugin's `Content/ActorObserver`, respectively.
+
 ## Run and Edit
 
 From the test project root:
@@ -16,7 +18,7 @@ From the test project root:
 .\Launch.ps1 -Editor
 ```
 
-Edit `Frontend/src/App.vue` or `ProjectCard.vue`. The watcher compiles SFC templates, TypeScript and scoped CSS into a version directory, then atomically publishes `Content/Vue/current.json`. A running Vue widget polls this pointer every 250 ms while rendering. Failed compilation leaves the previous pointer intact.
+Edit `Samples/Frontend/src/vue/App.vue` or `ProjectCard.vue`. The watcher compiles SFC templates, TypeScript and scoped CSS into a version directory, then atomically publishes the samples plugin's `Content/Vue/current.json`. A running Vue widget polls this pointer every 250 ms while rendering. Failed compilation leaves the previous pointer intact.
 
 The demo exercises component props/emits, scoped CSS, keyed lists, reactive state, computed values, text/checkbox/range/select bindings, native Grid, and typed Unreal calls through an injected Puerts UObject service. Its layout uses the existing Grid implementation, including responsive column changes. JSON `HostRequest` remains available as an explicit compatibility channel.
 
@@ -46,11 +48,11 @@ Copy these two directories into the receiving project's `Plugins` folder:
 - `RmlUiUnreal`, including its native bridge binaries, modules, frontend sources, WebCompat tools, and built content.
 - `Puerts`, including `ThirdParty/v8_11.8.172`.
 
-Enable `RmlUiUnreal` and build the receiving project. Its manifest enables the required Puerts dependency and all applicable RmlUi runtime modules. `Frontend/node_modules` and the frontend sources are needed for development only; packaged execution loads the compiled bundle and Puerts bootstrap through Unreal UFS. If implementing the C++ host, add `RmlUiUnrealJS` to that host module's dependencies.
+Enable `RmlUiUnreal` and build the receiving project. Its manifest enables the required Puerts dependency and all applicable RmlUi runtime modules. Install `RmlUiUnrealSamples` separately only for the example pages and services. Frontend sources and `node_modules` are development-only; packaged execution loads an application-provided compiled bundle and Puerts bootstrap through Unreal UFS. If implementing the C++ host, add `RmlUiUnrealJS` to that host module's dependencies.
 
 Create a `URmlUiJSRuntime` owned by a persistent UObject and retain it in a `UPROPERTY`. Register only the business UObjects the page needs with `RegisterService(Name, Service)`, then call `Start(RmlWidget, ManifestPath, true)`. The service registry is frozen while the runtime is active and is injected into every replacement VM through Puerts argv. Frontend code obtains a typed service with `getService<T>(name)` (required) or `findService<T>(name)` (optional) from `bridge.ts`, so normal calls use UFUNCTION parameters and return values without intermediate JSON text.
 
-For old pages and dynamic protocols, bind `OnHostRequest` and use the explicitly named frontend `callHostJson`. Complete those compatibility requests with `ResolveHostRequest(RequestId, Json, bSuccess)`. An empty manifest path selects the bundled `current.json`; call `Stop` when the screen closes. The test host's `RmlUiDemoGameMode.cpp` demonstrates the default typed path.
+For old pages and dynamic protocols, bind `OnHostRequest` and use the explicitly named frontend `callHostJson`. Complete those compatibility requests with `ResolveHostRequest(RequestId, Json, bSuccess)`. `Start` rejects an empty manifest path; call `Stop` when the screen closes. The test host's `RmlUiDemoGameMode.cpp` demonstrates the typed service path.
 
 `JsonHostRequestCount` exposes the number of compatibility-channel requests made since `Start`, so tests and diagnostics can verify that a default business flow stayed on the typed path.
 

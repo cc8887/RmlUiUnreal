@@ -12,7 +12,7 @@ From the project root, after building the UE modules:
 .\LaunchChat.ps1 -Watch
 ```
 
-Without an endpoint this starts a localhost deterministic SSE fixture and opens the interactive UE game window. The fixture returns predefined Markdown, not model-generated answers. `-Watch` starts a hidden source watcher; its PID is printed and its logs are in `Saved/ChatWatch*.log`. Editing `Frontend/src/chat` publishes a new version which UE adopts automatically. `BuildChat.ps1 -Watch` can also run the watcher in a terminal.
+Without an endpoint this starts a localhost deterministic SSE fixture and opens the interactive UE game window. The fixture returns predefined Markdown, not model-generated answers. `-Watch` starts a hidden source watcher; its PID is printed and its logs are in `Saved/ChatWatch*.log`. Editing `Samples/Frontend/src/chat` publishes a new version which UE adopts automatically. `BuildChat.ps1 -Watch` can also run the watcher in a terminal.
 
 Connect your own OpenAI-compatible Chat Completions server:
 
@@ -32,7 +32,7 @@ The packaged executable accepts `-Chat`, `-ChatEndpoint=...`, `-ChatModel=...` a
 
 ## Reuse
 
-Import `Frontend/src/chat/MarkdownView.ts` as a normal Vue component:
+Import `Samples/Frontend/src/chat/MarkdownView.ts` as a normal Vue component:
 
 ```vue
 <script setup lang="ts">
@@ -46,7 +46,7 @@ defineProps<{ text: string; id: number }>();
 
 `markdown.ts` converts the official parser's tokens to a whitelisted node tree. `MarkdownView.ts` renders that tree using Vue VNodes. highlight.js output is parsed with htmlparser2 and reduced to spans and text. No untrusted HTML is inserted with `innerHTML` or `v-html`. Include the Markdown RCSS rules from `ChatApp.vue`, icon assets, fonts and the `chat.copy` / `chat.openLink` host handlers when moving the component elsewhere.
 
-For the complete chat, retain both `URmlUiJSRuntime` and `URmlUiChatTransport` as UPROPERTY references. Call `Transport->Attach(Runtime, Endpoint, Model, Protocol)` before `Runtime->Start`, with `Content/Chat/current.json` as the manifest; call `SetApiKey` from native code if required. Stop the transport and runtime when closing the screen. The test project's `RmlUiDemoGameMode.cpp` is the working host example. Copy the unified `RmlUiUnreal` plugin and its required `Puerts` plugin dependency for another UE host.
+For the complete chat, install the optional `RmlUiUnrealSamples` plugin and retain both `URmlUiJSRuntime` and `URmlUiChatTransport` as UPROPERTY references. Call `Transport->Attach(Runtime, Endpoint, Model, Protocol)` before `Runtime->Start`, passing the samples plugin's `Content/Chat/current.json`; call `SetApiKey` from native code if required. Stop the transport and runtime when closing the screen. The test project's `RmlUiDemoGameMode.cpp` is the working host example. Core-only hosts do not need the Chat service or its JavaScript libraries.
 
 ## Supported Surface
 

@@ -122,11 +122,10 @@ One plugin descriptor owns all RmlUi functionality. Puerts remains a required si
 | `RmlUiUnreal` | Runtime | Core RmlUi lifecycle, UMG/Slate widget, rendering, resources, input, fonts, and materials |
 | `RmlUiUnrealWebCompat` | Runtime | Versioned compatibility profiles and web-compatible widget API |
 | `RmlUiUnrealWebCompatPuerts` | Runtime | Packaged Puerts provider for dynamic HTML/CSS compilation |
-| `RmlUiUnrealJS` | Runtime | Vue runtime, typed service bridge, updates, Actor Observer service, and chat transport |
+| `RmlUiUnrealJS` | Runtime | Puerts context, typed service bridge, and versioned UI activation |
 | `RmlUiUnrealEditor` | Editor | RmlUi preview and editor integration |
-| `RmlUiUnrealJSEditor` | Editor | Actor Observer Nomad tab and editor-world lifecycle |
 
-Raw `URmlUiWidget` pages do not automatically start Vue or apply WebCompat rules. Choose `URmlUiWebWidget` for a compatibility profile and create `URmlUiJSRuntime` for a Vue application. The modules share one build, cook, packaging, and release boundary.
+The optional `Samples/RmlUiUnrealSamples` template supplies the Actor Observer and Chat services, the Actor Observer editor tab, and three UI bundles as a separate plugin. Raw `URmlUiWidget` pages do not automatically start Vue or apply WebCompat rules. Choose `URmlUiWebWidget` for a compatibility profile and create `URmlUiJSRuntime` for a Vue application.
 
 ## Compatibility
 
@@ -156,6 +155,8 @@ YourProject/
 
 `RmlUiUnreal.uplugin` enables Puerts as a required dependency. A source checkout also needs Puerts' matching `ThirdParty/v8_11.8.172` payload.
 
+Install the optional `RmlUiUnrealSamples` plugin only for Actor Observer, Chat, or the Vue demonstration; see [Samples/README.md](Samples/README.md). Core applications supply their own UI manifest and services.
+
 For a prebuilt distribution, keep the supplied `Binaries/ThirdParty/Win64/RmlUiBridge.dll` and import library. For a fresh source checkout, build the native bridge once:
 
 ```powershell
@@ -174,7 +175,7 @@ Rebuilding the bridge requires CMake, Visual Studio 2022 C++ tools, a Windows SD
 4. Bind document events or call the Blueprint DOM helpers for application behavior.
 5. Open **Tools > RmlUi Preview** to inspect documents without starting the game.
 
-Use **RmlUi Web-Compatible Document** when the page needs the `WebModernV1` compatibility profile. Use **Tools > RmlUi Actor Observer** to open the live editor example; PIE is not required.
+Use **RmlUi Web-Compatible Document** when the page needs the `WebModernV1` compatibility profile. Install the optional samples plugin to expose **Tools > RmlUi Actor Observer**; PIE is not required.
 
 ### C++
 
@@ -193,21 +194,25 @@ For a Vue screen, retain both the widget and runtime as UPROPERTY-owned objects,
 
 ```cpp
 Runtime->RegisterService(TEXT("host"), HostService);
-Runtime->Start(RmlWidget, TEXT(""), true); // Empty path selects Content/Vue/current.json.
+Runtime->Start(RmlWidget, ManifestPath, true); // An application manifest path is required.
 ```
 
 Call `Stop()` when the owning screen closes. Service registration is frozen while a runtime is active. JSON HostRequest remains available for dynamic compatibility flows, but normal application calls should use typed Puerts services.
 
 ## Frontend Development
 
-Frontend sources and lockfiles live in `Frontend`. Generated Vue, Chat, and Actor Observer bundles are published atomically under `Content`.
+The runtime frontend and compiler live in `Frontend`. Example pages and their third-party libraries live in `Samples/Frontend`, with an independent lockfile. Example bundles publish atomically under `Samples/RmlUiUnrealSamples/Content`; the host build scripts mirror them into the installed samples plugin.
 
 ```powershell
 cd Frontend
 npm ci
 npm run typecheck
 npm test
-npm run build
+cd ../Samples/Frontend
+npm ci
+npm run typecheck
+npm test
+npm run actors:build
 ```
 
 The surrounding `RmlUiUnrealTest` host project contains launch, watch, packaging, and end-to-end smoke scripts. It is intentionally not part of this plugin repository.
@@ -222,7 +227,7 @@ The currently verified color contract is SDR sRGB. HDR, wide gamut, device loss 
 
 ## Validation Status
 
-The latest unified-plugin validation used Unreal Engine 5.8.1 on Win64:
+The following packaged validation used the pre-split unified plugin on Unreal Engine 5.8.1 / Win64. It has not been repeated for the optional samples plugin. For the current split, the core and sample frontend type checks and test suites, UE 5.8 Editor/Game builds, and the Actor Observer editor tab test passed. DX12 Editor smoke passed 589 Actor Observer, 117 Chat, and 123 Vue checks; the core Windows IME automation passed 1/1. The project architecture report records the evidence and limits.
 
 - Editor Development, Game Development, and Game Shipping clean plugin builds passed with the required Puerts dependency.
 - Full Development cook processed 500 packages with 0 errors and 0 warnings; Stage, Pak, IoStore, and Archive passed.
@@ -240,11 +245,12 @@ These results do not claim Shipping runtime behavior, non-Windows support, produ
 ```text
 RmlUiUnreal/
 ├── Config/                  Plugin packaging rules
-├── Content/                 RML, RCSS, profiles, compiled UI bundles, fonts, and examples
+├── Content/                 Core RML, RCSS, profiles, fonts, and native fixtures
 ├── Docs/Images/             README showcase assets
-├── Frontend/                Vue, Chat, Actor Observer, build tools, and frontend tests
+├── Frontend/                Puerts/Vue runtime, animation IR, and shared compiler
+├── Samples/                 Separate example plugin, UI pages, and example dependencies
 ├── Shaders/                 Unreal shaders for the Slate/RHI path
-├── Source/                  Six Unreal modules and vendored native bridge sources
+├── Source/                  Five Unreal modules and vendored native bridge sources
 ├── Tools/                   WebCompat compiler and tests
 └── RmlUiUnreal.uplugin      Unified plugin descriptor
 ```

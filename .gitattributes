@@ -1,6 +1,8 @@
 * text=auto eol=lf
 # Cargo validates vendored file bytes against .cargo-checksum.json.
 Source/ThirdParty/RmlUiBridge/grid/vendor/** -text
+# Published bundles are content-addressed; Git must preserve their exact bytes.
+Samples/RmlUiUnrealSamples/Content/** -text -whitespace
 *.png binary
 *.ttf binary
 *.otf binary

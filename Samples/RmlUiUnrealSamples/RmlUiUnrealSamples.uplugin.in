@@ -1,0 +1,17 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "0.1.0",
+  "FriendlyName": "RmlUi Unreal Samples",
+  "Description": "Optional Actor Observer, Chat, and Vue demonstrations for RmlUi Unreal.",
+  "Category": "UI",
+  "CanContainContent": true,
+  "SupportedTargetPlatforms": ["Win64"],
+  "Modules": [
+    {"Name": "RmlUiUnrealSamples", "Type": "Runtime", "LoadingPhase": "Default"},
+    {"Name": "RmlUiUnrealSamplesEditor", "Type": "Editor", "LoadingPhase": "Default"}
+  ],
+  "Plugins": [
+    {"Name": "RmlUiUnreal", "Enabled": true}
+  ]
+}

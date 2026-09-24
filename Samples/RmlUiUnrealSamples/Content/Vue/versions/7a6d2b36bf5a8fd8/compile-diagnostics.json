@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "capabilities": {
+    "schemaVersion": 1,
+    "compiler": "rmlui-css/2.0.0",
+    "profile": "dx11-compat",
+    "minimumHostAbi": 2,
+    "requiredFeatures": [
+      "css.core",
+      "css.grid"
+    ],
+    "degradedFeatures": [],
+    "diagnostics": "compile-diagnostics.json"
+  },
+  "diagnostics": []
+}

@@ -14,8 +14,7 @@
     {"Name": "RmlUiUnrealWebCompat", "Type": "Runtime", "LoadingPhase": "Default"},
     {"Name": "RmlUiUnrealWebCompatPuerts", "Type": "Runtime", "LoadingPhase": "Default"},
     {"Name": "RmlUiUnrealJS", "Type": "Runtime", "LoadingPhase": "Default"},
-    {"Name": "RmlUiUnrealEditor", "Type": "Editor", "LoadingPhase": "Default"},
-    {"Name": "RmlUiUnrealJSEditor", "Type": "Editor", "LoadingPhase": "Default"}
+    {"Name": "RmlUiUnrealEditor", "Type": "Editor", "LoadingPhase": "Default"}
   ],
   "Plugins": [
     {"Name": "Puerts", "Enabled": true}

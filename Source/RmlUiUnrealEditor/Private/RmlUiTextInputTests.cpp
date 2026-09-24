@@ -8,7 +8,6 @@
 #include "GenericPlatform/ITextInputMethodSystem.h"
 #include "HAL/FileManager.h"
 #include "ImageUtils.h"
-#include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "RenderingThread.h"
@@ -47,8 +46,7 @@ public:
         if (Stage == 0)
         {
             if (!Test->TestTrue(TEXT("Native module initialized"), FRmlUiUnrealModule::Get().IsInitialized())) return true;
-            const FString Font = IPluginManager::Get().FindPlugin(TEXT("RmlUiUnreal"))->GetBaseDir() /
-                TEXT("Frontend/assets/NotoSansCJKsc-Regular.otf");
+            const FString Font = FPaths::EngineContentDir() / TEXT("Slate/Fonts/DroidSansFallback.ttf");
             Test->TestTrue(TEXT("CJK fallback font loaded"), RmlUE_LoadFont(TCHAR_TO_UTF8(*Font), 1) != 0);
             Widget = SNew(SRmlUiWidget).UseSlateRenderer(false).DesiredSize(FVector2D(640, 280)).SourcePath(TEXT("/rmlui-tests/windows-ime-context.rml")).InlineDocument(TEXT(
                 "<rml><head><style>body{font-family:LatoLatin;font-size:22px;background-color:#132029;}"

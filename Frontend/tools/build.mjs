@@ -21,18 +21,19 @@ export function validateCss(css, filename, options = {}) {
   throwDiagnostics(result.diagnostics);
   return result;
 }
-export async function buildFrontend({ chat = false, actors = false, outputRoot, activate = true,
-  profile = actors ? 'slate-rhi' : 'dx11-compat', mode = actors ? 'degrade' : 'strict',
-  // This demo displays existing shadow specimens on Slate. Their unsupported layers are
-  // intentionally removed and recorded in the versioned diagnostics artifact.
-  allowDegrade = actors ? ['render.layers', 'render.filters'] : [],
-  requiredFeatures = actors ? ['nodes.query', 'layout.measure', 'events.extended', 'overlays.modal', 'input.ime'] : [],
+export async function buildFrontend({ entryPoint, outputRoot, mirrorRoot, activate = true,
+  profile = 'dx11-compat', mode = 'strict', allowDegrade = [], requiredFeatures = [],
+  tailwindContentFile, tailwindTheme, rewriteUnicodeProperties = false,
+  requiredMotionRule = () => false, dependencyRoots = [], iconNames = [], iconDirectory,
+  fontFiles = [], fontDirectory, assetFiles = [],
 } = {}) {
-  if (chat && actors) throw new Error('Chat and actor observer builds are separate entry points.');
-  const output = outputRoot ? path.resolve(outputRoot) : path.resolve(root, actors ? '../Content/ActorObserver' : chat ? '../Content/Chat' : '../Content/Vue');
+  if (!entryPoint || !outputRoot) throw new Error('A frontend entry point and output directory are required.');
+  if (iconNames.length && !iconDirectory) throw new Error('Icon names require an icon directory.');
+  if (fontFiles.length && !fontDirectory) throw new Error('Font files require a font directory.');
+  const output = path.resolve(outputRoot);
   const styles = new Map();
   const compilerOptions = { profile, mode, allowDegrade };
-  const tailwindContent = actors ? await readFile(path.join(root, 'src/actors/ActorObserverApp.vue'), 'utf8') : '';
+  const tailwindContent = tailwindContentFile ? await readFile(tailwindContentFile, 'utf8') : '';
   const vuePlugin = {
     name: 'rmlui-vue-sfc',
     setup(builder) {
@@ -60,10 +61,11 @@ export async function buildFrontend({ chat = false, actors = false, outputRoot, 
           if (result.errors.length) throw new Error(result.errors.join('\n'));
           const sourceLabel = path.relative(root, filename).split(path.sep).join('/');
           let cssRoot = postcss.parse(result.code, { from: filename });
-          if (actors && /@tailwind\b/.test(result.code)) {
+          if (/@tailwind\b/.test(result.code)) {
+            if (!tailwindContentFile) throw new Error(`${filename}: Tailwind directives require an explicit content source.`);
             cssRoot = (await postcss([tailwindcss({
               content: [{ raw: tailwindContent, extension: 'vue' }], corePlugins: { preflight: false },
-              theme: { extend: { colors: { ink: '#202a2e', signal: '#14866d', warning: '#c27a28' } } },
+              theme: tailwindTheme,
             })]).process(cssRoot, { from: filename })).root;
           }
           componentStyles.push(validateCss(cssRoot, filename, { ...compilerOptions, sourceLabel, lineOffset: style.loc.start.line - 1 }));
@@ -74,26 +76,33 @@ export async function buildFrontend({ chat = false, actors = false, outputRoot, 
       });
     },
   };
-  const entry = actors ? 'src/actors/main.ts' : chat ? 'src/chat/main.ts' : 'src/main.ts';
-  const result = await bundle({ entryPoints: [path.join(root, entry)], bundle: true, write: false,
+  const result = await bundle({ entryPoints: [path.resolve(entryPoint)], bundle: true, write: false,
     platform: 'neutral', format: 'cjs', target: 'es2020', sourcemap: 'external', outfile: 'app.js',
     loader: { '.svg': 'text' },
-    plugins: [vuePlugin], external: ['puerts'], conditions: ['module'], mainFields: ['module', 'main'], metafile: true,
+    plugins: [vuePlugin], external: ['puerts'], nodePaths: dependencyRoots,
+    conditions: ['module'], mainFields: ['module', 'main'], metafile: true,
     define: { 'process.env.NODE_ENV': '"production"', __VUE_OPTIONS_API__: 'true', __VUE_PROD_DEVTOOLS__: 'false', __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false' },
   });
   const files = new Map(result.outputFiles.map(file => [path.basename(file.path), file.contents]));
-  const packages = new Set(Object.keys(result.metafile.inputs).filter(name => name.startsWith('node_modules/')).map(name => {
-    const parts = name.slice('node_modules/'.length).split('/'); return parts[0].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+  const packages = new Set(Object.keys(result.metafile.inputs).flatMap(name => {
+    const marker = name.lastIndexOf('node_modules/');
+    if (marker < 0) return [];
+    const parts = name.slice(marker + 'node_modules/'.length).split('/');
+    return [parts[0].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]];
   }));
-  if (chat || actors) packages.add('lucide-static');
+  if (iconNames.length) packages.add('lucide-static');
   for (const name of [...packages].sort()) {
-    const directory = path.join(root, 'node_modules', name);
+    const directory = (await Promise.all(dependencyRoots.map(async directory => {
+      const candidate = path.join(directory, name);
+      return (await readdir(candidate).catch(() => null)) ? candidate : null;
+    }))).find(Boolean);
+    if (!directory) throw new Error(`Cannot find license source for bundled package ${name}.`);
     for (const file of (await readdir(directory)).filter(file => /^(license|copying)(\.|$)/i.test(file))) {
       const filename = `${name.replace(/[^a-zA-Z0-9_.-]/g, '_')}-${file}.txt`;
       files.set(`licenses/${filename}`, await readFile(path.join(directory, file)));
     }
   }
-  if (chat) {
+  if (rewriteUnicodeProperties) {
     const transformed = transformSync(Buffer.from(files.get('app.js')).toString(), {
       filename: 'app.js', configFile: false, babelrc: false, sourceMaps: true,
       inputSourceMap: JSON.parse(Buffer.from(files.get('app.js.map')).toString()),
@@ -105,8 +114,7 @@ export async function buildFrontend({ chat = false, actors = false, outputRoot, 
   const compiledStyles = [...styles].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, value]) => value);
   const css = compiledStyles.map(value => value.css).join('\n');
   const motionRules = compiledStyles.flatMap(value => value.motionManifest.rules).map(rule =>
-    actors && (rule.selector.startsWith('.css-motion-run.css-motion-item-') || rule.selector === '.css-control-loop')
-      ? { ...rule, requiredOnLoad: true } : rule);
+    requiredMotionRule(rule) ? { ...rule, requiredOnLoad: true } : rule);
   const motionPlayStates = compiledStyles.flatMap(value => value.motionManifest.playStates ?? []);
   const motionManifest = motionPlayStates.length
     ? { schemaVersion: 1, rules: motionRules, playStates: motionPlayStates }
@@ -117,50 +125,50 @@ export async function buildFrontend({ chat = false, actors = false, outputRoot, 
   files.set('app.rcss', Buffer.from(css));
   files.set('motion-manifest.json', Buffer.from(`${JSON.stringify(motionManifest, null, 2)}\n`));
   files.set('shell.rml', Buffer.from('<rml><head><title>Vue RmlUi</title><link type="text/rcss" href="app.rcss"/></head><body/></rml>'));
-  const content = path.resolve(root, '../Content/RmlUi');
-  files.set('hello_world.png', await readFile(path.join(content, 'hello_world.png')));
+  for (const { name, source } of assetFiles) files.set(name, await readFile(source));
   const fonts = [];
-  if (chat || actors) {
-    const icons = actors ? ['panel-bottom', 'pause', 'play', 'list-tree', 'panels-top-left', 'git-branch', 'zoom-in', 'zoom-out', 'maximize-2', 'search', 'circle-plus', 'eye', 'settings-2', 'save', 'trash-2', 'app-window', 'triangle-alert', 'panel-right-open', 'x', 'sparkles', 'rotate-ccw', 'chevron-down'] : ['arrow-up', 'arrow-down', 'square', 'copy', 'check', 'plus', 'pencil', 'rotate-ccw', 'settings-2', 'panel-left', 'x', 'trash-2', 'messages-square'];
-    for (const name of icons) {
-      const svg = await readFile(path.join(root, 'node_modules/lucide-static/icons', `${name}.svg`), 'utf8');
-      for (const [suffix, color] of [['', '#586675'], ['-white', '#ffffff']]) {
-        files.set(`icons/${name}${suffix}.png`, await sharp(Buffer.from(svg.replaceAll('currentColor', color))).resize(48, 48).png().toBuffer());
-      }
+  for (const name of iconNames) {
+    const svg = await readFile(path.join(iconDirectory, `${name}.svg`), 'utf8');
+    for (const [suffix, color] of [['', '#586675'], ['-white', '#ffffff']]) {
+      files.set(`icons/${name}${suffix}.png`, await sharp(Buffer.from(svg.replaceAll('currentColor', color))).resize(48, 48).png().toBuffer());
     }
-    const fontNames = actors ? ['NotoSansCJKsc-Regular.otf', 'JetBrainsMono.ttf'] : ['NotoSansCJKsc-Regular.otf', 'JetBrainsMono.ttf', 'LatoLatin-Italic.ttf', 'LatoLatin-BoldItalic.ttf'];
-    for (const name of fontNames) {
-      files.set(`fonts/${name}`, await readFile(path.join(root, 'assets', name))); fonts.push(`fonts/${name}`);
-    }
-    for (const name of ['OFL-Noto.txt', 'OFL-JetBrains.txt']) files.set(`fonts/${name}`, await readFile(path.join(root, 'assets', name)));
-    files.set('fonts/OFL-Lato.txt', await readFile(path.join(content, 'Fonts/LICENSE.txt')));
+  }
+  for (const name of fontFiles) {
+    files.set(`fonts/${name}`, await readFile(path.join(fontDirectory, name)));
+    fonts.push(`fonts/${name}`);
   }
   const version = hash(JSON.stringify([...files].map(([name, bytes]) => [name, hash(bytes)]))).slice(0, 16);
-  const directory = path.join(output, 'versions', version);
-  await mkdir(directory, { recursive: true });
   const digests = {};
-  for (const [name, bytes] of files) { await mkdir(path.dirname(path.join(directory, name)), { recursive: true }); await writeFile(path.join(directory, name), bytes); digests[name] = hash(bytes); }
-  await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ format: 1, abi: 1, stateSchema: 1, version, entry: 'app.js', document: 'shell.rml', motionManifest: 'motion-manifest.json', fonts, files: digests, capabilities }, null, 2));
-  if (activate) {
-    const temporary = path.join(output, `current.${randomUUID()}.tmp`);
-    await writeFile(temporary, JSON.stringify({ manifest: `versions/${version}/manifest.json` }, null, 2));
-    await rename(temporary, path.join(output, 'current.json'));
+  for (const [name, bytes] of files) digests[name] = hash(bytes);
+  const manifest = JSON.stringify({ format: 1, abi: 1, stateSchema: 1, version, entry: 'app.js', document: 'shell.rml', motionManifest: 'motion-manifest.json', fonts, files: digests, capabilities }, null, 2);
+  for (const destination of [...new Set([output, ...(mirrorRoot ? [path.resolve(mirrorRoot)] : [])])]) {
+    const versionDirectory = path.join(destination, 'versions', version);
+    await mkdir(versionDirectory, { recursive: true });
+    for (const [name, bytes] of files) {
+      await mkdir(path.dirname(path.join(versionDirectory, name)), { recursive: true });
+      await writeFile(path.join(versionDirectory, name), bytes);
+    }
+    await writeFile(path.join(versionDirectory, 'manifest.json'), manifest);
+    if (activate) {
+      const temporary = path.join(destination, `current.${randomUUID()}.tmp`);
+      await writeFile(temporary, JSON.stringify({ manifest: `versions/${version}/manifest.json` }, null, 2));
+      await rename(temporary, path.join(destination, 'current.json'));
+    }
   }
+  const directory = path.join(output, 'versions', version);
   console.log(`Built Vue UI ${version}: ${directory}`);
   return { version, directory, capabilities, diagnostics };
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = { chat: process.argv.includes('--chat'), actors: process.argv.includes('--actors') };
-  await buildFrontend(options);
-  if (process.argv.includes('--watch')) {
+export function watchFrontend({ watchRoots, build }) {
+  if (!watchRoots?.length || typeof build !== 'function') throw new Error('Watch mode requires source directories and a build callback.');
     let timer, running = false, dirty = false;
     const rebuild = async () => {
       if (running) { dirty = true; return; }
       running = true;
-      try { await buildFrontend(options); } catch (error) { console.error(error); }
+      try { await build(); } catch (error) { console.error(error); }
       finally { running = false; if (dirty) { dirty = false; void rebuild(); } }
     };
-    watch(path.join(root, 'src'), { recursive: true }, () => { clearTimeout(timer); timer = setTimeout(rebuild, 150); });
+    for (const source of watchRoots)
+      watch(source, { recursive: true }, () => { clearTimeout(timer); timer = setTimeout(rebuild, 150); });
     console.log('Watching Vue/TypeScript sources.');
-  }
 }

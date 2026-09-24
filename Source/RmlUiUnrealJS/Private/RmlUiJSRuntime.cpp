@@ -197,10 +197,6 @@ bool FRmlUiCapabilityManifestTest::RunTest(const FString&)
 }
 #endif
 
-FString URmlUiJSRuntime::DefaultManifestPath()
-{
-    return FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("RmlUiUnreal"))->GetContentDir(), TEXT("Vue/current.json"));
-}
 bool URmlUiJSRuntime::Fail(const FString& Message)
 {
     LastError = Message;
@@ -217,10 +213,11 @@ bool URmlUiJSRuntime::Start(URmlUiWidget* Widget, const FString& ManifestPath, b
     AdvanceCount = 0;
     AdvanceSkipCount = 0;
     if (!Widget) return Fail(TEXT("A RmlUi widget is required."));
+    if (ManifestPath.IsEmpty()) return Fail(TEXT("A UI manifest path is required. Build and pass an application bundle's current.json."));
     Target = Widget;
     Widget->TakeWidget();
     SlateWidget = Widget->GetSlateRmlWidget();
-    WatchedManifest = ManifestPath.IsEmpty() ? DefaultManifestPath() : ManifestPath;
+    WatchedManifest = ManifestPath;
     FFileHelper::LoadFileToString(WatchedText, *WatchedManifest);
     bWatchFiles = bWatch;
     NextWatchTime = bWatchFiles ? FPlatformTime::Seconds() + 0.25 : 0.0;

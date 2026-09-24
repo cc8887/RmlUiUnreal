@@ -19,6 +19,7 @@ export const animationPlanCacheWorkloadFixturePath = path.resolve(
 
 async function bundleFixture(entryPoint) {
   const result = await build({
+    absWorkingDir: root,
     entryPoints: [path.join(root, entryPoint)],
     bundle: true,
     write: false,

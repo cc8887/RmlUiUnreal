@@ -1,0 +1,34 @@
+{
+  "format": 1,
+  "abi": 1,
+  "stateSchema": 1,
+  "version": "7975dfbfe1de517e",
+  "entry": "app.js",
+  "document": "shell.rml",
+  "motionManifest": "motion-manifest.json",
+  "fonts": [],
+  "files": {
+    "app.js.map": "246cc14dbcd1c4f722a9037c1370892fee4301b8e9c00f8bbee6f617a88e6d9c",
+    "app.js": "2b5ba254551f9ac418781222d659515774e0358e302b9565808c72c0604aad5e",
+    "licenses/_vue_reactivity-LICENSE.txt": "1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175",
+    "licenses/_vue_runtime-core-LICENSE.txt": "1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175",
+    "licenses/_vue_shared-LICENSE.txt": "1bb85cc9b13b81ef41c81c51866172fc345e0503c86726a6755b796590b70175",
+    "compile-diagnostics.json": "d9cd9b0609de25e888ac120d1802e3b515d96705ca0e78408a14b6d9e1d0e06f",
+    "app.rcss": "644e96aab79a1ee14d0b99f972a8218f5dfa40aa7cef1d5ffd55aa0a934a115f",
+    "motion-manifest.json": "be38d32af097fcef009b7894fd5ed42697b9a0c656c981a4253b200d6e10e7c6",
+    "shell.rml": "adbb07630bb92e7d811042931760d493dc7e29547b33985f164acb8e31bcdd6f",
+    "hello_world.png": "d9877e95e9e94ad08279b14d917529c6c74525fe397b5c640c4b1c78e9feb0a4"
+  },
+  "capabilities": {
+    "schemaVersion": 1,
+    "compiler": "rmlui-css/2.0.0",
+    "profile": "dx11-compat",
+    "minimumHostAbi": 2,
+    "requiredFeatures": [
+      "css.core",
+      "css.grid"
+    ],
+    "degradedFeatures": [],
+    "diagnostics": "compile-diagnostics.json"
+  }
+}

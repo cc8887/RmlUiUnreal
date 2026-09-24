@@ -120,11 +120,10 @@ RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 
 | `RmlUiUnreal` | Runtime | RmlUi 生命周期、UMG/Slate Widget、渲染、资源、输入、字体和材质 |
 | `RmlUiUnrealWebCompat` | Runtime | 版本化兼容配置和 Web-Compatible Widget API |
 | `RmlUiUnrealWebCompatPuerts` | Runtime | 动态 HTML/CSS 编译所需的 packaged Puerts provider |
-| `RmlUiUnrealJS` | Runtime | Vue Runtime、类型化服务桥、版本更新、Actor Observer 服务和 Chat transport |
+| `RmlUiUnrealJS` | Runtime | Puerts 上下文、类型化服务桥和版本化 UI 激活 |
 | `RmlUiUnrealEditor` | Editor | RmlUi Preview 和编辑器集成 |
-| `RmlUiUnrealJSEditor` | Editor | Actor Observer Nomad Tab 和 Editor World 生命周期 |
 
-普通 `URmlUiWidget` 页面不会自动启动 Vue，也不会自动应用 WebCompat 规则。需要兼容配置时使用 `URmlUiWebWidget`，需要 Vue 应用时创建 `URmlUiJSRuntime`。这些模块共享同一套构建、Cook、打包和发布边界。
+可选的 `Samples/RmlUiUnrealSamples` 示例插件独立提供 Actor Observer、Chat 服务、编辑器页签和三套 UI bundle。普通 `URmlUiWidget` 页面不会自动启动 Vue，也不会自动应用 WebCompat 规则。需要兼容配置时使用 `URmlUiWebWidget`，需要 Vue 应用时创建 `URmlUiJSRuntime`。
 
 ## 兼容性
 
@@ -172,7 +171,7 @@ YourProject/
 4. 绑定文档事件，或使用 Blueprint DOM 辅助接口实现应用逻辑。
 5. 通过 **Tools > RmlUi Preview** 在不启动游戏的情况下检查文档。
 
-页面需要 `WebModernV1` 兼容配置时，使用 **RmlUi Web-Compatible Document**。通过 **Tools > RmlUi Actor Observer** 可打开实时编辑器示例，不需要进入 PIE。
+页面需要 `WebModernV1` 兼容配置时，使用 **RmlUi Web-Compatible Document**。安装可选示例插件后，可通过 **Tools > RmlUi Actor Observer** 打开实时编辑器示例，不需要进入 PIE。
 
 ### C++
 
@@ -191,21 +190,25 @@ PublicDependencyModuleNames.AddRange(new[]
 
 ```cpp
 Runtime->RegisterService(TEXT("host"), HostService);
-Runtime->Start(RmlWidget, TEXT(""), true); // 空路径选择 Content/Vue/current.json。
+Runtime->Start(RmlWidget, ManifestPath, true); // 必须传入应用的 manifest 路径。
 ```
 
 页面关闭时调用 `Stop()`。Runtime 活跃期间服务注册表会被冻结。JSON HostRequest 继续服务于动态兼容流程，但常规应用调用应使用类型化 Puerts 服务。
 
 ## 前端开发
 
-前端源码和 lockfile 位于 `Frontend`。生成的 Vue、Chat 和 Actor Observer bundle 会原子发布到 `Content`。
+通用前端运行时和编译器位于 `Frontend`；示例页面及第三方库位于独立安装的 `Samples/Frontend`。三套 bundle 原子发布到 `Samples/RmlUiUnrealSamples/Content`，宿主构建脚本会同步到已安装的示例插件。
 
 ```powershell
 cd Frontend
 npm ci
 npm run typecheck
 npm test
-npm run build
+cd ../Samples/Frontend
+npm ci
+npm run typecheck
+npm test
+npm run actors:build
 ```
 
 外层 `RmlUiUnrealTest` 宿主项目包含启动、监听、打包和端到端 smoke 脚本，它不属于本插件仓库。
@@ -220,7 +223,7 @@ npm run build
 
 ## 验证状态
 
-统一插件最近一次验证使用 Unreal Engine 5.8.1 / Win64：
+以下 packaged 验证基于拆分前的统一插件，使用 Unreal Engine 5.8.1 / Win64；可选示例插件拆分后尚未重跑这些 packaged 验证。当前拆分已通过核心和示例前端的类型检查与测试、UE 5.8 Editor/Game 编译和 Actor Observer 编辑器页签测试。DX12 Editor smoke 分别通过 Actor Observer 589、Chat 117、Vue 123 项；核心 Windows IME 自动化 1/1 通过。证据和边界见项目架构报告。
 
 - 带必选 Puerts 依赖的 Editor Development、Game Development 和 Game Shipping clean plugin build 通过。
 - Development 全量 Cook 处理 500 个包，0 error / 0 warning；Stage、Pak、IoStore 和 Archive 通过。
@@ -238,11 +241,12 @@ npm run build
 ```text
 RmlUiUnreal/
 ├── Config/                  插件打包规则
-├── Content/                 RML、RCSS、配置、编译后 UI、字体和示例
+├── Content/                 核心 RML、RCSS、配置、字体和原生测试资源
 ├── Docs/Images/             README 展示图片
-├── Frontend/                Vue、Chat、Actor Observer、构建工具和前端测试
+├── Frontend/                Puerts/Vue 运行时、动画 IR 和通用编译器
+├── Samples/                 可选示例插件、页面和独立前端依赖
 ├── Shaders/                 Slate/RHI 路径使用的 Unreal Shader
-├── Source/                  六个 Unreal 模块和 vendor 原生桥源码
+├── Source/                  五个 Unreal 模块和 vendor 原生桥源码
 ├── Tools/                   WebCompat 编译器和测试
 └── RmlUiUnreal.uplugin      统一插件描述符
 ```
