@@ -2,7 +2,10 @@
 
 #include "Misc/AutomationTest.h"
 #include "RmlUiBridge.h"
+#include "RmlUiAnimationRuntime.h"
+#include "RmlUiCssAnimationSession.h"
 #include "RmlUiResourceRegistry.h"
+#include "RmlUiUnrealModule.h"
 #include "RmlUiWebCompatModule.h"
 #include "RmlUiWebWidget.h"
 #include "SRmlUiWidget.h"
@@ -513,20 +516,28 @@ bool FRmlUiWebCompatCascadeTest::RunTest(const FString& Parameters)
     Module.ClearCompiledDocumentCache();
     const int32 CompileCountBefore = Module.GetDynamicCompileCount();
     const int32 CacheHitsBefore = Module.GetDynamicCacheHitCount();
-    const FString DynamicMarkup = TEXT("<html><head><style>.magictime { animation-duration: 1s; } .puffIn { animation-name: puffIn; } @keyframes puffIn { from { opacity: 0; } to { opacity: 1; } }</style></head><body><div class='magictime puffIn'/></body></html>");
+    const FString DynamicMarkup = TEXT("<html><head><style>.magictime { animation-duration: 1s; } .puffIn { animation-name: puffIn; } .paused { animation-play-state: paused; } @keyframes puffIn { from { opacity: 0; } to { opacity: 1; } }</style></head><body><div class='magictime puffIn'/></body></html>");
     FString CompiledMarkup;
     FString Diagnostics;
+    FString MotionManifest;
     bool bCacheHit = true;
     TestTrue(TEXT("Compile LLM-style inline document once"),
-        Module.CompileDynamicDocument(DynamicMarkup, TEXT("llm-response.html"), CompiledMarkup, Diagnostics, bCacheHit));
+        Module.CompileDynamicDocument(DynamicMarkup, TEXT("llm-response.html"), CompiledMarkup, Diagnostics, bCacheHit,
+            FRmlUiCssCompileOptions(), &MotionManifest));
     TestFalse(TEXT("First dynamic compilation is not cached"), bCacheHit);
-    TestTrue(TEXT("Animation longhands became an RmlUi shorthand"), CompiledMarkup.Contains(TEXT("animation: 1s cubic-out puffIn")));
+    TestFalse(TEXT("Native CSS animation is not duplicated in RmlUi RCSS"), CompiledMarkup.Contains(TEXT("animation:")));
+    TestTrue(TEXT("Animation longhands and keyframes became Motion Manifest IR"),
+        MotionManifest.Contains(TEXT("\"selector\":\".magictime[class~=\\\"puffIn\\\"]\"")) &&
+        MotionManifest.Contains(TEXT("\"propertyId\":1")));
+    TestTrue(TEXT("Dynamic compiler preserves play-state in Motion Manifest"),
+        MotionManifest.Contains(TEXT("\"playStates\"")) && MotionManifest.Contains(TEXT("\"selector\":\".paused\"")));
     TestEqual(TEXT("Compiler invocation count increments once"), Module.GetDynamicCompileCount(), CompileCountBefore + 1);
 
     FString CachedMarkup;
     FString CachedDiagnostics;
     TestTrue(TEXT("Compile identical document from cache"),
-        Module.CompileDynamicDocument(DynamicMarkup, TEXT("llm-response.html"), CachedMarkup, CachedDiagnostics, bCacheHit));
+        Module.CompileDynamicDocument(DynamicMarkup, TEXT("llm-response.html"), CachedMarkup, CachedDiagnostics, bCacheHit,
+            FRmlUiCssCompileOptions(), &MotionManifest));
     TestTrue(TEXT("Second dynamic compilation is a cache hit"), bCacheHit);
     TestEqual(TEXT("Cached document matches compiler output"), CachedMarkup, CompiledMarkup);
     TestEqual(TEXT("Cache hit count increments once"), Module.GetDynamicCacheHitCount(), CacheHitsBefore + 1);
@@ -544,6 +555,240 @@ bool FRmlUiWebCompatCascadeTest::RunTest(const FString& Parameters)
     TestFalse(TEXT("Unsupported browser CSS fails atomically"),
         Module.CompileDynamicDocument(UnsupportedMarkup, TEXT("unsupported.html"), CompiledMarkup, Diagnostics, bCacheHit));
     TestTrue(TEXT("Unsupported CSS returns a useful diagnostic"), Diagnostics.Contains(TEXT("unsupported-timing-function")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiNativeCssAnimationLifecycleTest,
+    "RmlUiUnreal.WebCompat.NativeCssAnimationLifecycle",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiNativeCssAnimationLifecycleTest::RunTest(const FString&)
+{
+    FRmlUiAnimationRuntime& Runtime = FRmlUiUnrealModule::Get().GetAnimationRuntime();
+    const int32 DefinitionsBefore = Runtime.GetDefinitionCount();
+    const int32 BindingsBefore = Runtime.GetBindingCount();
+    const int32 ActiveBefore = Runtime.GetActiveAnimationCount();
+    TStrongObjectPtr<URmlUiWebWidget> Widget(NewObject<URmlUiWebWidget>(GetTransientPackage()));
+    Widget->bUseSlateRenderer = true;
+    Widget->InlineSourcePath = TEXT("F://native-css-animation.html");
+    Widget->InlineDocument = TEXT(
+        "<html><head><style>body { font-family:LatoLatin; }"
+        ".motion { animation-duration:10s; animation-fill-mode:both; animation-timing-function:steps(4,jump-both); }"
+        ".reveal { animation-name:reveal; }"
+        "@keyframes reveal { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0px); } }"
+        "</style></head><body><div id='target' class='motion reveal'>Motion</div>"
+        "<div id='dynamic' class='motion'>Dynamic</div></body></html>");
+    const TSharedRef<SWidget> Root = Widget->TakeWidget();
+    const TSharedPtr<SRmlUiWidget> SlateWidget = Widget->GetSlateRmlWidget();
+    TestTrue(TEXT("WebCompat document and native view loaded"), SlateWidget.IsValid() && SlateWidget->GetNativeView());
+    TestEqual(TEXT("Two CSS properties register two shared MovieScene definitions"), Runtime.GetDefinitionCount(), DefinitionsBefore + 2);
+    TestEqual(TEXT("One selected node binds both CSS properties"), Runtime.GetBindingCount(), BindingsBefore + 2);
+    TestEqual(TEXT("Both CSS tracks start in the module animation runtime"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    if (SlateWidget.IsValid())
+    {
+        const FRmlUiAnimationViewActivity Activity = Runtime.GetViewActivity(SlateWidget->GetNativeView());
+        TestEqual(TEXT("CSS animation tracks are owned by the loaded view"), Activity.Total, 2);
+        TestEqual(TEXT("Opacity and transform use visual cost routes"), Activity.Visual, 2);
+    }
+    TestTrue(TEXT("Widget attribute mutation activates a previously unmatched node"),
+        Widget->SetElementAttribute(TEXT("dynamic"), TEXT("class"), TEXT("motion reveal")));
+    TestTrue(TEXT("A render boundary flushes queued native activation"),
+        SlateWidget.IsValid() && SlateWidget->RenderFrame(320, 180));
+    TestEqual(TEXT("Direct widget mutation creates two more bindings"), Runtime.GetBindingCount(), BindingsBefore + 4);
+    TestEqual(TEXT("Direct widget mutation starts two more tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 4);
+    TestTrue(TEXT("Widget attribute mutation removes the activation selector"),
+        Widget->SetElementAttribute(TEXT("dynamic"), TEXT("class"), TEXT("motion")));
+    TestTrue(TEXT("A second render boundary flushes queued deactivation"),
+        SlateWidget.IsValid() && SlateWidget->RenderFrame(320, 180));
+    TestEqual(TEXT("Direct widget deactivation releases its bindings"), Runtime.GetBindingCount(), BindingsBefore + 2);
+    TestEqual(TEXT("Direct widget deactivation cancels its tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    Widget->ReleaseSlateResources(false);
+    TestEqual(TEXT("Releasing the widget releases CSS animation bindings"), Runtime.GetBindingCount(), BindingsBefore);
+    TestEqual(TEXT("Releasing the widget releases CSS animation definitions"), Runtime.GetDefinitionCount(), DefinitionsBefore);
+    TestEqual(TEXT("Releasing the widget cancels CSS animations"), Runtime.GetActiveAnimationCount(), ActiveBefore);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiNativeCssActivationManagerTest,
+    "RmlUiUnreal.WebCompat.NativeCssActivationManager",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiNativeCssActivationManagerTest::RunTest(const FString&)
+{
+    FRmlUiAnimationRuntime& Runtime = FRmlUiUnrealModule::Get().GetAnimationRuntime();
+    const int32 DefinitionsBefore = Runtime.GetDefinitionCount();
+    const int32 BindingsBefore = Runtime.GetBindingCount();
+    const int32 ActiveBefore = Runtime.GetActiveAnimationCount();
+    RmlUE_View* View = RmlUE_CreateSlateView(240, 120, 1.0f);
+    TestTrue(TEXT("Activation fixture view loads"), View && RmlUE_LoadDocumentFromMemory(View,
+        "<rml><head><style>body { font-family:LatoLatin; }</style></head><body><div id='target' class='motion'>Motion</div><div id='holder'></div></body></rml>", "activation-manager.rml") != 0);
+    if (!View) return false;
+    const RmlUE_Node Node = RmlUE_FindNode(View, "target");
+    IRmlUiCssAnimationSession* Session = CreateRmlUiCssAnimationSession();
+    int32 WakeCount = 0;
+    Session->SetWakeCallback([&WakeCount]() { ++WakeCount; });
+    const auto DiagnosticNumber = [Session](const TCHAR* Field) -> double
+    {
+        TSharedPtr<FJsonObject> Snapshot;
+        const TArray<TSharedPtr<FJsonValue>>* Rules = nullptr;
+        double Number = -1.0;
+        if (FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Session->GetActivationDiagnostics()), Snapshot) &&
+            Snapshot.IsValid() && Snapshot->TryGetArrayField(TEXT("rules"), Rules) && Rules && Rules->Num() == 1 &&
+            (*Rules)[0].IsValid() && (*Rules)[0]->AsObject().IsValid())
+            (*Rules)[0]->AsObject()->TryGetNumberField(Field, Number);
+        return Number;
+    };
+    const FString Manifest = TEXT(R"JSON({"schemaVersion":1,"rules":[{"selector":".motion.active","name":"reveal","duration":10,"delay":0,"iterations":1,"direction":0,"fill":3,"paused":false,"tracks":[{"property":"opacity","propertyId":1,"keyframes":[{"offset":0,"values":[0],"easing":[0,0,0,1,1]},{"offset":1,"values":[1],"easing":[0,0,0,1,1]}]},{"property":"transform","propertyId":2,"keyframes":[{"offset":0,"values":[0,12,1,1,0,0,0],"easing":[0,0,0,1,1]},{"offset":1,"values":[0,0,1,1,0,0,0],"easing":[0,0,0,1,1]}]}]}]})JSON");
+    const FString RequiredManifest = Manifest.Replace(TEXT("\"name\":\"reveal\""),
+        TEXT("\"name\":\"reveal\",\"requiredOnLoad\":true"));
+    FString Error;
+    TestTrue(TEXT("Activation manager installs unmatched definitions"), Session->Install(RequiredManifest, View, Error));
+    TestEqual(TEXT("Unmatched rule retains two shared definitions"), Runtime.GetDefinitionCount(), DefinitionsBefore + 2);
+    TestEqual(TEXT("Unmatched rule creates no bindings"), Runtime.GetBindingCount(), BindingsBefore);
+    TestFalse(TEXT("Required initial rule rejects an unbound page"), Session->ValidateInitialBindings(Error));
+    TestTrue(TEXT("Required initial binding failure identifies the selector"), Error.Contains(TEXT(".motion.active")));
+    TestEqual(TEXT("Unmatched rule remains visible in diagnostics"), DiagnosticNumber(TEXT("activeNodes")), 0.0);
+
+    // The Vue tree can be materialized after Install. Verify the one-shot
+    // initial scan still activates a matching node when its mutation callback
+    // was unavailable during insertion.
+    RmlUE_View* LateView = RmlUE_CreateSlateView(240, 120, 1.0f);
+    IRmlUiCssAnimationSession* LateSession = CreateRmlUiCssAnimationSession();
+    const bool bLateLoaded = LateView && RmlUE_LoadDocumentFromMemory(LateView,
+        "<rml><body><div id='late-holder'/></body></rml>", "activation-late.rml") != 0;
+    TestTrue(TEXT("Initial-scan fixture view loads"), bLateLoaded);
+    FString LateError;
+    if (bLateLoaded && LateSession)
+    {
+        TestTrue(TEXT("Initial-scan fixture installs unmatched definitions"), LateSession->Install(Manifest, LateView, LateError));
+        const RmlUE_Node LateHolder = RmlUE_FindNode(LateView, "late-holder");
+        RmlUE_SetNodeMutationCallback(LateView, nullptr, nullptr);
+        TestTrue(TEXT("Matching node can be inserted without a mutation callback"), LateHolder &&
+            RmlUE_SetNodeInnerRml(LateView, LateHolder, "<div class='motion active'>Late</div>") != 0);
+        TestTrue(TEXT("Initial activation scan flushes successfully"), LateSession->FlushActivationChanges(LateError));
+        TestEqual(TEXT("Initial activation scan creates both tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+        delete LateSession;
+        LateSession = nullptr;
+    }
+    if (LateSession) delete LateSession;
+    if (LateView) RmlUE_DestroyView(LateView);
+    TestEqual(TEXT("Initial-scan fixture releases all temporary tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore);
+
+    RmlUE_View* PreMountView = RmlUE_CreateSlateView(240, 120, 1.0f);
+    IRmlUiCssAnimationSession* PreMountSession = CreateRmlUiCssAnimationSession();
+    const bool bPreMountLoaded = PreMountView && RmlUE_LoadDocumentFromMemory(PreMountView,
+        "<rml><head><style>body { font-family:LatoLatin; }</style></head><body><div id='mount-holder'/></body></rml>",
+        "activation-premount.rml") != 0;
+    TestTrue(TEXT("Pre-mount fixture document loads"), bPreMountLoaded);
+    if (bPreMountLoaded)
+    {
+        FString PreMountError;
+        TestTrue(TEXT("Observer installs before the matching node exists"),
+            PreMountSession->Install(RequiredManifest, PreMountView, PreMountError));
+        TestFalse(TEXT("Required rule is not yet bound before mount"),
+            PreMountSession->ValidateInitialBindings(PreMountError));
+        const RmlUE_Node MountHolder = RmlUE_FindNode(PreMountView, "mount-holder");
+        TestTrue(TEXT("Mount inserts a matching descendant under the registered observer"),
+            MountHolder && RmlUE_SetNodeInnerRml(PreMountView, MountHolder,
+                "<div class='motion active'>Mounted</div>") != 0);
+        TestTrue(TEXT("Initial layout commits after mount"), RmlUE_Update(PreMountView) != 0);
+        TestTrue(TEXT("Initial activation flush succeeds after mount"),
+            PreMountSession->FlushActivationChanges(PreMountError));
+        TestTrue(TEXT("Required rule binds before publishing the page"),
+            PreMountSession->ValidateInitialBindings(PreMountError));
+        TestEqual(TEXT("Pre-mount activation starts both tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    }
+    delete PreMountSession;
+    if (PreMountView) RmlUE_DestroyView(PreMountView);
+    TestEqual(TEXT("Pre-mount fixture releases its tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore);
+
+    TestTrue(TEXT("Activation class is added"), RmlUE_SetNodeClass(View, Node, "active", 1) != 0);
+    TestTrue(TEXT("Duplicate class write remains accepted"), RmlUE_SetNodeClass(View, Node, "active", 1) != 0);
+    TestEqual(TEXT("A dirty batch schedules one wake"), WakeCount, 1);
+    TestTrue(TEXT("Deduplicated activation flush succeeds"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Activation creates two bindings once"), Runtime.GetBindingCount(), BindingsBefore + 2);
+    TestEqual(TEXT("Activation starts two tracks once"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    TestTrue(TEXT("Required initial rule accepts a bound node"), Session->ValidateInitialBindings(Error));
+    TestEqual(TEXT("Diagnostics report matched nodes"), DiagnosticNumber(TEXT("matched")), 1.0);
+    TestEqual(TEXT("Diagnostics report successful bindings"), DiagnosticNumber(TEXT("bound")), 2.0);
+    TestEqual(TEXT("Diagnostics report started playback handles"), DiagnosticNumber(TEXT("played")), 2.0);
+    TestEqual(TEXT("Diagnostics report active nodes"), DiagnosticNumber(TEXT("activeNodes")), 1.0);
+
+    TestTrue(TEXT("Activation class is removed"), RmlUE_SetNodeClass(View, Node, "active", 0) != 0);
+    TestTrue(TEXT("Deactivation flush succeeds"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Deactivation releases bindings"), Runtime.GetBindingCount(), BindingsBefore);
+    TestEqual(TEXT("Deactivation cancels active tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore);
+
+    TestTrue(TEXT("Activation class can be restored"), RmlUE_SetNodeClass(View, Node, "active", 1) != 0);
+    TestTrue(TEXT("Reactivation flush succeeds"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Reactivation creates fresh bindings"), Runtime.GetBindingCount(), BindingsBefore + 2);
+    TestEqual(TEXT("Reactivation replays both tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    TestEqual(TEXT("Diagnostics retain matched activation history"), DiagnosticNumber(TEXT("matched")), 2.0);
+    TestEqual(TEXT("Diagnostics retain playback history"), DiagnosticNumber(TEXT("played")), 4.0);
+    TestTrue(TEXT("Explicit restart queues an active native rule"), Session->RequestRestart(Node));
+    TestTrue(TEXT("Explicit restart flushes without a class toggle"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Explicit restart preserves two live bindings"), Runtime.GetBindingCount(), BindingsBefore + 2);
+    TestEqual(TEXT("Explicit restart replaces two active tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    TestEqual(TEXT("Explicit restart creates a third activation"), DiagnosticNumber(TEXT("matched")), 3.0);
+    TestEqual(TEXT("Explicit restart plays two new tracks"), DiagnosticNumber(TEXT("played")), 6.0);
+
+    TestTrue(TEXT("Activated node can be removed"), RmlUE_RemoveNode(View, Node) != 0);
+    TestTrue(TEXT("Removed-node flush succeeds"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Removed node releases bindings"), Runtime.GetBindingCount(), BindingsBefore);
+    TestEqual(TEXT("Removed node cancels active tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore);
+
+    const RmlUE_Node Holder = RmlUE_FindNode(View, "holder");
+    TestTrue(TEXT("A matching subtree can be inserted"), Holder &&
+        RmlUE_SetNodeInnerRml(View, Holder, "<div class='motion active'>Nested motion</div>") != 0);
+    TestTrue(TEXT("Inserted-subtree activation flush succeeds"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Inserted descendant creates two bindings"), Runtime.GetBindingCount(), BindingsBefore + 2);
+    TestEqual(TEXT("Inserted descendant starts two tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore + 2);
+    TestTrue(TEXT("The matching subtree can be replaced"), RmlUE_SetNodeInnerRml(View, Holder, "") != 0);
+    TestTrue(TEXT("Replaced-subtree cleanup flush succeeds"), Session->FlushActivationChanges(Error));
+    TestEqual(TEXT("Replaced descendant releases bindings"), Runtime.GetBindingCount(), BindingsBefore);
+    TestEqual(TEXT("Replaced descendant cancels tracks"), Runtime.GetActiveAnimationCount(), ActiveBefore);
+    delete Session;
+    TestEqual(TEXT("Session release frees shared definitions"), Runtime.GetDefinitionCount(), DefinitionsBefore);
+    RmlUE_DestroyView(View);
+
+    RmlUE_View* AncestorView = RmlUE_CreateSlateView(240, 120, 1.0f);
+    const bool bAncestorLoaded = AncestorView && RmlUE_LoadDocumentFromMemory(AncestorView,
+        "<rml><head><style>body { font-family:LatoLatin; }</style></head><body><div id='ancestor'><span id='child' class='motion'>Motion</span></div></body></rml>",
+        "activation-ancestor.rml") != 0;
+    TestTrue(TEXT("Ancestor selector fixture loads"), bAncestorLoaded);
+    if (bAncestorLoaded)
+    {
+        IRmlUiCssAnimationSession* AncestorSession = CreateRmlUiCssAnimationSession();
+        const FString AncestorManifest = Manifest.Replace(TEXT(".motion.active"), TEXT(".open .motion"));
+        FString AncestorError;
+        TestTrue(TEXT("Descendant selector installs"), AncestorSession->Install(AncestorManifest, AncestorView, AncestorError));
+        TestTrue(TEXT("Initial descendant selector flush succeeds"), AncestorSession->FlushActivationChanges(AncestorError));
+        const RmlUE_Node Ancestor = RmlUE_FindNode(AncestorView, "ancestor");
+        TestTrue(TEXT("Ancestor class activates descendant"), Ancestor && RmlUE_SetNodeClass(AncestorView, Ancestor, "open", 1));
+        TestTrue(TEXT("Ancestor activation flush succeeds"), AncestorSession->FlushActivationChanges(AncestorError));
+        TestEqual(TEXT("Ancestor activation binds descendant tracks"), Runtime.GetBindingCount(), BindingsBefore + 2);
+        TestTrue(TEXT("Ancestor class deactivates descendant"), RmlUE_SetNodeClass(AncestorView, Ancestor, "open", 0) != 0);
+        TestTrue(TEXT("Ancestor deactivation flush succeeds"), AncestorSession->FlushActivationChanges(AncestorError));
+        TestEqual(TEXT("Ancestor deactivation releases descendant tracks"), Runtime.GetBindingCount(), BindingsBefore);
+        delete AncestorSession;
+
+        IRmlUiCssAnimationSession* AttributeSession = CreateRmlUiCssAnimationSession();
+        const FString AttributeManifest = Manifest.Replace(TEXT(".motion.active"), TEXT("[data-state='open'] .motion"));
+        FString AttributeError;
+        TestTrue(TEXT("Attribute descendant selector installs"), AttributeSession->Install(AttributeManifest, AncestorView, AttributeError));
+        TestTrue(TEXT("Initial attribute selector flush succeeds"), AttributeSession->FlushActivationChanges(AttributeError));
+        TestTrue(TEXT("Ancestor attribute activates descendant"),
+            RmlUE_SetNodeAttribute(AncestorView, Ancestor, "data-state", "open") != 0);
+        TestTrue(TEXT("Attribute activation flush succeeds"), AttributeSession->FlushActivationChanges(AttributeError));
+        TestEqual(TEXT("Attribute activation binds descendant tracks"), Runtime.GetBindingCount(), BindingsBefore + 2);
+        TestTrue(TEXT("Ancestor attribute deactivates descendant"),
+            RmlUE_SetNodeAttribute(AncestorView, Ancestor, "data-state", "closed") != 0);
+        TestTrue(TEXT("Attribute deactivation flush succeeds"), AttributeSession->FlushActivationChanges(AttributeError));
+        TestEqual(TEXT("Attribute deactivation releases descendant tracks"), Runtime.GetBindingCount(), BindingsBefore);
+        delete AttributeSession;
+    }
+    if (AncestorView) RmlUE_DestroyView(AncestorView);
+    TestEqual(TEXT("Ancestor fixture releases definitions"), Runtime.GetDefinitionCount(), DefinitionsBefore);
     return true;
 }
 

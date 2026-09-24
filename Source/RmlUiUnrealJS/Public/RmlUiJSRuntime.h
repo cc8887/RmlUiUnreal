@@ -8,6 +8,7 @@
 class URmlUiWidget;
 class SRmlUiWidget;
 class IHttpRequest;
+class IRmlUiCssAnimationSession;
 
 UCLASS(BlueprintType)
 class RMLUIUNREALJS_API URmlUiJSRuntime : public UObject
@@ -33,6 +34,7 @@ public:
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Updates") void Rollback();
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Updates") void FetchUpdate(const FString& ManifestUrl);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript") URmlUiJSContext* GetContext() const { return Active; }
+    UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Diagnostics") FString GetCssAnimationDiagnostics() const;
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript") bool RegisterService(const FString& Name, UObject* Service);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript") bool UnregisterService(const FString& Name);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript") void ClearServices();
@@ -63,6 +65,7 @@ private:
     bool bAdvancing = false;
     TArray<TSharedPtr<IHttpRequest, ESPMode::ThreadSafe>> Requests;
     uint32 DownloadGeneration = 0;
+    IRmlUiCssAnimationSession* CssAnimationSession = nullptr;
     struct FHostRequest { TWeakObjectPtr<URmlUiJSContext> Context; int32 LocalId; };
     TMap<int32, FHostRequest> HostRequests;
     int32 NextHostRequest = 0;

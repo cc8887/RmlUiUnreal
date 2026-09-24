@@ -29,6 +29,7 @@ TSharedRef<SWidget> URmlUiWidget::RebuildWidget()
         .UsePaintCache(true)
         .BaseStyleSheet(GetBaseStyleSheet())
         .OnDocumentEvent(FOnSlateRmlUiDocumentEvent::CreateUObject(this, &URmlUiWidget::HandleDocumentEvent));
+    OnDocumentLoaded(MyRmlWidget->GetNativeView() != nullptr && MyRmlWidget->GetLastError().IsEmpty());
     MyInvalidationPanel = SNew(SInvalidationPanel)
         .DebugName(TEXT("RmlUi Document Paint Cache"))
         [
@@ -54,13 +55,15 @@ void URmlUiWidget::SynchronizeProperties()
                         MyRmlWidget->TrackMaterialTexture(Pair.Key, Binding.Key, Texture);
         }
         MyRmlWidget->SetBaseStyleSheet(GetBaseStyleSheet());
-        if (InlineDocument.IsEmpty()) MyRmlWidget->LoadDocument(DocumentPath);
+        bool bLoaded = false;
+        if (InlineDocument.IsEmpty()) bLoaded = MyRmlWidget->LoadDocument(DocumentPath);
         else
         {
             FString PreparedDocument;
             if (PrepareDocumentMarkup(InlineDocument, InlineSourcePath, PreparedDocument))
-                MyRmlWidget->LoadDocumentFromString(PreparedDocument, InlineSourcePath);
+                bLoaded = MyRmlWidget->LoadDocumentFromString(PreparedDocument, InlineSourcePath);
         }
+        OnDocumentLoaded(bLoaded);
     }
 }
 
@@ -77,7 +80,9 @@ bool URmlUiWidget::LoadDocument(const FString& Path)
     InlineDocument.Reset();
     InlineSourcePath.Reset();
     TakeWidget();
-    return MyRmlWidget.IsValid() && MyRmlWidget->LoadDocument(Path);
+    const bool bLoaded = MyRmlWidget.IsValid() && MyRmlWidget->LoadDocument(Path);
+    OnDocumentLoaded(bLoaded);
+    return bLoaded;
 }
 
 bool URmlUiWidget::LoadDocumentFromString(const FString& Markup, const FString& SourcePath)
@@ -88,13 +93,17 @@ bool URmlUiWidget::LoadDocumentFromString(const FString& Markup, const FString& 
     InlineSourcePath = SourcePath;
     DocumentPath.Reset();
     TakeWidget();
-    return MyRmlWidget.IsValid() && MyRmlWidget->LoadDocumentFromString(PreparedDocument, SourcePath);
+    const bool bLoaded = MyRmlWidget.IsValid() && MyRmlWidget->LoadDocumentFromString(PreparedDocument, SourcePath);
+    OnDocumentLoaded(bLoaded);
+    return bLoaded;
 }
 
 bool URmlUiWidget::ReloadDocument()
 {
     TakeWidget();
-    return MyRmlWidget.IsValid() && MyRmlWidget->ReloadDocument();
+    const bool bLoaded = MyRmlWidget.IsValid() && MyRmlWidget->ReloadDocument();
+    OnDocumentLoaded(bLoaded);
+    return bLoaded;
 }
 
 bool URmlUiWidget::SetElementInnerRml(const FString& Id, const FString& Rml)

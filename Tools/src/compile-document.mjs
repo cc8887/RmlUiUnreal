@@ -37,12 +37,21 @@ export async function compileDocumentFile(inputPath, outputPath, options = {}) {
   const source = await readFile(input, 'utf8');
   const inline = compileMarkupTree(source, input, { ...options, allowLinkedStyles: true });
   const { document, diagnostics } = inline;
+  const motionRules = [];
+  const motionPlayStates = [];
   const capabilityRecords = [inline.capabilities];
   const emittedFiles = [];
   const pendingFiles = [];
 
-  const links = findAll((node) => node.type === 'tag' && localStylesheetHref(node), document.children);
-  for (const link of links) {
+  const styleSources = findAll((node) => node.type === 'tag' &&
+    (node.name?.toLowerCase() === 'style' || localStylesheetHref(node)), document.children);
+  for (const link of styleSources) {
+    if (link.name?.toLowerCase() === 'style') {
+      const motion = inline.motionByStyle.get(link);
+      motionRules.push(...(motion?.rules ?? []));
+      motionPlayStates.push(...(motion?.playStates ?? []));
+      continue;
+    }
     const href = localStylesheetHref(link);
     const sourceCssPath = path.resolve(path.dirname(input), href);
     const relativeCssPath = path.relative(path.dirname(input), sourceCssPath);
@@ -54,6 +63,8 @@ export async function compileDocumentFile(inputPath, outputPath, options = {}) {
     const result = compileCss(cssSource, { ...options, from: sourceCssPath });
     diagnostics.push(...result.diagnostics);
     capabilityRecords.push(result.capabilities);
+    motionRules.push(...result.motionManifest.rules);
+    motionPlayStates.push(...(result.motionManifest.playStates ?? []));
     const outputCssPath = path.resolve(path.dirname(output), relativeCssPath);
     pendingFiles.push([outputCssPath, result.css]);
     emittedFiles.push({ path: outputCssPath, sha256: hash(result.css) });
@@ -67,7 +78,10 @@ export async function compileDocumentFile(inputPath, outputPath, options = {}) {
   emittedFiles.unshift({ path: output, sha256: hash(outputMarkup) });
   const manifestPath = `${output}.webcompat.json`;
   const capabilities = mergeCapabilities(options.profile ?? 'legacy', capabilityRecords, options.requiredFeatures);
-  const manifest = `${JSON.stringify({ schemaVersion: 1, input, inputSha256: hash(source), emittedFiles, diagnostics, capabilities }, null, 2)}\n`;
+  const motionManifest = motionPlayStates.length
+    ? { schemaVersion: 1, rules: motionRules, playStates: motionPlayStates }
+    : { schemaVersion: 1, rules: motionRules };
+  const manifest = `${JSON.stringify({ schemaVersion: 1, input, inputSha256: hash(source), emittedFiles, diagnostics, capabilities, motionManifest }, null, 2)}\n`;
   await writeIfChanged(manifestPath, manifest);
-  return { output, manifestPath, diagnostics, emittedFiles, capabilities };
+  return { output, manifestPath, diagnostics, emittedFiles, capabilities, motionManifest };
 }

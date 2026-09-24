@@ -18,9 +18,12 @@ test('actual SFC bundle has reproducible content-addressed versions and complete
   const first = await buildFrontend({ outputRoot, activate: false }), second = await buildFrontend({ outputRoot, activate: false });
   assert.equal(first.version, second.version);
   const manifest = JSON.parse(await readFile(path.join(first.directory, 'manifest.json'), 'utf8'));
+  const motionManifest = JSON.parse(await readFile(path.join(first.directory, manifest.motionManifest), 'utf8'));
   assert.equal(manifest.capabilities.profile, 'dx11-compat');
   assert.equal(manifest.capabilities.minimumHostAbi, 2);
   assert.ok(manifest.capabilities.requiredFeatures.includes('css.grid'));
+  assert.equal(manifest.motionManifest, 'motion-manifest.json');
+  assert.equal(motionManifest.schemaVersion, 1);
   await assert.rejects(readFile(path.join(outputRoot, 'current.json')), { code: 'ENOENT' });
   for (const [name, expected] of Object.entries(manifest.files)) {
     assert.match(name, /^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/, 'manifest paths follow the native runtime contract');
@@ -37,6 +40,8 @@ test('actor observer compiles Tailwind utilities into the supported RmlUi CSS su
   const result = await buildFrontend({ actors: true, outputRoot, activate: false });
   const css = await readFile(path.join(result.directory, 'app.rcss'), 'utf8');
   const source = await readFile(path.join(result.directory, 'app.js'), 'utf8');
+  const manifest = JSON.parse(await readFile(path.join(result.directory, 'manifest.json'), 'utf8'));
+  const motionManifest = JSON.parse(await readFile(path.join(result.directory, manifest.motionManifest), 'utf8'));
   assert.match(css, /\.grid-cols-3/);
   assert.match(css, /minmax\(0px,\s*1fr\)/);
   assert.ok(css.includes('var(--tw-'), 'Tailwind runtime tokens are retained');
@@ -69,6 +74,28 @@ test('actor observer compiles Tailwind utilities into the supported RmlUi CSS su
   assert.ok(source.includes('animation-spring-replay'));
   assert.ok(source.includes('animation-official-view-tab'));
   assert.ok(source.includes('animation-official-examples'));
+  assert.ok(source.includes('css-motion-view-tab'));
+  assert.ok(source.includes('native-css-animation-showcase'));
+  assert.ok(source.includes('css-motion-replay'));
+  assert.ok(source.includes('css-control-pause'));
+  assert.ok(source.includes('css-control-duplicate'));
+  assert.ok(source.includes('css-control-rebind'));
+  assert.ok(source.includes('RestartCssAnimation'));
+  assert.equal(motionManifest.rules.length, 5);
+  assert.ok(motionManifest.rules.every(rule => rule.requiredOnLoad === true));
+  assert.equal(motionManifest.rules.reduce((count, rule) => count + rule.tracks.length, 0), 10);
+  assert.deepEqual(motionManifest.rules.slice(0, 4).map(rule => rule.delay), [0.2, 0.55, 0.9, 1.25]);
+  assert.ok(motionManifest.rules.slice(0, 4).every(rule => rule.duration === 2.8));
+  assert.ok(motionManifest.rules.slice(0, 4).every(rule => rule.selector.startsWith('.css-motion-run.css-motion-item-')));
+  assert.deepEqual({ selector: motionManifest.rules[4].selector, delay: motionManifest.rules[4].delay,
+    iterations: motionManifest.rules[4].iterations, direction: motionManifest.rules[4].direction },
+  { selector: '.css-control-loop', delay: -0.55, iterations: 0, direction: 2 });
+  assert.deepEqual(motionManifest.playStates.slice(-2), [
+    { selector: '.css-control-loop', paused: false },
+    { selector: '.css-control-paused', paused: true },
+  ]);
+  assert.doesNotMatch(css, /@keyframes css-motion-rise/);
+  assert.doesNotMatch(css, /animation-name:\s*css-motion-rise/);
   assert.ok(source.includes('CSS compiler'));
   assert.ok(source.includes('animation adapter'));
   assert.ok(source.includes('Compatibility routes'));

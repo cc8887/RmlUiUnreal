@@ -8,6 +8,9 @@ export function compileMarkupTree(source, from, options = {}) {
   const document = parseDocument(source, { xmlMode: true, lowerCaseAttributeNames: false, lowerCaseTags: false, withStartIndices: true });
   const diagnostics = [];
   const capabilities = [];
+  const motionRules = [];
+  const motionPlayStates = [];
+  const motionByStyle = new Map();
   const styleNodes = findAll((node) => node.type === 'tag' && node.name?.toLowerCase() === 'style', document.children);
   for (const style of styleNodes) {
     const cssText = style.children?.map((node) => node.data ?? '').join('') ?? '';
@@ -15,6 +18,9 @@ export function compileMarkupTree(source, from, options = {}) {
     const result = compileCss(cssText, { ...options, from, lineOffset: prefix.split('\n').length - 1 });
     diagnostics.push(...result.diagnostics);
     capabilities.push(result.capabilities);
+    motionRules.push(...result.motionManifest.rules);
+    motionPlayStates.push(...(result.motionManifest.playStates ?? []));
+    motionByStyle.set(style, result.motionManifest);
     style.children = [{ type: 'text', data: result.css, parent: style, prev: null, next: null }];
   }
   if (options.profile && options.profile !== 'legacy') {
@@ -29,10 +35,18 @@ export function compileMarkupTree(source, from, options = {}) {
       const result = compileCss(`.__inline { ${node.attribs.style} }`, { ...options, from, lineOffset: prefix.split('\n').length - 1 });
       diagnostics.push(...result.diagnostics);
       capabilities.push(result.capabilities);
+      if (result.motionManifest.playStates?.length || result.motionManifest.rules.length) {
+        diagnostics.push({ severity: 'error', classification: 'rejected', code: 'unsupported-inline-motion-manifest',
+          message: 'Native animation controls in a style attribute have no stable element selector; move them to a CSS rule.',
+          source: from, line: prefix.split('\n').length, column: 1, selector: '', property: 'style', value: node.attribs.style });
+      }
       node.attribs.style = result.css.slice(result.css.indexOf('{') + 1, result.css.lastIndexOf('}')).trim();
     }
   }
-  return { document, diagnostics, capabilities: mergeCapabilities(options.profile ?? 'legacy', capabilities, options.requiredFeatures) };
+  return { document, diagnostics, motionByStyle, capabilities: mergeCapabilities(options.profile ?? 'legacy', capabilities, options.requiredFeatures),
+    motionManifest: motionPlayStates.length
+      ? { schemaVersion: 1, rules: motionRules, playStates: motionPlayStates }
+      : { schemaVersion: 1, rules: motionRules } };
 }
 
 export function throwDiagnostics(diagnostics) {
@@ -44,7 +58,7 @@ export function throwDiagnostics(diagnostics) {
 
 export function compileDocumentMarkup(source, options = {}) {
   const from = options.from ?? 'memory.html';
-  const { document, diagnostics, capabilities } = compileMarkupTree(source, from, options);
+  const { document, diagnostics, capabilities, motionManifest } = compileMarkupTree(source, from, options);
   throwDiagnostics(diagnostics);
-  return { markup: render(document, { xmlMode: true, encodeEntities: false }), diagnostics, capabilities };
+  return { markup: render(document, { xmlMode: true, encodeEntities: false }), diagnostics, capabilities, motionManifest };
 }

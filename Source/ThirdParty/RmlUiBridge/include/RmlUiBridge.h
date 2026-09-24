@@ -47,6 +47,19 @@ typedef struct RmlUE_NodeEvent {
 // Bit 4 suppresses the following Enter text character; this is a text-input bridge operation.
 typedef int (*RmlUE_NodeEventCallback)(void* User, uint32_t Listener, const RmlUE_NodeEvent* Event);
 
+// Synchronous owner-thread notification emitted by selector-relevant public tree
+// mutation APIs (class/id and operations that replace or move a subtree).
+// The callback must only record work; layout, queries, and further mutations must be
+// deferred until the host's normal update boundary.
+enum {
+    RMLUE_NODE_MUTATION_SELF = 1u << 0,
+    RMLUE_NODE_MUTATION_SUBTREE = 1u << 1,
+    RMLUE_NODE_MUTATION_BEFORE = 1u << 2,
+    RMLUE_NODE_MUTATION_AFTER = 1u << 3,
+    RMLUE_NODE_MUTATION_SELECTOR_CONTEXT = 1u << 4
+};
+typedef void (*RmlUE_NodeMutationCallback)(void* User, RmlUE_Node Node, uint32_t Flags);
+
 // Handles are process-unique positive int32 values, never pointers. Destroyed
 // nodes, replaced documents and handles belonging to another view are rejected.
 RMLUE_API RmlUE_Node RmlUE_GetRootNode(RmlUE_View* View);
@@ -69,17 +82,19 @@ RMLUE_API int RmlUE_SetNodeInnerRml(RmlUE_View* View, RmlUE_Node Node, const cha
 RMLUE_API int RmlUE_ListenNode(RmlUE_View* View, RmlUE_Node Node, const char* Type, uint32_t Listener, int Capture);
 RMLUE_API void RmlUE_UnlistenNode(RmlUE_View* View, uint32_t Listener);
 RMLUE_API void RmlUE_SetNodeEventCallback(RmlUE_View* View, RmlUE_NodeEventCallback Callback, void* User);
+RMLUE_API void RmlUE_SetNodeMutationCallback(RmlUE_View* View, RmlUE_NodeMutationCallback Callback, void* User);
 RMLUE_API int RmlUE_Update(RmlUE_View* View);
 RMLUE_API void RmlUE_GetNodeCounts(RmlUE_View* View, int* Nodes, int* Listeners);
 RMLUE_API int RmlUE_ScrollNode(RmlUE_View* View, RmlUE_Node Node, float Top);
 RMLUE_API float RmlUE_NodeScrollRemaining(RmlUE_View* View, RmlUE_Node Node);
 RMLUE_API int RmlUE_FocusNode(RmlUE_View* View, RmlUE_Node Node);
 
-#define RMLUE_HOST_ABI_VERSION 5u
+#define RMLUE_HOST_ABI_VERSION 7u
 RMLUE_API uint32_t RmlUE_GetHostAbiVersion(void);
 RMLUE_API RmlUE_Node RmlUE_QueryNode(RmlUE_View* View, RmlUE_Node Root, const char* Selector);
 // Returns total count; writes at most Capacity entries. -1 indicates invalid input.
 RMLUE_API int RmlUE_QueryNodes(RmlUE_View* View, RmlUE_Node Root, const char* Selector, RmlUE_Node* Nodes, int Capacity);
+RMLUE_API int RmlUE_MatchesNode(RmlUE_View* View, RmlUE_Node Node, const char* Selector);
 RMLUE_API int RmlUE_ChildNodes(RmlUE_View* View, RmlUE_Node Parent, RmlUE_Node* Nodes, int Capacity);
 RMLUE_API int RmlUE_ContainsNode(RmlUE_View* View, RmlUE_Node Parent, RmlUE_Node Child);
 RMLUE_API RmlUE_Node RmlUE_ActiveNode(RmlUE_View* View);

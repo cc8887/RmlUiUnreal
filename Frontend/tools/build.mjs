@@ -104,10 +104,18 @@ export async function buildFrontend({ chat = false, actors = false, outputRoot, 
   }
   const compiledStyles = [...styles].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, value]) => value);
   const css = compiledStyles.map(value => value.css).join('\n');
+  const motionRules = compiledStyles.flatMap(value => value.motionManifest.rules).map(rule =>
+    actors && (rule.selector.startsWith('.css-motion-run.css-motion-item-') || rule.selector === '.css-control-loop')
+      ? { ...rule, requiredOnLoad: true } : rule);
+  const motionPlayStates = compiledStyles.flatMap(value => value.motionManifest.playStates ?? []);
+  const motionManifest = motionPlayStates.length
+    ? { schemaVersion: 1, rules: motionRules, playStates: motionPlayStates }
+    : { schemaVersion: 1, rules: motionRules };
   const diagnostics = compiledStyles.flatMap(value => value.diagnostics);
   const capabilities = { ...mergeCapabilities(profile, compiledStyles.map(value => value.capabilities), requiredFeatures), diagnostics: 'compile-diagnostics.json' };
   files.set('compile-diagnostics.json', Buffer.from(JSON.stringify({ schemaVersion: 1, capabilities, diagnostics }, null, 2)));
   files.set('app.rcss', Buffer.from(css));
+  files.set('motion-manifest.json', Buffer.from(`${JSON.stringify(motionManifest, null, 2)}\n`));
   files.set('shell.rml', Buffer.from('<rml><head><title>Vue RmlUi</title><link type="text/rcss" href="app.rcss"/></head><body/></rml>'));
   const content = path.resolve(root, '../Content/RmlUi');
   files.set('hello_world.png', await readFile(path.join(content, 'hello_world.png')));
@@ -132,7 +140,7 @@ export async function buildFrontend({ chat = false, actors = false, outputRoot, 
   await mkdir(directory, { recursive: true });
   const digests = {};
   for (const [name, bytes] of files) { await mkdir(path.dirname(path.join(directory, name)), { recursive: true }); await writeFile(path.join(directory, name), bytes); digests[name] = hash(bytes); }
-  await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ format: 1, abi: 1, stateSchema: 1, version, entry: 'app.js', document: 'shell.rml', fonts, files: digests, capabilities }, null, 2));
+  await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ format: 1, abi: 1, stateSchema: 1, version, entry: 'app.js', document: 'shell.rml', motionManifest: 'motion-manifest.json', fonts, files: digests, capabilities }, null, 2));
   if (activate) {
     const temporary = path.join(output, `current.${randomUUID()}.tmp`);
     await writeFile(temporary, JSON.stringify({ manifest: `versions/${version}/manifest.json` }, null, 2));

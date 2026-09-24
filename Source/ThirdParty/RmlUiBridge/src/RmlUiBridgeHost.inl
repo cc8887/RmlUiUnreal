@@ -243,7 +243,10 @@ int RmlUE_GetComputedProperty(RmlUE_View* View, RmlUE_Node Node, const char* Nam
 int RmlUE_SetNodeClass(RmlUE_View* View, RmlUE_Node Node, const char* Name, int Enabled)
 {
     auto* Element = GetNode(View, Node); if (!Element || !Name || !*Name || std::strpbrk(Name, " \t\n\r")) return 0;
-    Element->SetClass(Name, Enabled != 0); View->MarkContentDirty(); return 1;
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_BEFORE);
+    Element->SetClass(Name, Enabled != 0);
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_AFTER);
+    View->MarkContentDirty(); return 1;
 }
 int RmlUE_SetModalRoot(RmlUE_View* View, RmlUE_Node Root, RmlUE_Node InitialFocus)
 {

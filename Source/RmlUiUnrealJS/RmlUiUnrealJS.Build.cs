@@ -7,7 +7,7 @@ public class RmlUiUnrealJS : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "RmlUiUnreal", "JsEnv" });
-        PrivateDependencyModuleNames.AddRange(new[] { "Slate", "SlateCore", "UMG", "Projects", "Json", "HTTP", "ApplicationCore" });
+        PrivateDependencyModuleNames.AddRange(new[] { "Slate", "SlateCore", "UMG", "Projects", "Json", "HTTP", "ApplicationCore", "RmlUiUnrealWebCompat" });
         PublicSystemLibraries.Add("bcrypt.lib");
         ExternalDependencies.Add(Path.Combine(PluginDirectory, "Content", "Vue", "current.json"));
         ExternalDependencies.Add(Path.Combine(PluginDirectory, "Content", "Chat", "current.json"));

@@ -50,6 +50,7 @@ struct Fixture
     ~Fixture()
     {
         RmlUE_SetNodeEventCallback(View, nullptr, nullptr);
+        RmlUE_SetNodeMutationCallback(View, nullptr, nullptr);
         RmlUE_SetLayoutCallback(View, nullptr, nullptr);
         RmlUE_DestroyView(View);
     }
@@ -82,6 +83,52 @@ struct Fixture
         RmlUE_Frame Frame{}; Require(RmlUE_Render(View, &Frame) != 0, "render actual DX11 pixels"); return Frame;
     }
 };
+
+struct MutationRecord { RmlUE_Node Node = 0; uint32_t Flags = 0; };
+struct MutationLog { std::vector<MutationRecord> Items; };
+static void OnMutation(void* User, RmlUE_Node Node, uint32_t Flags)
+{
+    static_cast<MutationLog*>(User)->Items.push_back({Node, Flags});
+}
+
+static void TestNodeMutationCallbacks()
+{
+    Fixture F("<rml><body><div id='holder'><span id='victim' class='motion'/></div></body></rml>");
+    const auto Holder = F.Node("holder"), Victim = F.Node("victim");
+    MutationLog Log;
+    RmlUE_SetNodeMutationCallback(F.View, OnMutation, &Log);
+    Require(RmlUE_SetNodeClass(F.View, Victim, "active", 1) && Log.Items.size() == 2 &&
+        Log.Items[0].Flags == (RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_BEFORE) &&
+        Log.Items[1].Flags == (RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_AFTER),
+        "class mutation brackets computed-style capture");
+    Require(RmlUE_SetNodeAttribute(F.View, Victim, "id", "renamed") && Log.Items.size() == 4 &&
+        Log.Items[2].Flags == (RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_BEFORE) &&
+        Log.Items[3].Flags == (RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_AFTER),
+        "id attribute mutation brackets computed-style capture");
+    Require(RmlUE_SetNodeAttribute(F.View, Victim, "data-state", "open") && Log.Items.size() == 6 &&
+        Log.Items[4].Flags == (RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_BEFORE) &&
+        Log.Items[5].Flags == (RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_SELECTOR_CONTEXT | RMLUE_NODE_MUTATION_AFTER),
+        "data attribute mutation invalidates native selector matches");
+    const auto Inserted = RmlUE_CreateNode(F.View, 0, "div");
+    Require(RmlUE_InsertNode(F.View, Inserted, Holder, 0) && Log.Items.size() == 7 &&
+        Log.Items.back().Flags == (RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_AFTER),
+        "insert emits one post-mutation subtree notification");
+    Require(RmlUE_SetNodeInnerRml(F.View, Inserted, "<span class='motion'/>") && Log.Items.size() == 9 &&
+        Log.Items[7].Flags == (RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_BEFORE) &&
+        Log.Items[8].Flags == (RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_AFTER),
+        "node inner-RML replacement brackets invalidation with subtree notifications");
+    Require(RmlUE_SetInnerRml(F.View, "holder", "<span id='legacy'/>") && Log.Items.size() == 11 &&
+        Log.Items[9].Node == Holder && Log.Items[10].Node == Holder,
+        "legacy inner-RML mutation uses the same observed path");
+    const auto Legacy = F.Node("legacy");
+    Require(RmlUE_RemoveNode(F.View, Legacy) && Log.Items.size() == 12 &&
+        Log.Items.back().Node == Legacy && Log.Items.back().Flags == (RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_BEFORE),
+        "remove reports the subtree before handles become stale");
+    RmlUE_SetNodeMutationCallback(F.View, nullptr, nullptr);
+    Require(RmlUE_SetNodeClass(F.View, Holder, "quiet", 1) && Log.Items.size() == 12,
+        "unregistered mutation callback receives no further events");
+    std::fprintf(stderr, "PASS observed public node mutations\n");
+}
 
 static void TestVariablesAndNodes()
 {
@@ -117,6 +164,8 @@ body { margin:0; width:640px; height:480px; font-family:LatoLatin; background-co
     RmlUE_Node Matches[3]{0, 0, 0xabcdefu};
     Require(RmlUE_QueryNodes(F.View, Root, ".item", Matches, 1) == 2 && Matches[0] == Inherited && Matches[1] == 0, "bounded query returns full count without overwriting capacity");
     Require(RmlUE_QueryNodes(F.View, Root, ".item", Matches, 2) == 2 && Matches[1] == Overridden && Matches[2] == 0xabcdefu, "query maintains DOM order and buffer boundary");
+    Require(RmlUE_MatchesNode(F.View, Inherited, ".item") == 1 && RmlUE_MatchesNode(F.View, Inherited, "#branch") == 0,
+        "single-node selector matching avoids a document query");
     Require(RmlUE_ContainsNode(F.View, Root, Overridden) && RmlUE_ContainsNode(F.View, Branch, Branch), "contains includes self and descendants");
     Require(!RmlUE_ContainsNode(F.View, Branch, Inherited), "contains rejects sibling subtree");
     Require(RmlUE_ChildNodes(F.View, Branch, Matches, 2) == 1 && Matches[0] == Overridden, "children returns direct DOM children");
@@ -1236,6 +1285,7 @@ int main(int Count, char** Arguments)
     const std::string Suite = Count > 3 ? Arguments[3] : "all";
     Require(Suite == "all" || Suite == "nodes" || Suite == "measure" || Suite == "modal" || Suite == "pointer" || Suite == "animation" || Suite == "float-batch" || Suite == "targets" || Suite == "visual-batch" || Suite == "capabilities", "known test suite");
     if (Suite == "all" || Suite == "nodes") TestVariablesAndNodes();
+    if (Suite == "all" || Suite == "nodes") TestNodeMutationCallbacks();
     if (Suite == "all" || Suite == "measure") TestMeasure();
     if (Suite == "all" || Suite == "modal") TestDefaultAndModal();
     if (Suite == "all" || Suite == "pointer") TestPointers();

@@ -1706,6 +1706,8 @@ struct RmlUE_View final : public Rml::EventListener {
     bool SuppressNextNewline = false;
     bool SuppressNextText = false;
     void* NodeUser = nullptr;
+    RmlUE_NodeMutationCallback MutationCallback = nullptr;
+    void* MutationUser = nullptr;
     int CallbackDepth = 0;
     bool Updating = false;
     bool StrictCapabilities = false;
@@ -1853,6 +1855,8 @@ struct RmlUE_View final : public Rml::EventListener {
         PointerDownTargets.clear();
         NodeCallback = nullptr;
         NodeUser = nullptr;
+        MutationCallback = nullptr;
+        MutationUser = nullptr;
         NodeListeners.clear();
         if (SlateRenderer)
             for (const auto& Pair : Nodes) { SlateRenderer->ClearVisualOpacity(Pair.first); SlateRenderer->ClearVisualBackgroundColor(Pair.first); }
@@ -1861,6 +1865,12 @@ struct RmlUE_View final : public Rml::EventListener {
     }
     void MarkContentDirty() {
         if (SlateRenderer) SlateRenderer->MarkContentDirty();
+    }
+    void NotifyMutation(RmlUE_Node Node, uint32_t Flags) {
+        if (!MutationCallback || !Node) return;
+        ++CallbackDepth;
+        MutationCallback(MutationUser, Node, Flags);
+        --CallbackDepth;
     }
 
     void ProcessEvent(Rml::Event& Event) override
@@ -2414,6 +2424,11 @@ int RmlUE_IsNodeValid(RmlUE_View* View, RmlUE_Node Node)
     auto Found = View->Nodes.find(Node);
     return Found != View->Nodes.end() && Found->second.Element ? 1 : 0;
 }
+int RmlUE_MatchesNode(RmlUE_View* View, RmlUE_Node Node, const char* Selector)
+{
+    auto* Element = GetNode(View, Node);
+    return Element && Selector && *Selector && Element->Matches(Selector) ? 1 : 0;
+}
 RmlUE_Node RmlUE_CreateNode(RmlUE_View* View, int Kind, const char* TagOrText)
 {
     if (!ValidView(View) || !View->Document || !TagOrText || Kind < 0 || Kind > 2) return 0;
@@ -2440,6 +2455,7 @@ int RmlUE_InsertNode(RmlUE_View* View, RmlUE_Node Node, RmlUE_Node Parent, RmlUE
     if (!Owned) return Fail("Node has no transferable owner.");
     if (Anchor) ParentElement->InsertBefore(std::move(Owned), Anchor);
     else ParentElement->AppendChild(std::move(Owned));
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_AFTER);
     View->MarkContentDirty();
     return 1;
 }
@@ -2448,6 +2464,7 @@ int RmlUE_RemoveNode(RmlUE_View* View, RmlUE_Node Node)
     auto* Element = GetNode(View, Node);
     if (!Element) return 0;
     if (Element == View->Document) return Fail("Cannot remove the document root.");
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_BEFORE);
     CancelPointerCaptures(View, Element);
     if (View->ModalRoot && Element->Contains(View->ModalRoot.get())) View->ModalRoot = nullptr;
     if (auto* Parent = Element->GetParentNode()) { auto Removed = Parent->RemoveChild(Element); }
@@ -2469,8 +2486,11 @@ int RmlUE_SetNodeText(RmlUE_View* View, RmlUE_Node Node, const char* Text)
     auto* Element = GetNode(View, Node); if (!Element || !Text) return 0;
     if (auto* TextNode = rmlui_dynamic_cast<Rml::ElementText*>(Element)) TextNode->SetText(Text);
     else {
+        View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_BEFORE);
         Element->SetInnerRML("");
         if (*Text) Element->AppendChild(View->Document->CreateTextNode(Text));
+        View->PruneNodes();
+        View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_AFTER);
     }
     View->MarkContentDirty();
     return 1;
@@ -2488,8 +2508,12 @@ int RmlUE_SetNodeAttribute(RmlUE_View* View, RmlUE_Node Node, const char* Name, 
     if (Value && View->StrictCapabilities && _stricmp(Name, "style") == 0)
         return Fail("Strict capability mode requires SetNodeProperty for dynamic styles, not a style attribute.");
     const bool Boolean = std::strcmp(Name, "checked") == 0 || std::strcmp(Name, "selected") == 0 || std::strcmp(Name, "disabled") == 0;
+    const bool SelectorContext = _stricmp(Name, "style") != 0;
+    const uint32_t MutationFlags = RMLUE_NODE_MUTATION_SELF | (SelectorContext ? RMLUE_NODE_MUTATION_SELECTOR_CONTEXT : 0);
+    View->NotifyMutation(Node, MutationFlags | RMLUE_NODE_MUTATION_BEFORE);
     if (!Value || (Boolean && (std::strcmp(Value, "false") == 0 || std::strcmp(Value, "0") == 0))) Element->RemoveAttribute(Name);
     else Element->SetAttribute(Name, Rml::String(Value));
+    View->NotifyMutation(Node, MutationFlags | RMLUE_NODE_MUTATION_AFTER);
     View->MarkContentDirty();
     return 1;
 }
@@ -2507,9 +2531,14 @@ int RmlUE_GetNodeAttribute(RmlUE_View* View, RmlUE_Node Node, const char* Name, 
 int RmlUE_SetNodeProperty(RmlUE_View* View, RmlUE_Node Node, const char* Name, const char* Value)
 {
     auto* Element = GetNode(View, Node); if (!Element || !Name) return 0;
-    if (!Value) { Element->RemoveProperty(Name); View->MarkContentDirty(); return 1; }
-    if (!HostPropertyAllowed(View, Name, Value)) return 0;
-    if (!Element->SetProperty(Name, Value)) return Fail(std::string("Unsupported RmlUi property/value: ") + Name + ": " + Value);
+    if (Value && !HostPropertyAllowed(View, Name, Value)) return 0;
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_BEFORE);
+    if (!Value) { Element->RemoveProperty(Name); View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_AFTER); View->MarkContentDirty(); return 1; }
+    if (!Element->SetProperty(Name, Value)) {
+        View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_AFTER);
+        return Fail(std::string("Unsupported RmlUi property/value: ") + Name + ": " + Value);
+    }
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_AFTER);
     View->MarkContentDirty();
     return 1;
 }
@@ -2517,8 +2546,10 @@ int RmlUE_SetNodeInnerRml(RmlUE_View* View, RmlUE_Node Node, const char* Markup)
 {
     auto* Element = GetNode(View, Node);
     if (!Element || !Markup) return 0;
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_BEFORE);
     Element->SetInnerRML(Markup);
     View->PruneNodes();
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_AFTER);
     View->MarkContentDirty();
     return 1;
 }
@@ -2541,6 +2572,10 @@ void RmlUE_UnlistenNode(RmlUE_View* View, uint32_t Listener)
 void RmlUE_SetNodeEventCallback(RmlUE_View* View, RmlUE_NodeEventCallback Callback, void* User)
 {
     if (ValidView(View)) { View->NodeCallback = Callback; View->NodeUser = User; }
+}
+void RmlUE_SetNodeMutationCallback(RmlUE_View* View, RmlUE_NodeMutationCallback Callback, void* User)
+{
+    if (ValidView(View)) { View->MutationCallback = Callback; View->MutationUser = Callback ? User : nullptr; }
 }
 int RmlUE_Update(RmlUE_View* View)
 {
@@ -2599,12 +2634,24 @@ int RmlUE_PollEvent(RmlUE_View* View, RmlUE_Event* Event)
 int RmlUE_SetInnerRml(RmlUE_View* View, const char* Id, const char* Markup)
 {
     auto* Element = FindElement(View, Id); if (!Element || !Markup) return 0;
-    Element->SetInnerRML(Markup); View->MarkContentDirty(); return 1;
+    const RmlUE_Node Node = View->Track(Element);
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_BEFORE);
+    Element->SetInnerRML(Markup);
+    View->PruneNodes();
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SUBTREE | RMLUE_NODE_MUTATION_AFTER);
+    View->MarkContentDirty(); return 1;
 }
 int RmlUE_SetProperty(RmlUE_View* View, const char* Id, const char* Property, const char* Value)
 {
     auto* Element = FindElement(View, Id);
-    if (!Element || !Property || !Value || !HostPropertyAllowed(View, Property, Value) || !Element->SetProperty(Property, Value)) return 0;
+    if (!Element || !Property || !Value || !HostPropertyAllowed(View, Property, Value)) return 0;
+    const RmlUE_Node Node = View->Track(Element);
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_BEFORE);
+    if (!Element->SetProperty(Property, Value)) {
+        View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_AFTER);
+        return 0;
+    }
+    View->NotifyMutation(Node, RMLUE_NODE_MUTATION_SELF | RMLUE_NODE_MUTATION_AFTER);
     View->MarkContentDirty(); return 1;
 }
 int RmlUE_SetAttribute(RmlUE_View* View, const char* Id, const char* Attribute, const char* Value)
@@ -2613,8 +2660,13 @@ int RmlUE_SetAttribute(RmlUE_View* View, const char* Id, const char* Attribute, 
     if (View->StrictCapabilities && _stricmp(Attribute, "style") == 0)
         return Fail("Strict capability mode requires SetNodeProperty for dynamic styles, not a style attribute.");
     const bool BooleanAttribute = std::strcmp(Attribute, "checked") == 0 || std::strcmp(Attribute, "disabled") == 0 || std::strcmp(Attribute, "selected") == 0;
+    const RmlUE_Node Node = View->Track(Element);
+    const uint32_t MutationFlags = RMLUE_NODE_MUTATION_SELF |
+        (_stricmp(Attribute, "style") != 0 ? RMLUE_NODE_MUTATION_SELECTOR_CONTEXT : 0);
+    View->NotifyMutation(Node, MutationFlags | RMLUE_NODE_MUTATION_BEFORE);
     if (BooleanAttribute && (std::strcmp(Value, "false") == 0 || std::strcmp(Value, "0") == 0)) Element->RemoveAttribute(Attribute);
     else Element->SetAttribute(Attribute, Rml::String(Value));
+    View->NotifyMutation(Node, MutationFlags | RMLUE_NODE_MUTATION_AFTER);
     View->MarkContentDirty();
     return 1;
 }

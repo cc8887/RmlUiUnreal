@@ -123,12 +123,14 @@ static FTrackProgress EvaluateProgress(const TrackType& Track, double TimeSecond
     }
 
     const double Duration = FMath::Max(Track.DurationSeconds, UE_DOUBLE_SMALL_NUMBER);
-    const int32 Iterations = FMath::Max(Track.Iterations, 1);
-    const double TotalDuration = Duration * Iterations;
-    const bool bComplete = LocalTime >= TotalDuration;
-    const int32 IterationIndex = bComplete
-        ? Iterations - 1
-        : FMath::Clamp(FMath::FloorToInt(LocalTime / Duration), 0, Iterations - 1);
+    const bool bInfinite = Track.Iterations == 0;
+    const double TotalDuration = bInfinite
+        ? TNumericLimits<double>::Max() : Duration * Track.Iterations;
+    const bool bComplete = !bInfinite && LocalTime >= TotalDuration;
+    const double RawIteration = FMath::FloorToDouble(LocalTime / Duration);
+    const int64 IterationIndex = bComplete
+        ? static_cast<int64>(Track.Iterations - 1)
+        : FMath::Max<int64>(0, static_cast<int64>(FMath::Fmod(RawIteration, 2.0)));
     float Normalized = bComplete ? 1.0f : static_cast<float>(FMath::Fmod(LocalTime, Duration) / Duration);
     const ERmlUiAnimationDirection Direction = static_cast<ERmlUiAnimationDirection>(Track.Direction);
     const bool bReverse = Direction == ERmlUiAnimationDirection::Reverse ||
@@ -795,6 +797,7 @@ public:
         bool bHasLastValue = false;
         FRmlUiAnimationValueCallback OnValue;
         FRmlUiAnimationCompletionCallback OnComplete;
+        FRmlUiAnimationLifecycleCallback OnLifecycle;
         double OriginTimeSeconds = 0.0;
         double OriginLocalTimeSeconds = 0.0;
         double PlaybackRate = 1.0;
@@ -809,6 +812,8 @@ public:
         int32 LayeredGroupIndex = INDEX_NONE;
         int32 ContributionOrder = 0;
         bool bActive = false;
+        bool bLifecycleStarted = false;
+        int64 LastLifecycleIteration = 0;
     };
 
     struct FDefinitionRecord
@@ -882,6 +887,14 @@ public:
         FRmlUiAnimationCompletionCallback Callback;
     };
 
+    struct FLifecycleNotification
+    {
+        FRmlUiAnimationHandle Handle;
+        ERmlUiAnimationLifecyclePhase Phase = ERmlUiAnimationLifecyclePhase::Started;
+        int64 Iteration = 0;
+        FRmlUiAnimationLifecycleCallback Callback;
+    };
+
     static uint64 PackHandle(uint32 Index, uint32 Generation)
     {
         return (static_cast<uint64>(Generation) << 32) | (static_cast<uint64>(Index) + 1);
@@ -950,7 +963,7 @@ public:
                 !RmlUiAnimation::BuildFloatKeyframes(InDefinition.Keyframes, Property, BuiltKeyframes)) ||
             (InDefinition.Keyframes.IsEmpty() &&
                 (!FMath::IsFinite(InDefinition.From) || !FMath::IsFinite(InDefinition.To))) ||
-            InDefinition.DurationSeconds < 0.0 || InDefinition.Iterations <= 0 ||
+            InDefinition.DurationSeconds < 0.0 || InDefinition.Iterations < 0 ||
             !FMath::IsFinite(InDefinition.PlaybackRate) || InDefinition.PlaybackRate <= 0.0 ||
             !RmlUiAnimation::IsValidDirection(InDefinition.Direction) ||
             !RmlUiAnimation::IsValidFill(InDefinition.Fill) ||
@@ -976,7 +989,6 @@ public:
         Record.Float.Keyframes.Reset();
         Record.FloatKeyframes = MoveTemp(BuiltKeyframes);
         Record.TransformKeyframes.Reset();
-        Record.Float.DelaySeconds = FMath::Max(Record.Float.DelaySeconds, 0.0);
         Record.bActive = true;
         ++DefinitionCount;
         return {PackHandle(Index, Record.Generation)};
@@ -993,7 +1005,7 @@ public:
             (InDefinition.Keyframes.IsEmpty() &&
                 (!RmlUiAnimation::IsFiniteTransformValue(InDefinition.From) ||
                     !RmlUiAnimation::IsFiniteTransformValue(InDefinition.To))) ||
-            InDefinition.DurationSeconds < 0.0 || InDefinition.Iterations <= 0 ||
+            InDefinition.DurationSeconds < 0.0 || InDefinition.Iterations < 0 ||
             !FMath::IsFinite(InDefinition.PlaybackRate) || InDefinition.PlaybackRate <= 0.0 ||
             !RmlUiAnimation::IsValidDirection(InDefinition.Direction) ||
             !RmlUiAnimation::IsValidFill(InDefinition.Fill))
@@ -1010,7 +1022,6 @@ public:
         Record.Transform2D.Keyframes.Reset();
         Record.TransformKeyframes = MoveTemp(BuiltKeyframes);
         Record.FloatKeyframes.Reset();
-        Record.Transform2D.DelaySeconds = FMath::Max(Record.Transform2D.DelaySeconds, 0.0);
         Record.bActive = true;
         ++DefinitionCount;
         return {PackHandle(Index, Record.Generation)};
@@ -1180,6 +1191,7 @@ public:
         FRmlUiAnimationBindingHandle Binding,
         FRmlUiAnimationValueCallback OnValue,
         FRmlUiAnimationCompletionCallback OnComplete,
+        FRmlUiAnimationLifecycleCallback OnLifecycle,
         const FRmlUiAnimationContributionSpec* Contribution = nullptr)
     {
         check(IsInGameThread());
@@ -1226,12 +1238,14 @@ public:
             const RmlUiAnimation::FFloatKeyframe* Keyframes =
                 Definition->FloatKeyframes.IsEmpty() ? nullptr : Definition->FloatKeyframes.GetData();
             const int32 KeyframeCount = Definition->FloatKeyframes.Num();
-            return BindingRecord->bHasNativeTarget
+            const FRmlUiAnimationHandle Handle = BindingRecord->bHasNativeTarget
                 ? PlayNode(BindingRecord->NativeTarget.View, BindingRecord->NativeTarget.Node,
                     Definition->Property, Desc, MoveTemp(OnComplete), Binding,
                     &BindingRecord->NativeTarget, Keyframes, KeyframeCount, Contribution)
                 : Play(Desc, MoveTemp(OnValue), MoveTemp(OnComplete), nullptr, Binding,
                     Keyframes, KeyframeCount, Contribution);
+            if (FRecord* Record = FindRecord(Handle)) Record->OnLifecycle = MoveTemp(OnLifecycle);
+            return Handle;
         }
 
         const FRmlUiTransform2DAnimationDefinition& Source = Definition->Transform2D;
@@ -1245,11 +1259,13 @@ public:
         Desc.PlaybackRate = Source.PlaybackRate;
         Desc.Direction = Source.Direction;
         Desc.Fill = Source.Fill;
-        return PlayNodeTransform2D(
+        const FRmlUiAnimationHandle Handle = PlayNodeTransform2D(
             BindingRecord->NativeTarget.View, BindingRecord->NativeTarget.Node,
             Desc, MoveTemp(OnComplete), Binding, &BindingRecord->NativeTarget,
             Definition->TransformKeyframes.IsEmpty() ? nullptr : Definition->TransformKeyframes.GetData(),
             Definition->TransformKeyframes.Num(), Contribution);
+        if (FRecord* Record = FindRecord(Handle)) Record->OnLifecycle = MoveTemp(OnLifecycle);
+        return Handle;
     }
 
     int32 PlayBindings(
@@ -1279,7 +1295,7 @@ public:
                 ? FRmlUiAnimationCompletionCallback{}
                 : MoveTemp(OnCompletes[Index]);
             const FRmlUiAnimationHandle Handle = PlayBinding(
-                InBindings[Index], {}, MoveTemp(OnComplete));
+                InBindings[Index], {}, MoveTemp(OnComplete), {});
             if (!Handle.IsValid())
             {
                 for (FRmlUiAnimationHandle Created : OutHandles)
@@ -1349,7 +1365,7 @@ public:
                 ? FRmlUiAnimationCompletionCallback{}
                 : MoveTemp(OnCompletes[Index]);
             const FRmlUiAnimationHandle Handle = PlayBinding(
-                InBindings[Index], {}, MoveTemp(OnComplete),
+                InBindings[Index], {}, MoveTemp(OnComplete), {},
                 Contributions[Index].bLayered ? &Contributions[Index] : nullptr);
             if (!Handle.IsValid())
             {
@@ -1378,8 +1394,7 @@ public:
         check(IsInGameThread());
         FRmlUiFloatAnimationDesc Desc = InDesc;
         Desc.DurationSeconds = FMath::Max(Desc.DurationSeconds, 0.0);
-        Desc.DelaySeconds = FMath::Max(Desc.DelaySeconds, 0.0);
-        Desc.Iterations = FMath::Max(Desc.Iterations, 1);
+        if (!FMath::IsFinite(Desc.DelaySeconds) || Desc.Iterations < 0) return {};
         if (!FMath::IsFinite(Desc.PlaybackRate) || Desc.PlaybackRate <= 0.0 ||
             !RmlUiAnimation::IsValidDirection(Desc.Direction) ||
             !RmlUiAnimation::IsValidFill(Desc.Fill)) return {};
@@ -1497,7 +1512,7 @@ public:
                 (Desc.From < 0.0f || Desc.From > 1.0f || Desc.To < 0.0f || Desc.To > 1.0f)) ||
             (RmlUiAnimation::IsNonNegativeLayoutProperty(Property) &&
                 (Desc.From < 0.0f || Desc.To < 0.0f)) ||
-            Desc.DurationSeconds < 0.0 || Desc.Iterations <= 0 ||
+            Desc.DurationSeconds < 0.0 || Desc.Iterations < 0 ||
             !(ResolvedTarget ? RmlUE_IsAnimationTargetValid(View, ResolvedTarget->Target) : RmlUE_IsNodeValid(View, Node)))
         {
             return {};
@@ -1529,7 +1544,8 @@ public:
                 FMath::IsFinite(Value.SkewYDegrees);
         };
         if (!View || !Node || CancellingViews.Contains(View) || !IsFinite(InDesc.From) || !IsFinite(InDesc.To) ||
-            InDesc.DurationSeconds < 0.0 || InDesc.Iterations <= 0 ||
+            InDesc.DurationSeconds < 0.0 || InDesc.Iterations < 0 ||
+            !FMath::IsFinite(InDesc.DelaySeconds) ||
             !FMath::IsFinite(InDesc.PlaybackRate) || InDesc.PlaybackRate <= 0.0 ||
             !RmlUiAnimation::IsValidDirection(InDesc.Direction) ||
             !RmlUiAnimation::IsValidFill(InDesc.Fill) ||
@@ -1539,7 +1555,6 @@ public:
         }
 
         FRmlUiTransform2DAnimationDesc Desc = InDesc;
-        Desc.DelaySeconds = FMath::Max(Desc.DelaySeconds, 0.0);
         const FNativeTargetKey Target = ResolvedTarget
             ? *ResolvedTarget : FNativeTargetKey{View, Node, ERmlUiAnimatedProperty::Transform2D, 0};
         if (Desc.BindingId != 0 && !Contribution)
@@ -1646,7 +1661,8 @@ public:
         if (!Track) return false;
         const double CurrentLocalTime = Track->OriginLocalTimeSeconds +
             (CurrentTimeSeconds - Track->OriginTimeSeconds) * Track->PlaybackRate;
-        const double TotalDuration = Track->DurationSeconds * FMath::Max(Track->Iterations, 1);
+        const double TotalDuration = Track->Iterations == 0
+            ? TNumericLimits<double>::Max() : Track->DurationSeconds * Track->Iterations;
         Track->OriginLocalTimeSeconds = NewLocalTime.IsSet()
             ? FMath::Clamp(NewLocalTime.GetValue(), 0.0, TotalDuration)
             : CurrentLocalTime;
@@ -1994,8 +2010,10 @@ public:
             }
             const double LocalTime = Record.OriginLocalTimeSeconds +
                 (CurrentTimeSeconds - Record.OriginTimeSeconds) * Record.PlaybackRate;
-            const double TotalDuration = Record.DurationSeconds * FMath::Max(Record.Iterations, 1);
-            const bool bComplete = !Record.bPaused && LocalTime >= 0.0 &&
+            const bool bInfinite = Record.Iterations == 0;
+            const double TotalDuration = bInfinite
+                ? TNumericLimits<double>::Max() : Record.DurationSeconds * Record.Iterations;
+            const bool bComplete = !bInfinite && !Record.bPaused && LocalTime >= 0.0 &&
                 (Record.DurationSeconds == 0.0 || LocalTime >= TotalDuration);
             SetRecordOccluded(Record,
                 Record.bPaused || (RecordIndex != WinnerRecordIndex && !bComplete));
@@ -2010,7 +2028,7 @@ public:
                 NextBoundarySeconds = FMath::Min(NextBoundarySeconds,
                     CurrentTimeSeconds - LocalTime / Record.PlaybackRate);
             }
-            if (RecordIndex != WinnerRecordIndex && !bComplete && LocalTime < TotalDuration)
+            if (!bInfinite && RecordIndex != WinnerRecordIndex && !bComplete && LocalTime < TotalDuration)
             {
                 NextBoundarySeconds = FMath::Min(NextBoundarySeconds,
                     CurrentTimeSeconds + (TotalDuration - LocalTime) / Record.PlaybackRate);
@@ -2694,17 +2712,44 @@ public:
         const uint64 FinalizeStart = FRmlUiPerformance::IsEnabled() ? FPlatformTime::Cycles64() : 0;
         TArray<FValueNotification>& ValueNotifications = ValueNotificationScratch;
         TArray<FCompletionNotification>& CompletionNotifications = CompletionNotificationScratch;
+        TArray<FLifecycleNotification>& LifecycleNotifications = LifecycleNotificationScratch;
         TArray<FRmlUiAnimationHandle>& RemovalHandles = RemovalHandleScratch;
         TArray<uint32>& RemovalRecordIndices = RemovalRecordIndexScratch;
         ValueNotifications.Reset();
         CompletionNotifications.Reset();
+        LifecycleNotifications.Reset();
         RemovalHandles.Reset();
         RemovalRecordIndices.Reset();
         const uint64 FinalizePrepareStart =
             FRmlUiPerformance::IsEnabled() ? FPlatformTime::Cycles64() : 0;
+        const auto QueueLifecycle = [this, &LifecycleNotifications](FRecord& Record)
+        {
+            if (!Record.OnLifecycle || Record.bPaused) return;
+            const double LocalTime = Record.OriginLocalTimeSeconds +
+                (CurrentTimeSeconds - Record.OriginTimeSeconds) * Record.PlaybackRate;
+            if (LocalTime < 0.0) return;
+            const int64 Iteration = Record.DurationSeconds <= 0.0 ? 0 : FMath::Max<int64>(0,
+                static_cast<int64>(FMath::FloorToDouble(LocalTime / Record.DurationSeconds)));
+            if (!Record.bLifecycleStarted)
+            {
+                Record.bLifecycleStarted = true;
+                Record.LastLifecycleIteration = Iteration;
+                LifecycleNotifications.Add({Record.Handle,
+                    ERmlUiAnimationLifecyclePhase::Started, Iteration, Record.OnLifecycle});
+                return;
+            }
+            const int64 LastActiveIteration = Record.Iterations > 0
+                ? FMath::Min<int64>(Iteration, Record.Iterations - 1) : Iteration;
+            for (int64 Index = Record.LastLifecycleIteration + 1;
+                Index <= LastActiveIteration && Index - Record.LastLifecycleIteration <= 4096; ++Index)
+                LifecycleNotifications.Add({Record.Handle,
+                    ERmlUiAnimationLifecyclePhase::Iteration, Index, Record.OnLifecycle});
+            Record.LastLifecycleIteration = LastActiveIteration;
+        };
         for (const FDispatch& Dispatch : Dispatches)
         {
             FRecord& Record = Records[Dispatch.RecordIndex];
+            QueueLifecycle(Record);
             const FRmlUiAnimationHandle Handle = Record.Handle;
             const bool bInvalidNativeTarget = InvalidNativeHandles.Contains(Handle.Value);
             if (!bInvalidNativeTarget && Dispatch.bChanged && Record.OnValue)
@@ -2729,6 +2774,7 @@ public:
         for (const FTransformDispatch& Dispatch : TransformDispatches)
         {
             FRecord& Record = Records[Dispatch.RecordIndex];
+            QueueLifecycle(Record);
             const FRmlUiAnimationHandle Handle = Record.Handle;
             const bool bInvalidNativeTarget = InvalidNativeHandles.Contains(Handle.Value);
             if ((Dispatch.bComplete || bInvalidNativeTarget) && Record.OnComplete)
@@ -2774,6 +2820,10 @@ public:
         {
             Notification.Callback(Notification.Handle, Notification.Value);
         }
+        for (const FLifecycleNotification& Notification : LifecycleNotifications)
+        {
+            Notification.Callback(Notification.Handle, Notification.Phase, Notification.Iteration);
+        }
         for (const FCompletionNotification& Notification : CompletionNotifications)
         {
             Notification.Callback(Notification.Handle, Notification.Reason);
@@ -2815,7 +2865,9 @@ public:
     {
         if (!FreeRecordIndices.IsEmpty())
         {
-            return FreeRecordIndices.Pop(EAllowShrinking::No);
+            const uint32 Index = FreeRecordIndices.Pop(EAllowShrinking::No);
+            Records[Index] = FRecord{};
+            return Index;
         }
         return Records.AddDefaulted();
     }
@@ -2976,6 +3028,7 @@ public:
     TArray<int32> LayeredWinnerScratch;
     TArray<FValueNotification> ValueNotificationScratch;
     TArray<FCompletionNotification> CompletionNotificationScratch;
+    TArray<FLifecycleNotification> LifecycleNotificationScratch;
     TArray<FRmlUiAnimationHandle> RemovalHandleScratch;
     TArray<uint32> RemovalRecordIndexScratch;
     TBitArray<> RemovalRecordBitScratch;
@@ -3118,9 +3171,11 @@ bool FRmlUiAnimationRuntime::ReleaseBinding(FRmlUiAnimationBindingHandle Handle)
 FRmlUiAnimationHandle FRmlUiAnimationRuntime::PlayBinding(
     FRmlUiAnimationBindingHandle Binding,
     FRmlUiAnimationValueCallback OnValue,
-    FRmlUiAnimationCompletionCallback OnComplete)
+    FRmlUiAnimationCompletionCallback OnComplete,
+    FRmlUiAnimationLifecycleCallback OnLifecycle)
 {
-    return Impl->PlayBinding(Binding, MoveTemp(OnValue), MoveTemp(OnComplete));
+    return Impl->PlayBinding(
+        Binding, MoveTemp(OnValue), MoveTemp(OnComplete), MoveTemp(OnLifecycle));
 }
 
 int32 FRmlUiAnimationRuntime::PlayBindings(

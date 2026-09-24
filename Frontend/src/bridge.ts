@@ -18,6 +18,7 @@ export interface NativeBridge {
   QueryNode(root: number, selector: string): number; QueryNodes(root: number, selector: string): string;
   ChildNodes(node: number): string; ContainsNode(parent: number, child: number): boolean;
   ActiveNode(): number; BlurNode(node: number): boolean; SetNodeClass(node: number, name: string, enabled: boolean): boolean;
+  RestartCssAnimation(node: number): boolean;
   GetComputedProperty(node: number, name: string): string; MeasureNodes(handlesJson: string): string;
   ResolveAnimationHostSnapshot(requestJson: string): string;
   SetModalRoot(root: number, initialFocus: number): boolean;

@@ -79,6 +79,8 @@ test('inline WebCompat CSS goes through the same profile and points into origina
   assert.ok(markup.markup.includes(direct.css));
   assert.throws(() => compileDocumentMarkup('<html>\n<head><style>.x { filter:blur(2px); }</style></head></html>', strict), /Panel.vue:2:/);
   assert.throws(() => compileDocumentMarkup('<html><body><div style="position:sticky"/></body></html>', strict), /unsupported-css-value/);
+  assert.throws(() => compileDocumentMarkup('<html><body><div style="animation-play-state:paused"/></body></html>', strict),
+    /unsupported-inline-motion-manifest/);
   assert.throws(() => compileDocumentMarkup('<html><head><link rel="stylesheet" href="bypass.css"/></head></html>', strict), /unvalidated-linked-stylesheet/);
   assert.doesNotThrow(() => compileDocumentMarkup('<html><body><div style="position:sticky"/></body></html>'));
 });

@@ -10,9 +10,9 @@ bridge.OnCompileRequest.Add((markup, sourcePath) => {
       mode: bridge.CapabilityMode || 'strict',
       allowDegrade: JSON.parse(bridge.AllowedDegradationsJson || '[]'),
     });
-    bridge.Complete(true, result.markup, JSON.stringify(result.diagnostics));
+    bridge.Complete(true, result.markup, JSON.stringify(result.diagnostics), JSON.stringify(result.motionManifest));
   } catch (error) {
-    bridge.Complete(false, '', error instanceof Error ? error.message : String(error));
+    bridge.Complete(false, '', error instanceof Error ? error.message : String(error), '');
   }
 });
 bridge.ReportReady();

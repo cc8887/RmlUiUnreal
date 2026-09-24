@@ -6,7 +6,9 @@
 #include "Misc/Paths.h"
 #include "Misc/AutomationTest.h"
 #include "RmlUiActorObserverService.h"
+#include "RmlUiAnimationRuntime.h"
 #include "RmlUiJSRuntime.h"
+#include "RmlUiUnrealModule.h"
 #include "RmlUiWidget.h"
 #include "Styling/AppStyle.h"
 #include "UObject/StrongObjectPtr.h"
@@ -34,6 +36,9 @@ public:
 
     void Construct(const FArguments&)
     {
+        const FRmlUiAnimationRuntime& AnimationRuntime = FRmlUiUnrealModule::Get().GetAnimationRuntime();
+        DefinitionsBeforeStart = AnimationRuntime.GetDefinitionCount();
+        BindingsBeforeStart = AnimationRuntime.GetBindingCount();
         RmlWidget = TStrongObjectPtr<URmlUiWidget>(NewObject<URmlUiWidget>());
         Runtime = TStrongObjectPtr<URmlUiJSRuntime>(NewObject<URmlUiJSRuntime>());
         Observer = TStrongObjectPtr<URmlUiActorObserverService>(NewObject<URmlUiActorObserverService>());
@@ -103,6 +108,14 @@ public:
     }
 
     bool IsMaterialShowcaseReady() const { return Observer.IsValid() && Observer->IsUiMaterialReady(); }
+    int32 GetCssMotionDefinitionDelta() const
+    {
+        return FRmlUiUnrealModule::Get().GetAnimationRuntime().GetDefinitionCount() - DefinitionsBeforeStart;
+    }
+    int32 GetCssMotionBindingDelta() const
+    {
+        return FRmlUiUnrealModule::Get().GetAnimationRuntime().GetBindingCount() - BindingsBeforeStart;
+    }
 #endif
 
 private:
@@ -110,6 +123,8 @@ private:
     TStrongObjectPtr<URmlUiJSRuntime> Runtime;
     TStrongObjectPtr<URmlUiActorObserverService> Observer;
     TWeakObjectPtr<UWorld> ObservedWorld;
+    int32 DefinitionsBeforeStart = 0;
+    int32 BindingsBeforeStart = 0;
 };
 }
 
@@ -157,6 +172,8 @@ bool FRmlUiActorObserverEditorTabTest::RunTest(const FString& Parameters)
     const FString Snapshot = Panel->CaptureActorSnapshot();
     TestTrue(TEXT("Editor-world snapshot contains the actor collection"), Snapshot.Contains(TEXT("\"actors\":[")));
     TestTrue(TEXT("Actor Observer registers its UE UI material showcase"), Panel->IsMaterialShowcaseReady());
+    TestEqual(TEXT("CSS Motion bundle installs ten MovieScene definitions"), Panel->GetCssMotionDefinitionDelta(), 10);
+    TestEqual(TEXT("CSS Motion bundle binds ten native tracks"), Panel->GetCssMotionBindingDelta(), 10);
     Tab->RequestCloseTab();
     return true;
 }

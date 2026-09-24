@@ -14,6 +14,7 @@ import TalentTreeView from './TalentTreeView.vue';
 import MotionDropdownShowcase from './MotionDropdownShowcase.vue';
 import AnimationSpringShowcase from './AnimationSpringShowcase.vue';
 import AnimationOfficialExamples from './AnimationOfficialExamples.vue';
+import NativeCssAnimationShowcase from './NativeCssAnimationShowcase.vue';
 import CssProbeView from './CssProbeView.vue';
 
 interface ActorSummary { path: string; name: string; type: string; level: string; hidden: boolean; ticking: boolean }
@@ -28,7 +29,7 @@ const selectedPath = ref('');
 const showDetails = ref(false);
 const details = ref<ActorDetails | null>(null);
 const query = ref('');
-const activeView = ref<'actors' | 'lab' | 'tree' | 'dialogs' | 'mask' | 'host' | 'data' | 'scene' | 'talent' | 'motion' | 'animation' | 'animationofficial' | 'cssprobe'>('cssprobe');
+const activeView = ref<'actors' | 'lab' | 'tree' | 'dialogs' | 'mask' | 'host' | 'data' | 'scene' | 'talent' | 'motion' | 'animation' | 'animationofficial' | 'cssmotion' | 'cssprobe'>('cssmotion');
 const isLive = ref(true);
 const error = ref('');
 const materialIntensity = ref(72);
@@ -144,6 +145,7 @@ onUnmounted(() => clearInterval(timer));
       <button id="talent-view-tab" class="view-tab" :class="activeView === 'talent' ? 'active' : ''" @click="activeView = 'talent'"><img src="icons/sparkles.png" /><span>Talent Tree</span></button>
       <button id="animation-view-tab" class="view-tab" :class="activeView === 'animation' ? 'active' : ''" @click="activeView = 'animation'"><img src="icons/rotate-ccw.png" /><span>Spring Reveal</span></button>
       <button id="animation-official-view-tab" class="view-tab" :class="activeView === 'animationofficial' ? 'active' : ''" @click="activeView = 'animationofficial'"><img src="icons/play.png" /><span>Animation.js</span></button>
+      <button id="css-motion-view-tab" class="view-tab" :class="activeView === 'cssmotion' ? 'active' : ''" @click="activeView = 'cssmotion'"><img src="icons/sparkles.png" /><span>CSS Motion</span></button>
 <button id="cssprobe-view-tab" class="view-tab" :class="activeView === 'cssprobe' ? 'active' : ''" @click="activeView = 'cssprobe'"><img src="icons/list-tree.png" /><span>CSS Probe</span></button>
     </div>
 
@@ -309,6 +311,7 @@ onUnmounted(() => clearInterval(timer));
 <MotionDropdownShowcase v-else-if="activeView === 'motion'" />
 <AnimationSpringShowcase v-else-if="activeView === 'animation'" />
 <AnimationOfficialExamples v-else-if="activeView === 'animationofficial'" />
+<NativeCssAnimationShowcase v-else-if="activeView === 'cssmotion'" />
 <CssProbeView v-else-if="activeView === 'cssprobe'" />
     <div v-else id="mask-showcase" class="mask-showcase">
       <div class="mask-kicker">LUNASVG / SVG MASK</div>

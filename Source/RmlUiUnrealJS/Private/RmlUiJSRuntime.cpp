@@ -1,5 +1,7 @@
 #include "RmlUiJSRuntime.h"
 
+#include "RmlUiCssAnimationSession.h"
+
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
@@ -61,7 +63,7 @@ bool DigestMatches(const TArray<uint8>& Bytes, const FString& Expected)
 }
 struct FVueVersion
 {
-    FString Path, Directory, Version, Entry, Document;
+    FString Path, Directory, Version, Entry, Document, MotionManifest;
     TSharedPtr<FJsonObject> Manifest;
     bool bStrictCapabilities = false;
     bool ValidateCapabilities(bool bSlate, FString& Error)
@@ -132,6 +134,11 @@ struct FVueVersion
             !Manifest->TryGetStringField(TEXT("document"), Document) || !RelativeFile(Document) ||
             !Manifest->TryGetObjectField(TEXT("files"), Files) || !(*Files)->HasField(Entry) || !(*Files)->HasField(Document)) {
             Error = TEXT("Unsupported or incomplete UI manifest (format/ABI/state schema must be 1)."); return false;
+        }
+        if (Manifest->HasField(TEXT("motionManifest")) &&
+            (!Manifest->TryGetStringField(TEXT("motionManifest"), MotionManifest) ||
+                !RelativeFile(MotionManifest) || !(*Files)->HasField(MotionManifest))) {
+            Error = TEXT("UI motion manifest is missing from hashed resources."); return false;
         }
         int64 Total = 0;
         for (const auto& Pair : (*Files)->Values) {
@@ -287,20 +294,61 @@ bool URmlUiJSRuntime::Activate(const FString& Path)
         if (!IsValid(Pair.Value)) { RmlUE_DestroyView(NewView); Candidate = nullptr; return Fail(TEXT("A registered JavaScript service is no longer valid: ") + Pair.Key); }
         ServiceArguments.Emplace(Pair.Key, Pair.Value.Get());
     }
+    IRmlUiCssAnimationSession* CandidateCssAnimationSession = nullptr;
+    if (!Version.MotionManifest.IsEmpty())
+    {
+        FString MotionJson;
+        CandidateCssAnimationSession = CreateRmlUiCssAnimationSession();
+        CandidateCssAnimationSession->SetWakeCallback([this]()
+        {
+            if (const TSharedPtr<SRmlUiWidget> Pinned = SlateWidget.Pin())
+                Pinned->SetExternalWakeDeadline(this, FPlatformTime::Seconds());
+        });
+        CandidateCssAnimationSession->SetLifecycleEventBatchCallback(
+            [WeakContext = TWeakObjectPtr<URmlUiJSContext>(Candidate)](const FString& Json)
+            {
+                if (URmlUiJSContext* Context = WeakContext.Get()) Context->QueueHostEvent(Json);
+            });
+        const bool bLoadedMotionManifest = FFileHelper::LoadFileToString(
+            MotionJson, *FPaths::Combine(Version.Directory, Version.MotionManifest));
+        if (!bLoadedMotionManifest) Error = TEXT("Cannot read the hashed motion manifest.");
+        if (!bLoadedMotionManifest || !CandidateCssAnimationSession->Install(MotionJson, NewView, Error))
+        {
+            delete CandidateCssAnimationSession;
+            Candidate = nullptr; RmlUE_DestroyView(NewView);
+            return Fail(TEXT("Candidate UI motion manifest rejected; previous page retained. ") + Error);
+        }
+        Candidate->SetCssAnimationRestartCallback([CandidateCssAnimationSession](int32 Node)
+        {
+            return CandidateCssAnimationSession->RequestRestart(static_cast<RmlUE_Node>(Node));
+        });
+    }
     // Keep the debugger on a unique port while both old and candidate VMs exist.
     const int32 CandidatePort = DebugPort < 0 ? -1 : DebugPort + ((ReloadCount + 1) % 2);
     if (!Candidate->Initialize(NewView, Version.Directory, Version.Entry, Version.Version, State, CandidatePort, ServiceArguments)) {
         Error = Candidate->LastError;
+        delete CandidateCssAnimationSession;
         Candidate->Dispose(); Candidate = nullptr; RmlUE_DestroyView(NewView);
         return Fail(TEXT("Candidate UI rejected; previous page retained. ") + Error);
     }
     if (!RmlUE_Update(NewView) || !Candidate->LastError.IsEmpty()) {
         Error = Candidate->LastError.IsEmpty() ? UTF8_TO_TCHAR(RmlUE_GetLastError()) : Candidate->LastError;
+        delete CandidateCssAnimationSession;
         Candidate->Dispose(); Candidate = nullptr; RmlUE_DestroyView(NewView);
         return Fail(TEXT("Candidate UI rejected after initial layout; previous page retained. ") + Error);
     }
+    if (CandidateCssAnimationSession &&
+        (!CandidateCssAnimationSession->FlushActivationChanges(Error) ||
+         !CandidateCssAnimationSession->ValidateInitialBindings(Error)))
+    {
+        delete CandidateCssAnimationSession;
+        Candidate->Dispose(); Candidate = nullptr; RmlUE_DestroyView(NewView);
+        return Fail(TEXT("Candidate UI motion activation rejected; previous page retained. ") + Error);
+    }
     RmlUE_View* OldView = Slate->ExchangeNativeView(NewView);
     if (Active) Active->Dispose();
+    delete CssAnimationSession;
+    CssAnimationSession = CandidateCssAnimationSession;
     if (OldView) RmlUE_DestroyView(OldView);
     Active = Candidate; Candidate = nullptr;
     HostRequests.Empty();
@@ -314,6 +362,8 @@ bool URmlUiJSRuntime::Activate(const FString& Path)
     LastAdvanceTime = FPlatformTime::Seconds();
     RefreshWidgetWake();
     UE_LOG(LogTemp, Display, TEXT("RmlUiJS activated %s"), *ActiveVersion);
+    if (CssAnimationSession)
+        UE_LOG(LogTemp, Display, TEXT("RmlUiJS CSS activation: %s"), *CssAnimationSession->GetActivationDiagnostics());
     OnStatus.Broadcast(TEXT("Activated ") + ActiveVersion);
     return true;
 }
@@ -360,6 +410,17 @@ void URmlUiJSRuntime::Advance(float DeltaSeconds)
         ++AdvanceSkipCount;
         FRmlUiPerformance::AddWork(ERmlUiPerformanceBackend::Unattributed, ERmlUiPerformanceWork::JsAdvanceSkips);
     }
+    if (CssAnimationSession)
+    {
+        FString ActivationError;
+        if (!CssAnimationSession->FlushActivationChanges(ActivationError))
+        {
+            LastError = TEXT("Native CSS activation failed: ") + ActivationError;
+            UE_LOG(LogTemp, Error, TEXT("RmlUiJS: %s"), *LastError);
+            OnStatus.Broadcast(LastError);
+        }
+        CssAnimationSession->FlushLifecycleEvents();
+    }
     RefreshWidgetWake();
 }
 void URmlUiJSRuntime::RefreshWidgetWake()
@@ -379,6 +440,10 @@ void URmlUiJSRuntime::QueueManifest(const FString& Path)
     RefreshWidgetWake();
 }
 void URmlUiJSRuntime::Reload() { QueueManifest(WatchedManifest); }
+FString URmlUiJSRuntime::GetCssAnimationDiagnostics() const
+{
+    return CssAnimationSession ? CssAnimationSession->GetActivationDiagnostics() : TEXT("{\"rules\":[]}");
+}
 void URmlUiJSRuntime::LoadVersion(const FString& Path) { QueueManifest(Path); }
 void URmlUiJSRuntime::Rollback() { if (!PreviousManifest.IsEmpty()) QueueManifest(PreviousManifest); }
 void URmlUiJSRuntime::ForwardHostRequest(int32 RequestId, const FString& Method, const FString& Json)
@@ -407,6 +472,8 @@ void URmlUiJSRuntime::Stop()
         Slate->OnBeforeRender.Remove(FrameHandle);
         Slate->OnNativeShutdown.Remove(ShutdownHandle);
     }
+    delete CssAnimationSession;
+    CssAnimationSession = nullptr;
     if (Active) Active->Dispose();
     if (Candidate) Candidate->Dispose();
     Active = nullptr; Candidate = nullptr; Target = nullptr;

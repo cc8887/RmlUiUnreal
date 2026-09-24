@@ -72,6 +72,14 @@ public:
     virtual bool CompileWithOptions(const FString& Markup, const FString& SourcePath,
         const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics) override
     {
+        FString IgnoredMotionManifest;
+        return CompileWithMotion(Markup, SourcePath, Options, OutMarkup, OutDiagnostics, IgnoredMotionManifest);
+    }
+
+    virtual bool CompileWithMotion(const FString& Markup, const FString& SourcePath,
+        const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics,
+        FString& OutMotionManifest) override
+    {
         if (!IsInGameThread())
         {
             OutDiagnostics = TEXT("Puerts WebCompat compilation must run on the game thread.");
@@ -84,7 +92,7 @@ public:
         for (const FString& Feature : Options.AllowedDegradations) Degradations.Add(MakeShared<FJsonValueString>(Feature));
         Bridge->AllowedDegradationsJson.Reset();
         FJsonSerializer::Serialize(Degradations, TJsonWriterFactory<>::Create(&Bridge->AllowedDegradationsJson));
-        return Bridge->Invoke(Markup, SourcePath, OutMarkup, OutDiagnostics);
+        return Bridge->Invoke(Markup, SourcePath, OutMarkup, OutDiagnostics, OutMotionManifest);
     }
 
     bool IsReady() const { return Bridge.IsValid() && Bridge->IsReady(); }

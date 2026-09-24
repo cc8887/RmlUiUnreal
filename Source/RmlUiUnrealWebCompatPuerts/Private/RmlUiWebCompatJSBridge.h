@@ -26,12 +26,13 @@ public:
     FString AllowedDegradationsJson = TEXT("[]");
 
     UFUNCTION(BlueprintCallable, Category="RmlUi|WebCompat")
-    void Complete(bool bSuccess, const FString& Markup, const FString& Diagnostics);
+    void Complete(bool bSuccess, const FString& Markup, const FString& Diagnostics, const FString& MotionManifest);
 
     UFUNCTION(BlueprintCallable, Category="RmlUi|WebCompat")
     void ReportReady();
 
-    bool Invoke(const FString& Markup, const FString& SourcePath, FString& OutMarkup, FString& OutDiagnostics);
+    bool Invoke(const FString& Markup, const FString& SourcePath, FString& OutMarkup, FString& OutDiagnostics,
+        FString& OutMotionManifest);
     bool IsReady() const { return bReady; }
     void SetRuntimeError(const FString& Error) { RuntimeError = Error; }
 
@@ -42,5 +43,6 @@ private:
     bool bCompileSuccess = false;
     FString CompiledMarkup;
     FString CompileDiagnostics;
+    FString CompiledMotionManifest;
     FString RuntimeError;
 };

@@ -30,6 +30,13 @@ public:
         }
         return Compile(Markup, SourcePath, OutMarkup, OutDiagnostics);
     }
+    virtual bool CompileWithMotion(const FString& Markup, const FString& SourcePath,
+        const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics,
+        FString& OutMotionManifest)
+    {
+        OutMotionManifest.Reset();
+        return CompileWithOptions(Markup, SourcePath, Options, OutMarkup, OutDiagnostics);
+    }
 };
 
 class RMLUIUNREALWEBCOMPAT_API FRmlUiWebCompatModule : public IModuleInterface
@@ -46,7 +53,8 @@ public:
     void RegisterDocumentCompiler(TSharedRef<IRmlUiWebDocumentCompiler> Compiler);
     void UnregisterDocumentCompiler(FName CompilerId);
     bool CompileDynamicDocument(const FString& Markup, const FString& SourcePath, FString& OutMarkup,
-        FString& OutDiagnostics, bool& bOutCacheHit, const FRmlUiCssCompileOptions& Options = FRmlUiCssCompileOptions());
+        FString& OutDiagnostics, bool& bOutCacheHit, const FRmlUiCssCompileOptions& Options = FRmlUiCssCompileOptions(),
+        FString* OutMotionManifest = nullptr);
     void ClearCompiledDocumentCache();
     FName GetDocumentCompilerId() const;
     int32 GetDynamicCompileCount() const { return DynamicCompileCount; }
@@ -57,6 +65,7 @@ private:
     {
         FString Markup;
         FString Diagnostics;
+        FString MotionManifest;
     };
     FString ContentRoot;
     FString LastError;

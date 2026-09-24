@@ -52,6 +52,12 @@ enum class ERmlUiAnimationCompletionReason : uint8
     Replaced
 };
 
+enum class ERmlUiAnimationLifecyclePhase : uint8
+{
+    Started,
+    Iteration
+};
+
 enum class ERmlUiAnimationDirection : uint8
 {
     Normal,
@@ -137,6 +143,7 @@ struct FRmlUiFloatAnimationDesc
     float To = 1.0f;
     double DurationSeconds = 0.2;
     double DelaySeconds = 0.0;
+    // Zero means an unbounded iteration count. Negative values are invalid.
     int32 Iterations = 1;
 
     // A non-zero binding replaces the previous animation for the same property target.
@@ -187,6 +194,7 @@ struct FRmlUiFloatAnimationDefinition
     float To = 1.0f;
     double DurationSeconds = 0.2;
     double DelaySeconds = 0.0;
+    // Zero means an unbounded iteration count. Negative values are invalid.
     int32 Iterations = 1;
     double PlaybackRate = 1.0;
     ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
@@ -227,6 +235,7 @@ struct FRmlUiColorAnimationDefinition
     FRmlUiColor To;
     double DurationSeconds = 0.2;
     double DelaySeconds = 0.0;
+    // Zero means an unbounded iteration count. Negative values are invalid.
     int32 Iterations = 1;
     double PlaybackRate = 1.0;
     ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
@@ -240,6 +249,7 @@ struct FRmlUiTransform2DAnimationDesc
     FRmlUiTransform2D To;
     double DurationSeconds = 0.2;
     double DelaySeconds = 0.0;
+    // Zero means an unbounded iteration count. Negative values are invalid.
     int32 Iterations = 1;
     uint64 BindingId = 0;
     double PlaybackRate = 1.0;
@@ -296,6 +306,8 @@ public:
 using FRmlUiAnimationValueCallback = TFunction<void(FRmlUiAnimationHandle, float)>;
 using FRmlUiAnimationCompletionCallback =
     TFunction<void(FRmlUiAnimationHandle, ERmlUiAnimationCompletionReason)>;
+using FRmlUiAnimationLifecycleCallback =
+    TFunction<void(FRmlUiAnimationHandle, ERmlUiAnimationLifecyclePhase, int64)>;
 
 class RMLUIUNREAL_API FRmlUiAnimationRuntime
 {
@@ -334,7 +346,8 @@ public:
     FRmlUiAnimationHandle PlayBinding(
         FRmlUiAnimationBindingHandle Binding,
         FRmlUiAnimationValueCallback OnValue = {},
-        FRmlUiAnimationCompletionCallback OnComplete = {});
+        FRmlUiAnimationCompletionCallback OnComplete = {},
+        FRmlUiAnimationLifecycleCallback OnLifecycle = {});
     int32 PlayBindings(
         const TArray<FRmlUiAnimationBindingHandle>& Bindings,
         TArray<FRmlUiAnimationHandle>& OutHandles,

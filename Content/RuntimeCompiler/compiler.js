@@ -7562,6 +7562,302 @@ function applyCssProfile(root2, options, diagnostics) {
   return createCapabilities(profileName, [...required], [...degraded]);
 }
 
+// src/motion-manifest.mjs
+var propertyIds = /* @__PURE__ */ new Map([
+  ["opacity", 1],
+  ["transform", 2],
+  ["left", 3],
+  ["top", 4],
+  ["right", 5],
+  ["bottom", 6],
+  ["width", 7],
+  ["height", 8],
+  ["visibility", 9],
+  ["color", 10],
+  ["background-color", 11],
+  ["border-color", 12],
+  ["image-color", 13]
+]);
+function parseTime(value) {
+  const match = String(value ?? "").trim().toLowerCase().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(ms|s)$/);
+  if (!match) return void 0;
+  const seconds = Number(match[1]) * (match[2] === "ms" ? 1e-3 : 1);
+  return Number.isFinite(seconds) ? seconds : void 0;
+}
+function parseEasing(source = "ease") {
+  const text = source.trim().toLowerCase();
+  const presets = {
+    linear: [0, 0, 0, 1, 1],
+    ease: [1, 0.25, 0.1, 0.25, 1],
+    "ease-in": [1, 0.42, 0, 1, 1],
+    "ease-out": [1, 0, 0, 0.58, 1],
+    "ease-in-out": [1, 0.42, 0, 0.58, 1],
+    "step-start": [2, 1, 1, 0, 0],
+    "step-end": [2, 1, 0, 0, 0]
+  };
+  if (presets[text]) return presets[text];
+  const cubic = text.match(/^cubic-bezier\(\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^\)]+)\)$/);
+  if (cubic) {
+    const points = cubic.slice(1).map(Number);
+    if (points.every(Number.isFinite) && points[0] >= 0 && points[0] <= 1 && points[2] >= 0 && points[2] <= 1)
+      return [1, ...points];
+    return void 0;
+  }
+  const steps = text.match(/^steps\(\s*(\d+)\s*(?:,\s*(start|end|jump-start|jump-end|jump-none|jump-both)\s*)?\)$/);
+  if (!steps) return void 0;
+  const count = Number(steps[1]);
+  const position = { end: 0, "jump-end": 0, start: 1, "jump-start": 1, "jump-none": 2, "jump-both": 3 }[steps[2] ?? "end"];
+  return count >= 1 && !(position === 2 && count < 2) ? [2, count, position, 0, 0] : void 0;
+}
+function parseColor(value) {
+  const text = value.trim().toLowerCase();
+  if (text === "transparent") return [0, 0, 0, 0];
+  const hex = text.match(/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/)?.[1];
+  if (hex) {
+    const expanded = hex.length <= 4 ? [...hex].map((char) => char + char).join("") : hex;
+    return [0, 2, 4, 6].map((offset, index) => index === 3 && expanded.length === 6 ? 1 : Number.parseInt(expanded.slice(offset, offset + 2), 16) / 255);
+  }
+  const rgb = text.match(/^rgba?\(\s*([^,]+),\s*([^,]+),\s*([^,\)]+)(?:,\s*([^\)]+))?\)$/);
+  if (!rgb) return void 0;
+  const result = [
+    Number(rgb[1]) / 255,
+    Number(rgb[2]) / 255,
+    Number(rgb[3]) / 255,
+    rgb[4] === void 0 ? 1 : Number(rgb[4])
+  ];
+  return result.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 1) ? result : void 0;
+}
+function parseTransform(value) {
+  const text = value.trim().toLowerCase();
+  if (text === "none") return { values: [0, 0, 1, 1, 0, 0, 0], primitive: 0 };
+  const values = [0, 0, 1, 1, 0, 0, 0];
+  const finite = (source, suffix = "") => {
+    let number = source.trim();
+    if (suffix && !number.endsWith(suffix)) return void 0;
+    if (suffix) number = number.slice(0, -suffix.length).trim();
+    const parsed = Number(number);
+    return number && Number.isFinite(parsed) ? parsed : void 0;
+  };
+  let primitive = 0;
+  let cursor = 0;
+  const pattern = /\s*(translate|translatex|translatey|scale|scalex|scaley|rotate|skewx|skewy|skew|matrix)\(([^\(\)]*)\)/gy;
+  while (cursor < text.length) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(text);
+    if (!match || match.index !== cursor) return void 0;
+    const parts = postcss_default.list.comma(match[2]).map((part) => part.trim());
+    const name = match[1];
+    const bit = name.startsWith("translate") ? 1 : name.startsWith("scale") ? 2 : name === "rotate" ? 4 : name === "skewx" ? 8 : name === "skewy" ? 16 : name === "skew" ? 24 : 31;
+    if (primitive & bit) return void 0;
+    if (name === "translate" && (parts.length === 1 || parts.length === 2)) {
+      const x = finite(parts[0], "px");
+      const y = finite(parts[1] ?? "0px", "px");
+      if (x === void 0 || y === void 0) return void 0;
+      values[0] = x;
+      values[1] = y;
+    } else if ((name === "translatex" || name === "translatey") && parts.length === 1) {
+      const component = finite(parts[0], "px");
+      if (component === void 0) return void 0;
+      values[name === "translatex" ? 0 : 1] = component;
+    } else if (name === "scale" && (parts.length === 1 || parts.length === 2)) {
+      const x = finite(parts[0]);
+      const y = finite(parts[1] ?? parts[0]);
+      if (x === void 0 || y === void 0) return void 0;
+      values[2] = x;
+      values[3] = y;
+    } else if ((name === "scalex" || name === "scaley") && parts.length === 1) {
+      const component = finite(parts[0]);
+      if (component === void 0) return void 0;
+      values[name === "scalex" ? 2 : 3] = component;
+    } else if (name === "rotate" && parts.length === 1) {
+      const angle = finite(parts[0], "deg");
+      if (angle === void 0) return void 0;
+      values[4] = angle;
+    } else if ((name === "skewx" || name === "skewy" || name === "skew") && (parts.length === 1 || name === "skew" && parts.length === 2)) {
+      const x = finite(parts[0], "deg");
+      const y = finite(parts[1] ?? "0deg", "deg");
+      if (x === void 0 || y === void 0) return void 0;
+      if (name === "skewy") values[6] = x;
+      else {
+        values[5] = x;
+        values[6] = y;
+      }
+    } else if (name === "matrix" && parts.length === 6) {
+      const matrix = parts.map((part) => finite(part));
+      if (matrix.some((part) => part === void 0)) return void 0;
+      const [a, b, c, d, tx, ty] = matrix;
+      const scaleX = Math.hypot(a, b);
+      if (scaleX <= Number.EPSILON) return void 0;
+      values[0] = tx;
+      values[1] = ty;
+      values[2] = scaleX;
+      values[3] = (a * d - b * c) / scaleX;
+      values[4] = Math.atan2(b, a) * 180 / Math.PI;
+      values[5] = Math.atan((a * c + b * d) / (scaleX * scaleX)) * 180 / Math.PI;
+    } else return void 0;
+    primitive |= bit;
+    cursor = pattern.lastIndex;
+  }
+  return primitive ? { values, primitive } : void 0;
+}
+function parseValue(property, value) {
+  if (property === "opacity") {
+    const parsed2 = Number(value);
+    return Number.isFinite(parsed2) && parsed2 >= 0 && parsed2 <= 1 ? [parsed2] : void 0;
+  }
+  if (property === "transform") return parseTransform(value);
+  if (property === "visibility") {
+    const text = value.trim().toLowerCase();
+    return text === "visible" ? [1] : text === "hidden" ? [0] : void 0;
+  }
+  if (propertyIds.get(property) >= 10) return parseColor(value);
+  const match = value.trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))px$/i);
+  if (!match) return void 0;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && (!(property === "width" || property === "height") || parsed >= 0) ? [parsed] : void 0;
+}
+function frameOffsets(selector) {
+  const offsets = postcss_default.list.comma(selector).map((part) => part.trim().toLowerCase()).map((part) => part === "from" ? 0 : part === "to" ? 1 : /^\d+(?:\.\d+)?%$/.test(part) ? Number(part.slice(0, -1)) / 100 : NaN);
+  return offsets.every((offset) => Number.isFinite(offset) && offset >= 0 && offset <= 1) ? offsets : void 0;
+}
+function compileKeyframes(atRule2, defaultEasing) {
+  const byProperty = /* @__PURE__ */ new Map();
+  for (const rule2 of atRule2.nodes?.filter((node) => node.type === "rule") ?? []) {
+    const offsets = frameOffsets(rule2.selector);
+    if (!offsets) return { error: `Invalid keyframe selector '${rule2.selector}'.` };
+    const frameEasing = rule2.nodes?.find((node) => node.type === "decl" && node.prop.toLowerCase() === "animation-timing-function")?.value ?? defaultEasing;
+    const easing = parseEasing(frameEasing);
+    if (!easing) return { error: `Unsupported keyframe timing function '${frameEasing}'.` };
+    for (const decl2 of rule2.nodes?.filter((node) => node.type === "decl" && node.prop.toLowerCase() !== "animation-timing-function") ?? []) {
+      const property = decl2.prop.toLowerCase();
+      const propertyId = propertyIds.get(property);
+      if (!propertyId) return { error: `Property '${decl2.prop}' cannot be represented by the native animation IR.` };
+      const parsed = parseValue(property, decl2.value);
+      if (!parsed) return { error: `Value '${decl2.value}' for '${decl2.prop}' cannot be represented by the native animation IR.` };
+      for (const offset of offsets) byProperty.set(property, [...byProperty.get(property) ?? [], {
+        offset,
+        values: Array.isArray(parsed) ? parsed : parsed.values,
+        easing,
+        primitive: Array.isArray(parsed) ? 0 : parsed.primitive ?? 0
+      }]);
+    }
+  }
+  const tracks = [];
+  for (const [property, frames] of byProperty) {
+    frames.sort((a, b) => a.offset - b.offset);
+    if (frames.length < 2 || frames[0].offset !== 0 || frames.at(-1).offset !== 1)
+      return { error: `Property '${property}' must define explicit 0% and 100% keyframes in native CSS animations.` };
+    if (property === "transform") {
+      const primitives = new Set(frames.map((frame) => frame.primitive).filter(Boolean));
+      if (primitives.size > 1) return { error: "Transform keyframes must use the same primitive list." };
+    }
+    tracks.push({ property, propertyId: propertyIds.get(property), keyframes: frames.map(({ offset, values, easing }) => ({ offset, values, easing })) });
+  }
+  return tracks.length ? { tracks } : { error: "The keyframes rule has no animatable declarations." };
+}
+function splitSimpleSelectors(selector) {
+  const selectors = postcss_default.list.comma(selector).map((item) => item.trim());
+  return selectors.every((item) => /^[.#][-_a-zA-Z][\w-]*$/.test(item)) ? selectors : null;
+}
+function compatible(selector) {
+  if (/^\.[-_a-zA-Z][\w-]*$/.test(selector) && /[A-Z]/.test(selector)) return `[class~="${selector.slice(1)}"]`;
+  if (/^#[-_a-zA-Z][\w-]*$/.test(selector) && /[A-Z]/.test(selector)) return `[id="${selector.slice(1)}"]`;
+  return selector;
+}
+function combinedSelectors(provider, anchor) {
+  const left = splitSimpleSelectors(provider);
+  const right = splitSimpleSelectors(anchor);
+  if (!left || !right) return void 0;
+  return right.flatMap((r) => left.map((l) => l === r ? compatible(r) : `${compatible(l)}${compatible(r)}`)).join(", ");
+}
+function unsupportedActivationSelector(selector) {
+  let bracketDepth = 0;
+  let quote = "";
+  for (let i = 0; i < selector.length; i++) {
+    const char = selector[i];
+    if (quote) {
+      if (char === "\\") i++;
+      else if (char === quote) quote = "";
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === "[") bracketDepth++;
+    else if (char === "]") bracketDepth--;
+    else if (!bracketDepth && char === ":") return "Pseudo-state selectors require input/state invalidation that the native activation manager does not provide.";
+    else if (!bracketDepth && (char === "+" || char === "~")) return "Sibling selectors require sibling invalidation that the native activation manager does not provide.";
+  }
+  return void 0;
+}
+function extractMotionManifest(root2, records, diagnostics, makeDiagnostic) {
+  const keyframes = /* @__PURE__ */ new Map();
+  root2.walkAtRules(/^keyframes$/i, (rule2) => keyframes.set(rule2.params.trim(), rule2));
+  const providers = records.filter((record) => !record.rawValues.name && Object.keys(record.rawValues).length);
+  const rules = [];
+  const playStates = [];
+  const consumedKeyframes = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    if (!record.rawValues.playState) continue;
+    const selectorError = unsupportedActivationSelector(record.rule.selector);
+    if (selectorError) {
+      diagnostics.push(makeDiagnostic(record.sourceDecl, "error", "unsupported-native-animation-selector", selectorError));
+      continue;
+    }
+    const state = record.rawValues.playState.trim().toLowerCase();
+    if (state === "running" || state === "paused")
+      playStates.push({ selector: record.rule.selector, paused: state === "paused" });
+  }
+  for (const anchor of records.filter((record) => record.rawValues.name)) {
+    const candidates = anchor.rawValues.duration ? [{ selector: anchor.rule.selector, values: anchor.rawValues, provider: anchor }] : providers.filter((provider) => provider.rawValues.duration).map((provider) => ({
+      selector: combinedSelectors(provider.rule.selector, anchor.rule.selector),
+      values: { ...provider.rawValues, ...anchor.rawValues },
+      provider
+    }));
+    for (const candidate of candidates) {
+      if (!candidate.selector) continue;
+      const source = keyframes.get(candidate.values.name);
+      if (!source) {
+        diagnostics.push(makeDiagnostic(
+          anchor.sourceDecl,
+          "warning",
+          "native-keyframes-not-in-source",
+          `@keyframes ${candidate.values.name} is not in this CSS source; the rule uses the RmlUi RCSS fallback instead of the native animation IR.`
+        ));
+        continue;
+      }
+      const selectorError = unsupportedActivationSelector(candidate.selector);
+      if (selectorError) {
+        diagnostics.push(makeDiagnostic(anchor.sourceDecl, "error", "unsupported-native-animation-selector", selectorError));
+        continue;
+      }
+      const duration = parseTime(candidate.values.duration ?? "0s");
+      const delay = parseTime(candidate.values.delay ?? "0s");
+      const iterations = (candidate.values.iteration ?? "").trim().toLowerCase() === "infinite" ? 0 : Number(candidate.values.iteration ?? 1);
+      const direction = ["normal", "reverse", "alternate", "alternate-reverse"].indexOf((candidate.values.direction ?? "normal").toLowerCase());
+      const fill = ["none", "forwards", "backwards", "both"].indexOf((candidate.values.fill ?? "none").toLowerCase());
+      const compiled = compileKeyframes(source, candidate.values.timing ?? "ease");
+      if (duration === void 0 || duration < 0 || delay === void 0 || !Number.isInteger(iterations) || iterations < 0 || direction < 0 || fill < 0 || compiled.error) {
+        const reason = compiled.error ?? "Duration, delay, iteration count, direction, or fill mode is invalid.";
+        diagnostics.push(makeDiagnostic(anchor.sourceDecl, "error", "unsupported-native-css-animation", reason));
+        continue;
+      }
+      rules.push({
+        selector: candidate.selector,
+        name: candidate.values.name,
+        duration,
+        delay,
+        iterations,
+        direction,
+        fill,
+        paused: (candidate.values.playState ?? "running").toLowerCase() === "paused",
+        tracks: compiled.tracks
+      });
+      consumedKeyframes.add(source);
+      anchor.native = true;
+      candidate.provider.native = true;
+    }
+  }
+  for (const rule2 of consumedKeyframes) rule2.remove();
+  return playStates.length ? { schemaVersion: 1, rules, playStates } : { schemaVersion: 1, rules };
+}
+
 // src/compile-css.mjs
 var motionFields = {
   animation: /* @__PURE__ */ new Map([
@@ -7571,6 +7867,7 @@ var motionFields = {
     ["animation-iteration-count", "iteration"],
     ["animation-direction", "direction"],
     ["animation-play-state", "playState"],
+    ["animation-fill-mode", "fill"],
     ["animation-name", "name"]
   ]),
   transition: /* @__PURE__ */ new Map([
@@ -7687,13 +7984,20 @@ function convertTiming(decl2, diagnostics) {
   return null;
 }
 function convertValue(kind, field, decl2, diagnostics) {
+  if (kind === "animation" && field === "timing") {
+    const value2 = singleValue(decl2, diagnostics);
+    if (value2 === null) return null;
+    const lower2 = value2.toLowerCase();
+    if (/^(?:cubic-bezier\(|steps\()/.test(lower2) || lower2 === "step-start" || lower2 === "step-end") return lower2;
+    return convertTiming(decl2, diagnostics);
+  }
   if (field === "timing") return convertTiming(decl2, diagnostics);
   const value = singleValue(decl2, diagnostics);
   if (value === null) return null;
   const lower = value.toLowerCase();
   if (kind === "animation" && field === "direction") {
     if (lower === "normal") return "";
-    if (lower === "alternate") return "alternate";
+    if (["alternate", "reverse", "alternate-reverse"].includes(lower)) return lower;
     diagnostics.push(diagnostic(decl2, "error", "unsupported-animation-direction", `${decl2.prop}: ${decl2.value} has no RmlUi 6.3 equivalent.`));
     return null;
   }
@@ -7705,7 +8009,7 @@ function convertValue(kind, field, decl2, diagnostics) {
   }
   return value;
 }
-function splitSimpleSelectors(selector) {
+function splitSimpleSelectors2(selector) {
   const selectors = postcss_default.list.comma(selector).map((item) => item.trim());
   return selectors.every((item) => /^[.#][-_a-zA-Z][\w-]*$/.test(item)) ? selectors : null;
 }
@@ -7715,12 +8019,12 @@ function compatibleSimpleSelector(selector) {
   return selector;
 }
 function compatibleSelector(selector) {
-  const selectors = splitSimpleSelectors(selector);
+  const selectors = splitSimpleSelectors2(selector);
   return selectors ? selectors.map(compatibleSimpleSelector).join(", ") : selector;
 }
 function combineSelectors(provider, anchor) {
-  const providers = splitSimpleSelectors(provider);
-  const anchors = splitSimpleSelectors(anchor);
+  const providers = splitSimpleSelectors2(provider);
+  const anchors = splitSimpleSelectors2(anchor);
   if (!providers || !anchors) return null;
   return anchors.flatMap((right) => providers.map((left) => {
     const compatibleLeft = compatibleSimpleSelector(left);
@@ -7795,8 +8099,9 @@ function compileCss(source, options = {}) {
         diagnostics.push(diagnostic(matching[0], "error", `mixed-${kind}-syntax`, `Do not mix ${kind} shorthand and longhands in one rule in WebCompat v1.`));
         continue;
       }
-      const record = { rule: rule2, values: {}, important: false, sourceDecl: matching[0] };
+      const record = { rule: rule2, values: {}, rawValues: {}, important: false, sourceDecl: matching[0], native: false };
       for (const decl2 of matching) {
+        record.rawValues[fields.get(decl2.prop.toLowerCase())] = decl2.value.trim();
         const value = convertValue(kind, fields.get(decl2.prop.toLowerCase()), decl2, diagnostics);
         if (value !== null) record.values[fields.get(decl2.prop.toLowerCase())] = value;
         record.important || (record.important = decl2.important);
@@ -7804,14 +8109,33 @@ function compileCss(source, options = {}) {
       }
       records[kind].push(record);
     }
-    for (const decl2 of [...rule2.nodes?.filter((node) => node.type === "decl") ?? []]) {
-      if (decl2.prop.toLowerCase() === "animation-fill-mode") {
-        diagnostics.push(diagnostic(decl2, "warning", "animation-fill-mode-dropped", "RmlUi 6.3 has no animation-fill-mode; the declaration was dropped."));
-        decl2.remove();
-      }
-    }
   });
-  emitComposedRules(root2, records.animation, "animation", diagnostics);
+  const motionManifest = extractMotionManifest(root2, records.animation, diagnostics, diagnostic);
+  for (const record of records.animation.filter((item) => !item.native)) {
+    if (/^(?:cubic-bezier\(|steps\()/.test(record.rawValues.timing ?? "") || ["step-start", "step-end"].includes(record.rawValues.timing ?? ""))
+      diagnostics.push(diagnostic(
+        record.sourceDecl,
+        "error",
+        "unsupported-timing-function",
+        `${record.rawValues.timing} requires a valid native @keyframes rule.`
+      ));
+    if (["reverse", "alternate-reverse"].includes((record.rawValues.direction ?? "").toLowerCase()))
+      diagnostics.push(diagnostic(
+        record.sourceDecl,
+        "error",
+        "unsupported-animation-direction",
+        `${record.rawValues.direction} requires a valid native @keyframes rule.`
+      ));
+  }
+  for (const record of records.animation.filter((item) => !item.native && item.rawValues.fill)) {
+    diagnostics.push(diagnostic(
+      record.sourceDecl,
+      "warning",
+      "animation-fill-mode-dropped",
+      "RmlUi 6.3 has no animation-fill-mode; the declaration was dropped because this rule did not enter the native animation IR."
+    ));
+  }
+  emitComposedRules(root2, records.animation.filter((record) => !record.native || !record.rawValues.name), "animation", diagnostics);
   emitComposedRules(root2, records.transition, "transition", diagnostics);
   const capabilities = applyCssProfile(root2, options, diagnostics);
   if (options.profile && options.profile !== "legacy") {
@@ -7829,7 +8153,7 @@ function compileCss(source, options = {}) {
     if (options.sourceLabel) item.source = options.sourceLabel;
   }
   const css = root2.toString();
-  return { css, diagnostics, capabilities, changed: css !== input };
+  return { css, diagnostics, capabilities, motionManifest, changed: css !== input };
 }
 
 // src/compile-markup.mjs
@@ -7837,6 +8161,9 @@ function compileMarkupTree(source, from, options = {}) {
   const document2 = parseDocument(source, { xmlMode: true, lowerCaseAttributeNames: false, lowerCaseTags: false, withStartIndices: true });
   const diagnostics = [];
   const capabilities = [];
+  const motionRules = [];
+  const motionPlayStates = [];
+  const motionByStyle = /* @__PURE__ */ new Map();
   const styleNodes = findAll((node) => node.type === "tag" && node.name?.toLowerCase() === "style", document2.children);
   for (const style of styleNodes) {
     const cssText = style.children?.map((node) => node.data ?? "").join("") ?? "";
@@ -7844,6 +8171,9 @@ function compileMarkupTree(source, from, options = {}) {
     const result = compileCss(cssText, { ...options, from, lineOffset: prefix.split("\n").length - 1 });
     diagnostics.push(...result.diagnostics);
     capabilities.push(result.capabilities);
+    motionRules.push(...result.motionManifest.rules);
+    motionPlayStates.push(...result.motionManifest.playStates ?? []);
+    motionByStyle.set(style, result.motionManifest);
     style.children = [{ type: "text", data: result.css, parent: style, prev: null, next: null }];
   }
   if (options.profile && options.profile !== "legacy") {
@@ -7858,10 +8188,30 @@ function compileMarkupTree(source, from, options = {}) {
       const result = compileCss(`.__inline { ${node.attribs.style} }`, { ...options, from, lineOffset: prefix.split("\n").length - 1 });
       diagnostics.push(...result.diagnostics);
       capabilities.push(result.capabilities);
+      if (result.motionManifest.playStates?.length || result.motionManifest.rules.length) {
+        diagnostics.push({
+          severity: "error",
+          classification: "rejected",
+          code: "unsupported-inline-motion-manifest",
+          message: "Native animation controls in a style attribute have no stable element selector; move them to a CSS rule.",
+          source: from,
+          line: prefix.split("\n").length,
+          column: 1,
+          selector: "",
+          property: "style",
+          value: node.attribs.style
+        });
+      }
       node.attribs.style = result.css.slice(result.css.indexOf("{") + 1, result.css.lastIndexOf("}")).trim();
     }
   }
-  return { document: document2, diagnostics, capabilities: mergeCapabilities(options.profile ?? "legacy", capabilities, options.requiredFeatures) };
+  return {
+    document: document2,
+    diagnostics,
+    motionByStyle,
+    capabilities: mergeCapabilities(options.profile ?? "legacy", capabilities, options.requiredFeatures),
+    motionManifest: motionPlayStates.length ? { schemaVersion: 1, rules: motionRules, playStates: motionPlayStates } : { schemaVersion: 1, rules: motionRules }
+  };
 }
 function throwDiagnostics(diagnostics) {
   const errors = diagnostics.filter((item) => item.severity === "error");
@@ -7872,9 +8222,9 @@ ${detail}`);
 }
 function compileDocumentMarkup(source, options = {}) {
   const from = options.from ?? "memory.html";
-  const { document: document2, diagnostics, capabilities } = compileMarkupTree(source, from, options);
+  const { document: document2, diagnostics, capabilities, motionManifest } = compileMarkupTree(source, from, options);
   throwDiagnostics(diagnostics);
-  return { markup: dist_default(document2, { xmlMode: true, encodeEntities: false }), diagnostics, capabilities };
+  return { markup: dist_default(document2, { xmlMode: true, encodeEntities: false }), diagnostics, capabilities, motionManifest };
 }
 
 // src/runtime-entry.mjs
@@ -7887,9 +8237,9 @@ bridge.OnCompileRequest.Add((markup, sourcePath) => {
       mode: bridge.CapabilityMode || "strict",
       allowDegrade: JSON.parse(bridge.AllowedDegradationsJson || "[]")
     });
-    bridge.Complete(true, result.markup, JSON.stringify(result.diagnostics));
+    bridge.Complete(true, result.markup, JSON.stringify(result.diagnostics), JSON.stringify(result.motionManifest));
   } catch (error) {
-    bridge.Complete(false, "", error instanceof Error ? error.message : String(error));
+    bridge.Complete(false, "", error instanceof Error ? error.message : String(error), "");
   }
 });
 bridge.ReportReady();

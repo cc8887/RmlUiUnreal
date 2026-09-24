@@ -113,6 +113,8 @@ protected:
         OutMarkup = Markup;
         return true;
     }
+    /** Called after a document load attempt so extensions can bind data to the new native view. */
+    virtual void OnDocumentLoaded(bool bSuccess) {}
 
 private:
     void HandleDocumentEvent(const FString& Type, const FString& ElementId, const FString& Value);

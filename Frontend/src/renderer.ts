@@ -40,7 +40,7 @@ export interface RmlEvent {
   suppressTextInput(): void;
 }
 const nodes = new Map<number, RmlNode>();
-const listeners = new Map<number, { node: RmlNode; callback: (event: RmlEvent) => void; once: boolean; key: string }>();
+const listeners = new Map<number, { node: RmlNode; callback: (event: RmlEvent) => void; once: boolean; key: string; type: string }>();
 let sequence = 0;
 function wrap(handle: number, tag = ''): RmlNode | null {
   if (!handle) return null;
@@ -57,7 +57,7 @@ function listen(node: RmlNode, key: string, type: string, callback: (event: RmlE
   unlisten(node, key);
   const id = ++sequence;
   check(native.Listen(node.handle, type, id, capture));
-  node.events.set(key, id); listeners.set(id, { node, callback, once, key });
+  node.events.set(key, id); listeners.set(id, { node, callback, once, key, type });
 }
 export function onNodeEvent(node: RmlNode, type: string, callback: (event: RmlEvent) => void, capture = false): () => void {
   const key = `$subscription-${++sequence}`;
@@ -77,6 +77,31 @@ function dispatch(json: string): void {
   } catch (error) { report(error); }
 }
 native.OnNativeEvent.Add(dispatch);
+function dispatchCssAnimationBatch(json: string): void {
+  try {
+    const batch = JSON.parse(json);
+    if (batch?.type !== 'css-animation-events' || !Array.isArray(batch.events)) return;
+    for (const data of batch.events) {
+      let current = wrap(Number(data.target));
+      while (current) {
+        for (const listener of [...listeners.values()]) {
+          if (listener.node !== current || listener.type !== data.type) continue;
+          if (listener.once) unlisten(listener.node, listener.key);
+          const event = { type: data.type, animationName: data.animationName, iteration: data.iteration,
+            target: wrap(Number(data.target))!, currentTarget: current, value: '', checked: false,
+            key: 0, keyName: '', button: 0, phase: current.handle === Number(data.target) ? 2 : 3,
+            x: 0, y: 0, modifiers: 0, code: '', repeat: false, buttons: 0, pointerId: 0,
+            pointerType: 'mouse', relatedTarget: null, isComposing: false, data: '', wheelX: 0, wheelY: 0,
+            timestamp: 0, localX: 0, localY: 0, cancelable: false, defaultPrevented: false,
+            stopPropagation: () => {}, stopImmediatePropagation: () => {}, preventDefault: () => {}, suppressTextInput: () => {} } as RmlEvent;
+          listener.callback(event);
+        }
+        current = current.parentElement;
+      }
+    }
+  } catch (error) { report(error); }
+}
+native.OnHostEvent?.Add(dispatchCssAnimationBatch);
 function sweep(): void {
   for (const [handle, node] of nodes) if (!native.IsNodeValid(handle)) {
     for (const key of [...node.events.keys()]) unlisten(node, key);
@@ -85,7 +110,7 @@ function sweep(): void {
 }
 export function disposeRenderer(): void {
   for (const node of nodes.values()) for (const key of [...node.events.keys()]) unlisten(node, key);
-  nodes.clear(); listeners.clear(); native.OnNativeEvent.Remove(dispatch);
+  nodes.clear(); listeners.clear(); native.OnNativeEvent.Remove(dispatch); native.OnHostEvent?.Remove(dispatchCssAnimationBatch);
 }
 function kebab(name: string): string { return name.replace(/[A-Z]/g, char => '-' + char.toLowerCase()); }
 function patchProp(node: RmlNode, key: string, previous: any, next: any): void {

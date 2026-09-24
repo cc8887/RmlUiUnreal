@@ -43,8 +43,17 @@ public:
     virtual bool CompileWithOptions(const FString& Markup, const FString& SourcePath,
         const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics) override
     {
+        FString IgnoredMotionManifest;
+        return CompileWithMotion(Markup, SourcePath, Options, OutMarkup, OutDiagnostics, IgnoredMotionManifest);
+    }
+
+    virtual bool CompileWithMotion(const FString& Markup, const FString& SourcePath,
+        const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics,
+        FString& OutMotionManifest) override
+    {
         OutMarkup.Reset();
         OutDiagnostics.Reset();
+        OutMotionManifest.Reset();
         const FString NodeExecutable = FindNodeExecutable();
         const FString Script = FPaths::Combine(ToolsRoot, TEXT("src/compile-string-cli.mjs"));
         if (NodeExecutable.IsEmpty() || !FPaths::FileExists(Script))
@@ -111,6 +120,9 @@ public:
             OutDiagnostics = TEXT("WebCompat compiler response did not contain markup.");
             return false;
         }
+        const TSharedPtr<FJsonObject>* MotionManifest = nullptr;
+        if (Response->TryGetObjectField(TEXT("motionManifest"), MotionManifest) && MotionManifest && MotionManifest->IsValid())
+            FJsonSerializer::Serialize(MotionManifest->ToSharedRef(), TJsonWriterFactory<>::Create(&OutMotionManifest));
 
         const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
         if (Response->TryGetArrayField(TEXT("diagnostics"), Diagnostics) && Diagnostics)
@@ -209,11 +221,12 @@ void FRmlUiWebCompatModule::ClearCompiledDocumentCache()
 }
 
 bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const FString& SourcePath, FString& OutMarkup,
-    FString& OutDiagnostics, bool& bOutCacheHit, const FRmlUiCssCompileOptions& Options)
+    FString& OutDiagnostics, bool& bOutCacheHit, const FRmlUiCssCompileOptions& Options, FString* OutMotionManifest)
 {
     bOutCacheHit = false;
     OutMarkup.Reset();
     OutDiagnostics.Reset();
+    if (OutMotionManifest) OutMotionManifest->Reset();
     if (DocumentCompilers.IsEmpty())
     {
         OutDiagnostics = TEXT("No dynamic WebCompat document compiler is registered. Precompile this document during the build.");
@@ -224,7 +237,7 @@ bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const 
     const TSharedRef<IRmlUiWebDocumentCompiler>& DocumentCompiler = DocumentCompilers.Last();
     // A legacy compile must never satisfy a strict profile request from the cache.
     TSharedRef<FJsonObject> CacheInput = MakeShared<FJsonObject>();
-    CacheInput->SetStringField(TEXT("compiler"), DocumentCompiler->GetCompilerId().ToString() + TEXT("/rmlui-css-2.0.0"));
+    CacheInput->SetStringField(TEXT("compiler"), DocumentCompiler->GetCompilerId().ToString() + TEXT("/rmlui-css-2.1.0"));
     CacheInput->SetStringField(TEXT("source"), SourcePath);
     CacheInput->SetStringField(TEXT("markup"), Markup);
     CacheInput->SetStringField(TEXT("profile"), Options.CapabilityProfile);
@@ -239,13 +252,15 @@ bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const 
     {
         OutMarkup = Cached->Markup;
         OutDiagnostics = Cached->Diagnostics;
+        if (OutMotionManifest) *OutMotionManifest = Cached->MotionManifest;
         bOutCacheHit = true;
         ++DynamicCacheHitCount;
         return true;
     }
 
     ++DynamicCompileCount;
-    if (!DocumentCompiler->CompileWithOptions(Markup, SourcePath, Options, OutMarkup, OutDiagnostics))
+    FString MotionManifest;
+    if (!DocumentCompiler->CompileWithMotion(Markup, SourcePath, Options, OutMarkup, OutDiagnostics, MotionManifest))
     {
         LastError = OutDiagnostics;
         UE_LOG(LogRmlUiWebCompat, Error, TEXT("Dynamic document compilation failed: %s"), *OutDiagnostics);
@@ -257,7 +272,8 @@ bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const 
     if (CompiledDocumentOrder.Num() >= MaxCompiledDocumentCacheEntries)
         CompiledDocumentOrder.RemoveAt(0, 1, EAllowShrinking::No);
     CompiledDocumentOrder.Add(CacheKey);
-    CompiledDocumentCache.Add(CacheKey, {OutMarkup, OutDiagnostics});
+    if (OutMotionManifest) *OutMotionManifest = MotionManifest;
+    CompiledDocumentCache.Add(CacheKey, {OutMarkup, OutDiagnostics, MotionManifest});
     return true;
 }
 

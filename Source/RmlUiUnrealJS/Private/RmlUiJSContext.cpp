@@ -1023,8 +1023,16 @@ int32 URmlUiJSContext::RootNode() { CountNodeCall(); return View ? RmlUE_GetRoot
 int32 URmlUiJSContext::FindNode(const FString& Id) { CountNodeCall(); return View ? RmlUE_FindNode(View, TCHAR_TO_UTF8(*Id)) : 0; }
 int32 URmlUiJSContext::CreateNode(int32 Kind, const FString& Text) { CountNodeCall(); return View ? RmlUE_CreateNode(View, Kind, TCHAR_TO_UTF8(*Text)) : 0; }
 bool URmlUiJSContext::IsNodeValid(int32 Node) { return View && RmlUE_IsNodeValid(View, Node); }
-bool URmlUiJSContext::InsertNode(int32 Node, int32 Parent, int32 Before) { CountNodeCall(); return View && Result(RmlUE_InsertNode(View, Node, Parent, Before)); }
-bool URmlUiJSContext::RemoveNode(int32 Node) { CountNodeCall(); return View && Result(RmlUE_RemoveNode(View, Node)); }
+bool URmlUiJSContext::InsertNode(int32 Node, int32 Parent, int32 Before)
+{
+    CountNodeCall();
+    return View && Result(RmlUE_InsertNode(View, Node, Parent, Before));
+}
+bool URmlUiJSContext::RemoveNode(int32 Node)
+{
+    CountNodeCall();
+    return View && Result(RmlUE_RemoveNode(View, Node));
+}
 int32 URmlUiJSContext::ParentNode(int32 Node) { return View ? RmlUE_ParentNode(View, Node) : 0; }
 int32 URmlUiJSContext::NextNode(int32 Node) { return View ? RmlUE_NextNode(View, Node) : 0; }
 bool URmlUiJSContext::SetText(int32 Node, const FString& Text) { CountNodeCall(); return View && Result(RmlUE_SetNodeText(View, Node, TCHAR_TO_UTF8(*Text))); }
@@ -1211,7 +1219,18 @@ FString URmlUiJSContext::ChildNodes(int32 Node)
 bool URmlUiJSContext::ContainsNode(int32 Parent, int32 Child) { return View && RmlUE_ContainsNode(View, Parent, Child); }
 int32 URmlUiJSContext::ActiveNode() { return View ? RmlUE_ActiveNode(View) : 0; }
 bool URmlUiJSContext::BlurNode(int32 Node) { return View && RmlUE_BlurNode(View, Node); }
-bool URmlUiJSContext::SetNodeClass(int32 Node, const FString& Name, bool bEnabled) { CountNodeCall(); return View && Result(RmlUE_SetNodeClass(View, Node, TCHAR_TO_UTF8(*Name), bEnabled)); }
+bool URmlUiJSContext::SetNodeClass(int32 Node, const FString& Name, bool bEnabled)
+{
+    CountNodeCall();
+    return View && Result(RmlUE_SetNodeClass(View, Node, TCHAR_TO_UTF8(*Name), bEnabled));
+}
+bool URmlUiJSContext::RestartCssAnimation(int32 Node)
+{
+    CountNodeCall();
+    if (View && CssAnimationRestartCallback && CssAnimationRestartCallback(Node)) return true;
+    ReportError(TEXT("Cannot restart CSS animation: node has no active native CSS rule."));
+    return false;
+}
 FString URmlUiJSContext::GetComputedProperty(int32 Node, const FString& Name)
 {
     TArray<char> Buffer; Buffer.SetNumZeroed(16384);
@@ -2495,6 +2514,7 @@ void URmlUiJSContext::Dispose()
     PendingHostRequests.Empty();
     OnHostEvent.Clear(); PendingHostEvents.Empty();
     WakeCallback = {};
+    CssAnimationRestartCallback = {};
     bAnimationFramePending = false;
     NextTimerWakeTime = TNumericLimits<double>::Max();
     Environment.Reset();

@@ -21,6 +21,73 @@ test('composes Magic.css animation longhands across classes', () => {
   assert.equal(result.diagnostics.filter((item) => item.severity === 'error').length, 0);
 });
 
+test('compiles CSS keyframes to the native motion manifest', () => {
+  const source = `.motion { animation-duration: 240ms; animation-delay: 20ms; animation-timing-function: steps(4, jump-both); animation-fill-mode: both; }
+    .fadeIn { animation-name: fadeIn; animation-direction: alternate-reverse; animation-iteration-count: 2; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px) scale(.9); }
+      50% { opacity: .6; transform: translateY(2px) scale(1.03); animation-timing-function: cubic-bezier(.2, 1.2, .4, 1); }
+      to { opacity: 1; transform: translateY(0px) scale(1); }
+    }`;
+  const result = compileCss(source, { from: 'motion.css' });
+  assert.doesNotMatch(result.css, /@keyframes|animation:/);
+  assert.equal(result.motionManifest.rules.length, 1);
+  const rule = result.motionManifest.rules[0];
+  assert.equal(rule.selector, '.motion[class~="fadeIn"]');
+  assert.deepEqual({ duration: rule.duration, delay: rule.delay, iterations: rule.iterations, direction: rule.direction, fill: rule.fill },
+    { duration: 0.24, delay: 0.02, iterations: 2, direction: 3, fill: 3 });
+  assert.deepEqual(rule.tracks.map((track) => track.property), ['opacity', 'transform']);
+  assert.deepEqual(rule.tracks[0].keyframes[0].easing, [2, 4, 3, 0, 0]);
+  assert.deepEqual(rule.tracks[0].keyframes.map((frame) => frame.values), [[0], [.6], [1]]);
+  assert.deepEqual(rule.tracks[0].keyframes[1].easing, [1, .2, 1.2, .4, 1]);
+  assert.deepEqual(rule.tracks[1].keyframes[0].values, [0, 12, .9, .9, 0, 0, 0]);
+  assert.equal(result.diagnostics.filter((item) => item.severity === 'error').length, 0);
+});
+
+test('preserves infinite iterations and negative delay in the native motion manifest', () => {
+  const source = `.pulse { animation-name: pulse; animation-duration: 2s; animation-delay: -2.5s;
+    animation-iteration-count: infinite; animation-direction: alternate; }
+    @keyframes pulse { from { opacity: 0; } to { opacity: 1; } }`;
+  const result = compileCss(source, { from: 'motion.css' });
+  assert.equal(result.diagnostics.filter((item) => item.severity === 'error').length, 0);
+  assert.equal(result.motionManifest.rules.length, 1);
+  assert.deepEqual({ delay: result.motionManifest.rules[0].delay, iterations: result.motionManifest.rules[0].iterations },
+    { delay: -2.5, iterations: 0 });
+});
+
+test('emits mutation-time animation play-state rules', () => {
+  const result = compileCss(`.motion { animation-name: pulse; animation-duration: 2s; animation-play-state: running; }
+    .paused { animation-play-state: paused; }
+    @keyframes pulse { from { opacity: 0; } to { opacity: 1; } }`);
+  assert.deepEqual(result.motionManifest.playStates, [
+    { selector: '.motion', paused: false }, { selector: '.paused', paused: true },
+  ]);
+});
+
+test('rejects native selectors whose state changes cannot be observed', () => {
+  const keyframes = '@keyframes fade { from { opacity: 0; } to { opacity: 1; } }';
+  for (const selector of ['.motion:hover', '.open + .motion', '.open ~ .motion']) {
+    const result = compileCss(`${selector} { animation-name: fade; animation-duration: 1s; } ${keyframes}`);
+    assert.equal(result.motionManifest.rules.length, 0, selector);
+    assert.ok(result.diagnostics.some((item) => item.code === 'unsupported-native-animation-selector' && item.severity === 'error'), selector);
+  }
+  const descendant = compileCss('.open .motion { animation-name: fade; animation-duration: 1s; } ' + keyframes);
+  assert.deepEqual(descendant.motionManifest.rules.map((rule) => rule.selector), ['.open .motion']);
+  const stateOnly = compileCss('.motion:hover { animation-play-state: paused; }');
+  assert.ok(stateOnly.diagnostics.some((item) => item.code === 'unsupported-native-animation-selector' && item.severity === 'error'));
+});
+
+test('rejects keyframes that need an unsupported native property', () => {
+  const result = compileCss('.x { animation-duration: 1s; animation-name: blur; } @keyframes blur { from { filter: blur(0); } to { filter: blur(4px); } }');
+  assert.equal(result.diagnostics.some((item) => item.code === 'unsupported-native-css-animation' && item.severity === 'error'), true);
+});
+
+test('keeps a shared duration provider for a sibling without local keyframes', () => {
+  const result = compileCss('.motion { animation-duration: 1s; } .native { animation-name: fade; } .external { animation-name: external; } @keyframes fade { from { opacity: 0; } to { opacity: 1; } }');
+  assert.equal(result.motionManifest.rules.length, 1);
+  assert.match(result.css, /\.motion\.external\s*\{\s*animation: 1s cubic-out external/);
+});
+
 test('converts Hover.css transition longhands and vendor duplicates', () => {
   const source = `.hvr-grow {
     -webkit-transform: perspective(1px) translateZ(0);

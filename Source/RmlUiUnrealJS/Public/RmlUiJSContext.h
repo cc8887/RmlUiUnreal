@@ -84,6 +84,7 @@ public:
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Nodes") int32 ActiveNode();
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Nodes") bool BlurNode(int32 Node);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Nodes") bool SetNodeClass(int32 Node, const FString& Name, bool bEnabled);
+    UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") bool RestartCssAnimation(int32 Node);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Nodes") FString GetComputedProperty(int32 Node, const FString& Name);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Layout") FString MeasureNodes(const FString& HandlesJson);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") FString ResolveAnimationHostSnapshot(
@@ -126,6 +127,7 @@ public:
     bool HasAnimationFrameWake() const { return bAnimationFramePending; }
     bool HasDispatchWake() const;
     void SetWakeCallback(TFunction<void()> Callback) { WakeCallback = MoveTemp(Callback); }
+    void SetCssAnimationRestartCallback(TFunction<bool(int32)> Callback) { CssAnimationRestartCallback = MoveTemp(Callback); }
     void ActivateHostRequests();
     void Dispose();
     FString CaptureState();
@@ -167,5 +169,6 @@ private:
     bool bAnimationFramePending = false;
     double NextTimerWakeTime = TNumericLimits<double>::Max();
     TFunction<void()> WakeCallback;
+    TFunction<bool(int32)> CssAnimationRestartCallback;
     FDelegateHandle AnimationPostAdvanceHandle;
 };

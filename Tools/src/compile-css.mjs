@@ -1,13 +1,14 @@
 import postcss from 'postcss';
 import { applyCssProfile, cssDiagnostic } from './css-profile.mjs';
 import { resolveProfile } from './capabilities.mjs';
+import { extractMotionManifest } from './motion-manifest.mjs';
 
 const motionFields = {
   animation: new Map([
     ['animation-duration', 'duration'], ['animation-timing-function', 'timing'],
     ['animation-delay', 'delay'], ['animation-iteration-count', 'iteration'],
     ['animation-direction', 'direction'], ['animation-play-state', 'playState'],
-    ['animation-name', 'name'],
+    ['animation-fill-mode', 'fill'], ['animation-name', 'name'],
   ]),
   transition: new Map([
     ['transition-duration', 'duration'], ['transition-timing-function', 'timing'],
@@ -125,13 +126,20 @@ function convertTiming(decl, diagnostics) {
 }
 
 function convertValue(kind, field, decl, diagnostics) {
+  if (kind === 'animation' && field === 'timing') {
+    const value = singleValue(decl, diagnostics);
+    if (value === null) return null;
+    const lower = value.toLowerCase();
+    if (/^(?:cubic-bezier\(|steps\()/.test(lower) || lower === 'step-start' || lower === 'step-end') return lower;
+    return convertTiming(decl, diagnostics);
+  }
   if (field === 'timing') return convertTiming(decl, diagnostics);
   const value = singleValue(decl, diagnostics);
   if (value === null) return null;
   const lower = value.toLowerCase();
   if (kind === 'animation' && field === 'direction') {
     if (lower === 'normal') return '';
-    if (lower === 'alternate') return 'alternate';
+    if (['alternate', 'reverse', 'alternate-reverse'].includes(lower)) return lower;
     diagnostics.push(diagnostic(decl, 'error', 'unsupported-animation-direction', `${decl.prop}: ${decl.value} has no RmlUi 6.3 equivalent.`));
     return null;
   }
@@ -241,8 +249,9 @@ export function compileCss(source, options = {}) {
         diagnostics.push(diagnostic(matching[0], 'error', `mixed-${kind}-syntax`, `Do not mix ${kind} shorthand and longhands in one rule in WebCompat v1.`));
         continue;
       }
-      const record = { rule, values: {}, important: false, sourceDecl: matching[0] };
+      const record = { rule, values: {}, rawValues: {}, important: false, sourceDecl: matching[0], native: false };
       for (const decl of matching) {
+        record.rawValues[fields.get(decl.prop.toLowerCase())] = decl.value.trim();
         const value = convertValue(kind, fields.get(decl.prop.toLowerCase()), decl, diagnostics);
         if (value !== null) record.values[fields.get(decl.prop.toLowerCase())] = value;
         record.important ||= decl.important;
@@ -250,14 +259,23 @@ export function compileCss(source, options = {}) {
       }
       records[kind].push(record);
     }
-    for (const decl of [...(rule.nodes?.filter((node) => node.type === 'decl') ?? [])]) {
-      if (decl.prop.toLowerCase() === 'animation-fill-mode') {
-        diagnostics.push(diagnostic(decl, 'warning', 'animation-fill-mode-dropped', 'RmlUi 6.3 has no animation-fill-mode; the declaration was dropped.'));
-        decl.remove();
-      }
-    }
   });
-  emitComposedRules(root, records.animation, 'animation', diagnostics);
+  const motionManifest = extractMotionManifest(root, records.animation, diagnostics, diagnostic);
+  for (const record of records.animation.filter((item) => !item.native)) {
+    if (/^(?:cubic-bezier\(|steps\()/.test(record.rawValues.timing ?? '') || ['step-start', 'step-end'].includes(record.rawValues.timing ?? ''))
+      diagnostics.push(diagnostic(record.sourceDecl, 'error', 'unsupported-timing-function',
+        `${record.rawValues.timing} requires a valid native @keyframes rule.`));
+    if (['reverse', 'alternate-reverse'].includes((record.rawValues.direction ?? '').toLowerCase()))
+      diagnostics.push(diagnostic(record.sourceDecl, 'error', 'unsupported-animation-direction',
+        `${record.rawValues.direction} requires a valid native @keyframes rule.`));
+  }
+  for (const record of records.animation.filter((item) => !item.native && item.rawValues.fill)) {
+    diagnostics.push(diagnostic(record.sourceDecl, 'warning', 'animation-fill-mode-dropped',
+      'RmlUi 6.3 has no animation-fill-mode; the declaration was dropped because this rule did not enter the native animation IR.'));
+  }
+  // Duration-only provider rules may still feed a non-native sibling animation,
+  // so retain them as composition inputs even when another sibling used the IR.
+  emitComposedRules(root, records.animation.filter((record) => !record.native || !record.rawValues.name), 'animation', diagnostics);
   emitComposedRules(root, records.transition, 'transition', diagnostics);
   const capabilities = applyCssProfile(root, options, diagnostics);
   if (options.profile && options.profile !== 'legacy') {
@@ -275,5 +293,5 @@ export function compileCss(source, options = {}) {
     if (options.sourceLabel) item.source = options.sourceLabel;
   }
   const css = root.toString();
-  return { css, diagnostics, capabilities, changed: css !== input };
+  return { css, diagnostics, capabilities, motionManifest, changed: css !== input };
 }
