@@ -141,7 +141,8 @@ export interface RmlAnimationHostSnapshot {
 }
 
 const transformAliases = new Set([
-  'x', 'y', 'translatex', 'translatey', 'scale', 'rotate', 'rotation',
+  'x', 'y', 'translatex', 'translatey', 'xpercent', 'ypercent',
+  'scale', 'rotate', 'rotation', 'skew', 'skewx', 'skewy',
 ]);
 const unitlessProperties = new Set(['opacity', 'z-index', 'font-weight', 'flex-grow', 'flex-shrink']);
 
@@ -183,7 +184,7 @@ function adapterSnapshot(
   properties: readonly string[],
 ): RmlAnimationHostSnapshot {
   try {
-    return captureAnimationHostSnapshot(targets, properties);
+    return captureAnimationHostSnapshot(targets, properties, true);
   } catch (error) {
     return fail(library, 'host_snapshot_failed', error instanceof Error ? error.message : String(error));
   }
@@ -256,8 +257,10 @@ function transformValue(library: string, sourceName: string, value: Scalar): str
   const text = String(value).trim();
   if (name === 'scale') return `scale(${text})`;
   if (name === 'rotate' || name === 'rotation') return `rotate(${typeof value === 'number' ? `${value}deg` : text})`;
-  if (name === 'x' || name === 'translatex') return `translate(${typeof value === 'number' ? `${value}px` : text},0px)`;
-  if (name === 'y' || name === 'translatey') return `translate(0px,${typeof value === 'number' ? `${value}px` : text})`;
+  if (name === 'skew' || name === 'skewx') return `skewX(${typeof value === 'number' ? `${value}deg` : text})`;
+  if (name === 'skewy') return `skewY(${typeof value === 'number' ? `${value}deg` : text})`;
+  if (name === 'x' || name === 'translatex' || name === 'xpercent') return `translate(${typeof value === 'number' ? `${value}px` : text},0px)`;
+  if (name === 'y' || name === 'translatey' || name === 'ypercent') return `translate(0px,${typeof value === 'number' ? `${value}px` : text})`;
   return fail(library, 'unsupported_transform', `Unsupported transform alias ${sourceName}`);
 }
 
@@ -266,14 +269,14 @@ function transformBaseValue(library: string, sourceName: string, computed: strin
   const text = (computed || '').trim().toLowerCase();
   if (!text || text === 'none') {
     if (name === 'scale') return 1;
-    if (name === 'rotate' || name === 'rotation') return '0deg';
+    if (name === 'rotate' || name === 'rotation' || name.startsWith('skew')) return '0deg';
     return '0px';
   }
   if (name === 'scale') {
     const match = text.match(/^scale\(\s*([^,)]+)\s*\)$/);
     if (match) return match[1];
-  } else if (name === 'rotate' || name === 'rotation') {
-    const match = text.match(/^rotate\(\s*([^)]+)\s*\)$/);
+  } else if (name === 'rotate' || name === 'rotation' || name.startsWith('skew')) {
+    const match = text.match(/^(?:rotate|skewx|skewy)\(\s*([^)]+)\s*\)$/);
     if (match) return match[1];
   } else {
     const match = text.match(/^translate\(\s*([^,]+)\s*,\s*([^)]+)\s*\)$/);
@@ -344,7 +347,8 @@ function normalizePowerEasing(library: string, source: unknown, fallback: string
   if (typeof source !== 'string') fail(library, 'unsupported_easing', 'Function and object easings require the JS callback route');
   const text = source.trim();
   const lower = text.toLowerCase();
-  if (['linear', 'none', 'ease', 'ease-in', 'ease-out', 'ease-in-out'].includes(lower) || lower.startsWith('cubic-bezier('))
+  if (['linear', 'none', 'ease', 'ease-in', 'ease-out', 'ease-in-out', 'step-start', 'step-end'].includes(lower) ||
+      lower.startsWith('cubic-bezier(') || lower.startsWith('steps('))
     return lower === 'none' ? 'linear' : lower;
   const anime = lower.match(/^(in|out|inout)\(\s*([1-9](?:\.\d+)?)\s*\)$/);
   if (anime) return `rml-power(${anime[1]},${anime[2]})`;
@@ -361,8 +365,62 @@ function normalizePowerEasing(library: string, source: unknown, fallback: string
 function validateSourceRequest(request: RmlAnimationSourceRequest): void {
   const { library, tracks } = request;
   const transforms = tracks.filter(track => transformAliases.has(track.sourceName.toLowerCase()));
-  if (transforms.length > 1) fail(library, 'unsupported_transform_composition', 'Multiple transform primitives require transform composition');
+  const components = new Set<string>();
+  for (const track of transforms) {
+    const name = track.sourceName.toLowerCase();
+    const component = name === 'x' || name === 'translatex' || name === 'xpercent' ? 'x'
+      : name === 'y' || name === 'translatey' || name === 'ypercent' ? 'y'
+        : name === 'rotation' ? 'rotate' : name === 'skew' ? 'skewx' : name;
+    if (components.has(component))
+      fail(library, 'unsupported_transform_composition', `Transform component ${component} is specified more than once`);
+    components.add(component);
+  }
   if (!tracks.length) fail(library, 'missing_properties', 'No animatable properties were provided');
+}
+
+function composeTransformFrames(
+  library: string,
+  tracks: readonly { sourceName: string; frames: RmlAnimationKeyframe[] }[],
+): RmlAnimationKeyframe[] {
+  const reference = tracks[0].frames;
+  if (tracks.some(track => track.frames.length !== reference.length || track.frames.some((frame, index) =>
+    frame.offset !== reference[index].offset || (frame.easing || '') !== (reference[index].easing || ''))))
+    fail(library, 'unsupported_transform_timing_composition',
+      'Transform components require identical keyframe offsets and easing');
+  return reference.map((frame, index) => {
+    let x = '0px', y = '0px', scaleX = '1', scaleY = '1', rotation = '0deg', skewX = '0deg', skewY = '0deg';
+    for (const track of tracks) {
+      const name = track.sourceName.toLowerCase();
+      const value = String(track.frames[index].value).trim();
+      if (name === 'x' || name === 'translatex') {
+        const match = value.match(/^translate\(([^,]+),\s*0px\)$/);
+        if (!match) fail(library, 'unsupported_transform_composition', `Cannot compose ${track.sourceName}`);
+        x = match[1];
+      } else if (name === 'y' || name === 'translatey') {
+        const match = value.match(/^translate\(0px,\s*([^\)]+)\)$/);
+        if (!match) fail(library, 'unsupported_transform_composition', `Cannot compose ${track.sourceName}`);
+        y = match[1];
+      } else if (name === 'scale') {
+        const match = value.match(/^scale\(([^,\)]+)(?:,\s*([^\)]+))?\)$/);
+        if (!match) fail(library, 'unsupported_transform_composition', 'Cannot compose scale');
+        scaleX = match[1]; scaleY = match[2] || match[1];
+      } else if (name === 'rotate' || name === 'rotation') {
+        const match = value.match(/^rotate\(([^\)]+)\)$/);
+        if (!match) fail(library, 'unsupported_transform_composition', `Cannot compose ${track.sourceName}`);
+        rotation = match[1];
+      } else {
+        const match = value.match(/^skew([XY])\(([^\)]+)\)$/i);
+        if (!match) fail(library, 'unsupported_transform_composition', `Cannot compose ${track.sourceName}`);
+        if (match[1].toLowerCase() === 'x') skewX = match[2]; else skewY = match[2];
+      }
+    }
+    const hasSkew = tracks.some(track => track.sourceName.toLowerCase().startsWith('skew'));
+    return {
+      offset: frame.offset,
+      value: `translate(${x},${y}) scale(${scaleX},${scaleY}) rotate(${rotation})${hasSkew ? ` skew(${skewX},${skewY})` : ''}`,
+      ...(frame.easing ? { easing: frame.easing } : {}),
+    };
+  });
 }
 
 function requiredSourceProperties(tracks: readonly RmlAnimationSourceTrack[]): string[] {
@@ -393,7 +451,41 @@ function compileSourceRequestForNodes(
   for (let targetIndex = 0; targetIndex < nodes.length; ++targetIndex) {
     const target = nodes[targetIndex];
     const staggerDelay = sourceStaggerDelay(request, targetIndex, nodes.length);
-    for (const track of tracks) {
+    const transformTracks = tracks.filter(track => transformAliases.has(track.sourceName.toLowerCase())).map(track => {
+      const name = track.sourceName.toLowerCase();
+      if (name !== 'xpercent' && name !== 'ypercent') return track;
+      const extent = name === 'xpercent' ? target.metrics?.width : target.metrics?.height;
+      if (!Number.isFinite(extent)) fail(library, 'missing_target_metrics', `${track.sourceName} requires target dimensions`);
+      return {
+        sourceName: name === 'xpercent' ? 'x' : 'y',
+        frames: track.frames.map(frame => {
+          const percent = typeof frame.value === 'number' ? frame.value : Number(String(frame.value).replace(/%$/, ''));
+          if (!Number.isFinite(percent)) fail(library, 'unsupported_percentage_transform', `${track.sourceName} requires numeric percentages`);
+          return { ...frame, value: percent * extent! / 100 };
+        }),
+      };
+    });
+    const regularTracks = tracks.filter(track => !transformAliases.has(track.sourceName.toLowerCase()));
+    const compiledTransforms = transformTracks.map(track => ({
+      sourceName: track.sourceName,
+      frames: sourceTrackFrames(
+        library, track.sourceName, track.frames, defaultEasing,
+        resolvedValues?.get(`${target.node}:transform`) ?? target.properties.transform,
+      ),
+    }));
+    if (compiledTransforms.length) {
+      const keyframes = compiledTransforms.length === 1
+        ? compiledTransforms[0].frames
+        : composeTransformFrames(library, compiledTransforms);
+      plans.push({
+        node: target.node,
+        property: 'transform',
+        keyframes,
+        options: staggerDelay ? { ...options, delay: (options.delay ?? 0) + staggerDelay } : options,
+      });
+      if (resolvedValues) resolvedValues.set(`${target.node}:transform`, String(keyframes[keyframes.length - 1].value));
+    }
+    for (const track of regularTracks) {
       const property = normalizedProperty(track.sourceName);
       const targetProperty = `${target.node}:${property}`;
       const keyframes = sourceTrackFrames(
@@ -1267,6 +1359,7 @@ export interface AnimationJsOptions {
   pause?: number;
   dir?: 'normal' | 'reverse' | 'alternate';
   defer?: number;
+  stagger?: RmlAnimationSourceStagger;
   onFrame?: (...args: unknown[]) => void;
   onDone?: () => void;
 }
@@ -1289,7 +1382,7 @@ export function adaptAnimationJs(input: AnimationJsOptions): RmlAnimationGroup {
     direction: direction as RmlAnimationDirection,
     fill: 'both', composite: 'replace', fallback: 'js-batched',
   };
-  return runPlans(library, buildPlans(library, input.el, input.draw, options, easing), input.onDone);
+  return runPlans(library, buildPlans(library, input.el, input.draw, options, easing, input.stagger), input.onDone);
 }
 
 const animeMetadata = new Set([
@@ -1605,6 +1698,7 @@ const gsapMetadata = new Set([
   'stagger', 'startAt', 'yoyoEase', 'easeReverse', 'callbackScope', 'onComplete', 'onCompleteParams', 'onRepeat',
   'onRepeatParams', 'onReverseComplete', 'onReverseCompleteParams', 'onStart', 'onStartParams', 'onUpdate', 'onUpdateParams',
   'defaults', 'parent', 'scrollTrigger',
+  'autoAlpha',
 ]);
 
 export interface GsapVars extends Record<string, unknown> {
@@ -1617,6 +1711,7 @@ export interface GsapVars extends Record<string, unknown> {
   ease?: string;
   stagger?: number | object;
   keyframes?: Record<string, unknown> | Array<Record<string, unknown>>;
+  autoAlpha?: number;
   onComplete?: () => void;
   onInterrupt?: () => void;
 }
@@ -1698,7 +1793,6 @@ function gsapSourceRequest(
     if (vars[callbackParams] !== undefined) fail(library, 'unsupported_callback_params', `${callbackParams} cannot be preserved`);
   }
   if (vars.overwrite === false) fail(library, 'unsupported_overwrite', 'The runtime currently owns each target/property with replace semantics');
-  if (vars.autoAlpha !== undefined) fail(library, 'unsupported_auto_alpha', 'autoAlpha also changes visibility and needs a compound effect');
   if (vars.repeat === -1 || vars.repeat === Infinity) fail(library, 'unsupported_infinite_loop', 'Infinite repeats are not supported');
   const repeats = Math.max(0, Math.floor(vars.repeat ?? 0));
   if ((vars.repeatDelay ?? 0) !== 0 && repeats > 0) fail(library, 'unsupported_loop_delay', 'repeatDelay is not represented by the current IR');
@@ -1717,6 +1811,18 @@ function gsapSourceRequest(
     direction, fill: 'both', composite: 'replace', fallback: 'js-batched',
   };
   const toProperties = Object.fromEntries(Object.entries(vars).filter(([name]) => !gsapMetadata.has(name)));
+  if (vars.autoAlpha !== undefined) {
+    if (typeof vars.autoAlpha !== 'number' || !Number.isFinite(vars.autoAlpha) || vars.autoAlpha < 0 || vars.autoAlpha > 1)
+      fail(library, 'invalid_auto_alpha', 'autoAlpha must be a number within 0..1');
+    toProperties.opacity = vars.autoAlpha;
+    toProperties.visibility = vars.autoAlpha === 0 ? 'hidden' : 'visible';
+    if (from?.autoAlpha !== undefined) {
+      const source = Number(from.autoAlpha);
+      if (!Number.isFinite(source) || source < 0 || source > 1)
+        fail(library, 'invalid_auto_alpha', 'from autoAlpha must be a number within 0..1');
+      from = { ...from, opacity: source, visibility: source === 0 ? 'hidden' : 'visible' };
+    }
+  }
   const stagger = normalizeGsapStagger(library, vars.stagger);
   if (vars.keyframes !== undefined) {
     if (from) fail(library, 'unsupported_keyframes_from_to', 'GSAP fromTo cannot be combined with keyframes');

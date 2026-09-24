@@ -7,8 +7,36 @@ body { width: 100%; height: 100%; margin: 0; overflow: hidden; font-family: Lato
 .popup-actions { margin-top: 31px; text-align: right; }
 button { height: 42px; padding: 9px 18px; border: 0; border-radius: 4px; font-family: LatoLatin; font-size: 15px; color: #eaf7f3; background-color: #168a70; }
 .secondary { margin-right: 8px; color: #344448; background-color: #dfe7e5; }
-#hover-grow { position: absolute; left: 525px; top: 194px; width: 180px; height: 56px; }
-.caption { position: absolute; left: 493px; top: 274px; width: 245px; text-align: center; color: #a9babd; }
+#motion-dropdown { position: absolute; left: 525px; top: 62px; width: 220px; z-index: 3; }
+#dropdown-trigger { display: flex; align-items: center; justify-content: space-between; width: 220px; height: 50px; box-sizing: border-box; padding: 12px 15px; text-align: left; color: #f1faf7; background-color: #14866d; }
+#dropdown-trigger:hover, #dropdown-trigger:focus { background-color: #1ba885; }
+.dropdown-trigger-mark { font-size: 22px; line-height: 1; }
+#dropdown-menu { position: absolute; left: 0; top: 58px; width: 220px; }
+.dropdown-surface { width: 220px; box-sizing: border-box; padding: 8px; border-radius: 6px; background-color: #f5f8f7; box-shadow: 0 14px 30px #0008; opacity: 0; transition: opacity 0.25s cubic-out; }
+.dropdown-heading { padding: 7px 9px 8px; color: #526267; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+.dropdown-option { display: flex; justify-content: space-between; padding: 10px 9px; color: #172327; }
+.dropdown-option:hover, .dropdown-option:focus { color: #14866d; background-color: #e5f3ee; }
+.dropdown-option span { color: #8b9a9d; font-family: LatoLatin; font-size: 12px; }
+
+/* Transitions.dev menu-dropdown, with hover/focus driving the static RmlUi fixture. */
+:root { --dropdown-open-dur: 0.25s; --dropdown-close-dur: 0.15s; --dropdown-pre-scale: 0.97; --dropdown-closing-scale: 0.99; --dropdown-ease: cubic-out; }
+.t-dropdown { transform-origin: 0% 0%; transform: scale(0.97); pointer-events: none; transition: transform 0.25s cubic-out; }
+.t-dropdown[data-origin="top-right"] { transform-origin: 100% 0%; }
+.t-dropdown[data-origin="top-center"] { transform-origin: 50% 0%; }
+.t-dropdown[data-origin="bottom-left"] { transform-origin: 0% 100%; }
+.t-dropdown[data-origin="bottom-center"] { transform-origin: 50% 100%; }
+.t-dropdown[data-origin="bottom-right"] { transform-origin: 100% 100%; }
+.t-dropdown.is-open { transform: scale(1); pointer-events: auto; }
+.t-dropdown.is-open .dropdown-surface { opacity: 1; }
+.t-dropdown.is-closing { transform: scale(0.99); pointer-events: none; transition: transform 0.15s cubic-out; }
+.t-dropdown.is-closing .dropdown-surface { opacity: 0; transition: opacity 0.15s cubic-out; }
+#motion-dropdown:hover .t-dropdown, #dropdown-trigger:hover + .t-dropdown, #dropdown-trigger:focus + .t-dropdown { transform: scale(1); pointer-events: auto; }
+#motion-dropdown:hover .dropdown-surface, #dropdown-trigger:hover + .t-dropdown .dropdown-surface, #dropdown-trigger:focus + .t-dropdown .dropdown-surface { opacity: 1; }
+#motion-dropdown:not(:hover) .t-dropdown { transition: transform 0.15s cubic-out; }
+#motion-dropdown:not(:hover) .dropdown-surface { transition: opacity 0.15s cubic-out; }
+@media (prefers-reduced-motion: reduce) { .t-dropdown, .dropdown-surface { transition: none !important; } }
+#hover-grow { position: absolute; left: 525px; top: 330px; width: 180px; height: 56px; }
+.caption { position: absolute; left: 493px; top: 410px; width: 245px; text-align: center; color: #a9babd; }
 
 /* Magic.css 1.4.8, commit f26d3c3beaf3017c90fb27ac6f67168fac26de06. */
 .magictime {

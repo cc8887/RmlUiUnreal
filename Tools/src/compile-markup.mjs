@@ -2,18 +2,37 @@ import render from 'dom-serializer';
 import { findAll } from 'domutils';
 import { parseDocument } from 'htmlparser2';
 import { compileCss } from './compile-css.mjs';
+import { mergeCapabilities } from './capabilities.mjs';
 
-export function compileMarkupTree(source, from) {
-  const document = parseDocument(source, { xmlMode: true, lowerCaseAttributeNames: false, lowerCaseTags: false });
+export function compileMarkupTree(source, from, options = {}) {
+  const document = parseDocument(source, { xmlMode: true, lowerCaseAttributeNames: false, lowerCaseTags: false, withStartIndices: true });
   const diagnostics = [];
+  const capabilities = [];
   const styleNodes = findAll((node) => node.type === 'tag' && node.name?.toLowerCase() === 'style', document.children);
   for (const style of styleNodes) {
     const cssText = style.children?.map((node) => node.data ?? '').join('') ?? '';
-    const result = compileCss(cssText, { from: `${from}#inline-style` });
+    const prefix = source.slice(0, style.children?.[0]?.startIndex ?? style.startIndex ?? 0);
+    const result = compileCss(cssText, { ...options, from, lineOffset: prefix.split('\n').length - 1 });
     diagnostics.push(...result.diagnostics);
+    capabilities.push(result.capabilities);
     style.children = [{ type: 'text', data: result.css, parent: style, prev: null, next: null }];
   }
-  return { document, diagnostics };
+  if (options.profile && options.profile !== 'legacy') {
+    const links = findAll(node => node.type === 'tag' && node.name?.toLowerCase() === 'link' && node.attribs?.href && (node.attribs.rel?.toLowerCase() === 'stylesheet' || /^text\/(?:r?css)$/i.test(node.attribs.type ?? '') || /\.r?css$/i.test(node.attribs.href)), document.children);
+    for (const link of links) {
+      if (options.allowLinkedStyles && !/^(?:[a-z]+:|\/\/|#)/i.test(link.attribs.href)) continue;
+      diagnostics.push({ severity: 'error', classification: 'rejected', code: 'unvalidated-linked-stylesheet', message: `Strict documents must inline CSS or use a precompiled local stylesheet; ${link.attribs.href} has not passed the renderer profile.`, source: from, line: source.slice(0, link.startIndex ?? 0).split('\n').length, column: 1, selector: '', property: '', value: link.attribs.href });
+    }
+    const styledNodes = findAll(node => node.type === 'tag' && typeof node.attribs?.style === 'string', document.children);
+    for (const node of styledNodes) {
+      const prefix = source.slice(0, node.startIndex ?? 0);
+      const result = compileCss(`.__inline { ${node.attribs.style} }`, { ...options, from, lineOffset: prefix.split('\n').length - 1 });
+      diagnostics.push(...result.diagnostics);
+      capabilities.push(result.capabilities);
+      node.attribs.style = result.css.slice(result.css.indexOf('{') + 1, result.css.lastIndexOf('}')).trim();
+    }
+  }
+  return { document, diagnostics, capabilities: mergeCapabilities(options.profile ?? 'legacy', capabilities, options.requiredFeatures) };
 }
 
 export function throwDiagnostics(diagnostics) {
@@ -25,7 +44,7 @@ export function throwDiagnostics(diagnostics) {
 
 export function compileDocumentMarkup(source, options = {}) {
   const from = options.from ?? 'memory.html';
-  const { document, diagnostics } = compileMarkupTree(source, from);
+  const { document, diagnostics, capabilities } = compileMarkupTree(source, from, options);
   throwDiagnostics(diagnostics);
-  return { markup: render(document, { xmlMode: true, encodeEntities: false }), diagnostics };
+  return { markup: render(document, { xmlMode: true, encodeEntities: false }), diagnostics, capabilities };
 }

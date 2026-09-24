@@ -4,6 +4,8 @@ export type RmlAnimationRoute = 'native' | 'js_batched';
 export type RmlAnimationState = 'running' | 'paused' | 'finished' | 'cancelled' | 'replaced';
 export type RmlAnimationCompletionReason = 'completed' | 'cancelled' | 'replaced';
 export type RmlAnimationDirection = 'normal' | 'reverse' | 'alternate' | 'alternate-reverse';
+export type RmlAnimationFillMode = 'none' | 'forwards' | 'backwards' | 'both';
+export type RmlAnimationCostClass = 'visual' | 'visual-discrete' | 'paint' | 'layout-position' | 'layout-size';
 
 export interface RmlAnimationKeyframe {
   offset: number;
@@ -17,7 +19,7 @@ export interface RmlAnimationOptions {
   iterations?: number;
   playbackRate?: number;
   direction?: RmlAnimationDirection;
-  fill?: 'both';
+  fill?: RmlAnimationFillMode;
   composite?: 'replace' | 'layered-replace';
   compositionOrder?: number;
   fallback?: 'js-batched' | 'reject';
@@ -33,6 +35,7 @@ export interface RmlAnimation {
   readonly handle: string;
   readonly route: RmlAnimationRoute;
   readonly state: RmlAnimationState;
+  readonly costClass?: RmlAnimationCostClass;
   readonly finished: Promise<RmlAnimationCompletion>;
   pause(): void;
   play(): void;
@@ -75,7 +78,7 @@ export interface RmlAnimationRequest {
   options: RmlAnimationOptions;
 }
 
-interface PropertyBatchResult { accepted: boolean; applied: number; error?: string }
+interface PropertyBatchResult { accepted: boolean; applied: number; error?: string; failedIndices?: number[] }
 interface FallbackFrame {
   offset: number;
   values: number[];
@@ -105,6 +108,7 @@ interface CompiledPlanCacheEntry {
   allocatedBytes: number;
   activeBindings: number;
   lastUsed: number;
+  costClass: RmlAnimationCostClass;
 }
 const compiledPlanCache = new Map<string, CompiledPlanCacheEntry>();
 
@@ -135,6 +139,14 @@ function removeNativeAnimation(animation: AnimationController): void {
   if (lowWords?.size === 0) nativeAnimations.delete(high);
 }
 
+function isTerminalAnimationState(state: RmlAnimationState): boolean {
+  return state === 'finished' || state === 'cancelled' || state === 'replaced';
+}
+
+function isStaleNativeHandleError(error: unknown): boolean {
+  return error instanceof Error && error.message === 'stale_handle';
+}
+
 abstract class AnimationController implements RmlAnimation {
   protected currentState: RmlAnimationState = 'running';
   readonly finished: Promise<RmlAnimationCompletion>;
@@ -146,6 +158,7 @@ abstract class AnimationController implements RmlAnimation {
     readonly route: RmlAnimationRoute,
     protected readonly targetKey: string,
     private readonly compiledPlanKey?: string,
+    readonly costClass?: RmlAnimationCostClass,
   ) {
     if (route === 'native') this.nativeHandleWords = nativeHandleWords(handle);
     this.finished = new Promise(resolve => { this.resolveFinished = resolve; });
@@ -160,7 +173,7 @@ abstract class AnimationController implements RmlAnimation {
   status(): RmlAnimationState { return this.currentState; }
 
   settle(reason: RmlAnimationCompletionReason): void {
-    if (this.currentState === 'finished' || this.currentState === 'cancelled' || this.currentState === 'replaced') return;
+    if (isTerminalAnimationState(this.currentState)) return;
     this.currentState = reason === 'completed' ? 'finished' : reason;
     const targetAnimations = animationsByTarget.get(this.targetKey);
     targetAnimations?.delete(this);
@@ -183,11 +196,19 @@ class NativeAnimationController extends AnimationController {
   play(): void { this.control('resume'); }
   seek(value: number): void { requireFiniteNonNegative(value, 'seek'); this.control('seek', value); }
   setPlaybackRate(value: number): void { requirePositive(value, 'playbackRate'); this.control('setplaybackrate', value); }
-  cancel(): void { this.control('cancel'); }
-  status(): RmlAnimationState {
-    if (this.currentState === 'finished' || this.currentState === 'cancelled' || this.currentState === 'replaced') {
-      return this.currentState;
+  cancel(): void {
+    if (isTerminalAnimationState(this.currentState)) return;
+    try {
+      this.control('cancel');
+    } catch (error) {
+      // The native track can retire before its completion event reaches JS.
+      // Treat that race as an idempotent cancellation; other control errors remain visible.
+      if (!isStaleNativeHandleError(error)) throw error;
+      this.settle('cancelled');
     }
+  }
+  status(): RmlAnimationState {
+    if (isTerminalAnimationState(this.currentState)) return this.currentState;
     return this.control('status').state as RmlAnimationState;
   }
 }
@@ -207,10 +228,12 @@ class JsAnimationController extends AnimationController {
     readonly duration: number,
     readonly iterations: number,
     readonly direction: RmlAnimationDirection,
+    readonly fill: RmlAnimationFillMode,
+    readonly underlyingValue: string,
     delay: number,
     playbackRate: number,
   ) {
-    super(handle, 'js_batched', targetKey);
+    super(handle, 'js_batched', targetKey, undefined, getAnimationPropertyCostClass(property));
     this.originLocal = -delay;
     this.rate = playbackRate;
   }
@@ -239,22 +262,35 @@ class JsAnimationController extends AnimationController {
     requirePositive(value, 'playbackRate'); this.rebase(); this.rate = value;
     if (this.currentState === 'running') requestFallbackFrame();
   }
-  cancel(): void { this.settle('cancelled'); }
-  replace(): void { this.settle('replaced'); }
+  private restore(reason: 'cancelled' | 'replaced'): void {
+    try {
+      const result = JSON.parse(native.ApplyNodePropertyBatch(JSON.stringify([
+        { node: this.node, property: this.property, value: this.underlyingValue },
+      ]))) as PropertyBatchResult;
+      if (!result.accepted || result.applied !== 1)
+        throw new Error(result.error || 'Animation underlying value restore failed');
+    } catch (error) { report(error); }
+    this.settle(reason);
+  }
+  cancel(): void { this.restore('cancelled'); }
+  replace(): void { this.restore('replaced'); }
   needsSample(): boolean { return this.currentState === 'running' || this.dirty; }
 
-  sample(now: number): { value: string; complete: boolean } {
+  sample(now: number): { value: string; complete: boolean; contributes: boolean } {
     if (this.originGlobal === undefined) this.originGlobal = now;
     this.dirty = false;
     const local = this.localTime(now);
     const timing = iterationProgress(local, this.duration, this.iterations, this.direction);
+    const contributes = local >= 0 || this.fill === 'backwards' || this.fill === 'both';
+    if (timing.complete && this.fill !== 'forwards' && this.fill !== 'both')
+      return { value: this.underlyingValue, complete: true, contributes: true };
     let segment = 0;
     while (segment + 1 < this.frames.length - 1 && timing.progress >= this.frames[segment + 1].offset) ++segment;
     const from = this.frames[segment], to = this.frames[segment + 1];
     const span = to.offset - from.offset;
     const alpha = from.easing(Math.max(0, Math.min(1, (timing.progress - from.offset) / span)));
     const values = from.values.map((value, index) => value + (to.values[index] - value) * alpha);
-    return { value: from.serialize(values), complete: timing.complete };
+    return { value: from.serialize(values), complete: timing.complete, contributes };
   }
 }
 
@@ -270,6 +306,32 @@ function cubicCoordinate(t: number, p1: number, p2: number): number {
   const u = 1 - t;
   return 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t;
 }
+
+type StepPosition = 0 | 1 | 2 | 3;
+
+function parseStepEasing(source: string): [number, StepPosition] | undefined {
+  if (source === 'step-start') return [1, 1];
+  if (source === 'step-end') return [1, 0];
+  const match = source.match(/^steps\(\s*([1-9]\d*)\s*(?:,\s*(start|end|jump-start|jump-end|jump-none|jump-both)\s*)?\)$/);
+  if (!match) return undefined;
+  const count = Number(match[1]);
+  if (!Number.isSafeInteger(count) || count > 65535) return undefined;
+  const positions: Record<string, StepPosition> = {
+    start: 1, end: 0, 'jump-start': 1, 'jump-end': 0, 'jump-none': 2, 'jump-both': 3,
+  };
+  const position = positions[match[2] || 'end'];
+  return position === 2 && count < 2 ? undefined : [count, position];
+}
+
+function stepProgress(value: number, count: number, position: StepPosition): number {
+  let current = Math.floor(Math.max(0, Math.min(1, value)) * count);
+  let jumps = count;
+  if (position === 1 || position === 3) ++current;
+  if (position === 2) --jumps;
+  else if (position === 3) ++jumps;
+  return Math.max(0, Math.min(jumps, current)) / jumps;
+}
+
 function easing(source = 'linear'): (value: number) => number {
   const text = source.trim().toLowerCase();
   const presets: Record<string, [number, number, number, number]> = {
@@ -277,6 +339,8 @@ function easing(source = 'linear'): (value: number) => number {
     'ease-out': [0, 0, 0.58, 1], 'ease-in-out': [0.42, 0, 0.58, 1],
   };
   if (!text || text === 'linear') return value => value;
+  const steps = parseStepEasing(text);
+  if (steps) return value => stepProgress(value, steps[0], steps[1]);
   const powerMatch = text.match(/^rml-power\((in|out|inout),\s*([0-9]+(?:\.[0-9]+)?)\)$/);
   if (powerMatch) {
     const mode = powerMatch[1];
@@ -395,14 +459,29 @@ function flushFallbackFrame(timeMilliseconds: number): void {
   for (const animation of fallbackAnimations.values()) {
     if (!animation.needsSample()) continue;
     const sample = animation.sample(currentClockSeconds);
-    sampled.push(animation);
-    updates.push({ node: animation.node, property: animation.property, value: sample.value });
+    if (sample.contributes) {
+      sampled.push(animation);
+      updates.push({ node: animation.node, property: animation.property, value: sample.value });
+    }
     if (sample.complete && animation.state === 'running') completed.push(animation);
   }
   if (updates.length) {
     try {
-      const result = JSON.parse(native.ApplyNodePropertyBatch(JSON.stringify(updates))) as PropertyBatchResult;
-      if (!result.accepted || result.applied !== updates.length) throw new Error(result.error || 'Incomplete property batch');
+      let pendingAnimations = sampled;
+      let pendingUpdates = updates;
+      while (pendingUpdates.length) {
+        const result = JSON.parse(native.ApplyNodePropertyBatch(JSON.stringify(pendingUpdates))) as PropertyBatchResult;
+        if (result.accepted && result.applied === pendingUpdates.length) break;
+        const failed = result.error === 'stale_property_target' && Array.isArray(result.failedIndices)
+          ? [...new Set(result.failedIndices)].sort((left, right) => left - right)
+          : [];
+        if (!failed.length || failed.some(index => !Number.isInteger(index) || index < 0 || index >= pendingUpdates.length))
+          throw new Error(result.error || 'Incomplete property batch');
+        const stale = new Set(failed);
+        pendingAnimations.forEach((animation, index) => { if (stale.has(index)) animation.settle('cancelled'); });
+        pendingAnimations = pendingAnimations.filter((_, index) => !stale.has(index));
+        pendingUpdates = pendingUpdates.filter((_, index) => !stale.has(index));
+      }
       for (const animation of completed) animation.settle('completed');
     } catch (error) {
       report(error);
@@ -472,7 +551,8 @@ export function getAnimationCompletionDebugState(): {
 function replaceForFallback(key: string): void {
   const existing = [...(animationsByTarget.get(key) ?? [])];
   for (const animation of existing) {
-    animation.settle('replaced');
+    if (animation instanceof JsAnimationController) animation.replace();
+    else animation.settle('replaced');
     if (animation.route === 'native') {
       try { native.ControlAnimation(animation.handle, 'cancel', 0); } catch (error) { report(error); }
     }
@@ -496,13 +576,40 @@ interface CompiledKeyframe {
 
 interface CompiledPlan {
   key: string;
-  property: 1 | 2;
+  property: number;
+  costClass: RmlAnimationCostClass;
   direction: number;
+  fill: number;
   iterations: number;
   duration: number;
   delay: number;
   playbackRate: number;
   keyframes: CompiledKeyframe[];
+}
+
+interface NativePropertyDescriptor {
+  id: number;
+  costClass: RmlAnimationCostClass;
+}
+
+const NATIVE_PROPERTY_DESCRIPTORS: Readonly<Record<string, NativePropertyDescriptor>> = {
+  opacity: { id: 1, costClass: 'visual' },
+  transform: { id: 2, costClass: 'visual' },
+  left: { id: 3, costClass: 'layout-position' },
+  top: { id: 4, costClass: 'layout-position' },
+  right: { id: 5, costClass: 'layout-position' },
+  bottom: { id: 6, costClass: 'layout-position' },
+  width: { id: 7, costClass: 'layout-size' },
+  height: { id: 8, costClass: 'layout-size' },
+  visibility: { id: 9, costClass: 'visual-discrete' },
+  color: { id: 10, costClass: 'paint' },
+  'background-color': { id: 11, costClass: 'paint' },
+  'border-color': { id: 12, costClass: 'paint' },
+  'image-color': { id: 13, costClass: 'paint' },
+};
+
+export function getAnimationPropertyCostClass(property: string): RmlAnimationCostClass | undefined {
+  return NATIVE_PROPERTY_DESCRIPTORS[property.trim().toLowerCase()]?.costClass;
 }
 
 function compiledEasing(source = 'linear'): [number, number, number, number, number] | undefined {
@@ -512,6 +619,8 @@ function compiledEasing(source = 'linear'): [number, number, number, number, num
     'ease-out': [0, 0, 0.58, 1], 'ease-in-out': [0.42, 0, 0.58, 1],
   };
   if (!text || text === 'linear') return [0, 0, 0, 1, 1];
+  const steps = parseStepEasing(text);
+  if (steps) return [2, steps[0], steps[1], 0, 0];
   const match = text.match(/^cubic-bezier\(\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^\)]+)\)$/);
   const points = presets[text] || (match ? match.slice(1).map(Number) as [number, number, number, number] : undefined);
   if (!points || points.some(value => !Number.isFinite(value)) ||
@@ -519,12 +628,27 @@ function compiledEasing(source = 'linear'): [number, number, number, number, num
   return [1, ...points.map(Math.fround)] as [number, number, number, number, number];
 }
 
-function compiledTransform(value: number | string): { values: number[]; primitive: string } | undefined {
+function compiledColor(value: number | string): number[] | undefined {
   const text = String(value).trim().toLowerCase();
-  if (text === 'none') return { values: [0, 0, 1, 1, 0], primitive: 'none' };
-  const match = text.match(/^(scale|translate|rotate)\((.*)\)$/);
-  if (!match) return undefined;
-  const parts = match[2].split(',').map(part => part.trim());
+  if (text === 'transparent') return [0, 0, 0, 0];
+  const hex = text.match(/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i)?.[1];
+  if (hex) {
+    const expanded = hex.length <= 4 ? [...hex].map(char => char + char).join('') : hex;
+    const channels = [0, 2, 4, 6].map((offset, index) => index === 3 && expanded.length === 6
+      ? 255 : Number.parseInt(expanded.slice(offset, offset + 2), 16));
+    return channels.map(channel => Math.fround(channel / 255));
+  }
+  const rgb = text.match(/^rgba?\(\s*([^,]+),\s*([^,]+),\s*([^,\)]+)(?:,\s*([^\)]+))?\)$/);
+  if (!rgb) return undefined;
+  const channels = [Number(rgb[1]) / 255, Number(rgb[2]) / 255, Number(rgb[3]) / 255,
+    rgb[4] === undefined ? 1 : Number(rgb[4])];
+  return channels.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 1)
+    ? channels.map(Math.fround) : undefined;
+}
+
+function compiledTransform(value: number | string): { values: number[]; primitive: number } | undefined {
+  const text = String(value).trim().toLowerCase();
+  if (text === 'none') return { values: [0, 0, 1, 1, 0, 0, 0], primitive: 0 };
   const finite = (source: string, suffix: string): number | undefined => {
     let numberText = source;
     if (suffix) {
@@ -534,22 +658,47 @@ function compiledTransform(value: number | string): { values: number[]; primitiv
     const parsed = Number(numberText);
     return numberText && Number.isFinite(parsed) ? Math.fround(parsed) : undefined;
   };
-  if (match[1] === 'scale' && (parts.length === 1 || parts.length === 2)) {
-    const x = finite(parts[0], ''), y = parts.length === 2 ? finite(parts[1], '') : x;
-    if (x === undefined || y === undefined) return undefined;
-    return { values: [0, 0, x, y, 0], primitive: 'scale' };
+  const values = [0, 0, 1, 1, 0, 0, 0];
+  let primitive = 0, cursor = 0;
+  const pattern = /\s*(scale|translate|rotate|skewx|skewy|skew|matrix)\(([^\(\)]*)\)/gy;
+  while (cursor < text.length) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(text);
+    if (!match || match.index !== cursor) return undefined;
+    const parts = match[2].split(',').map(part => part.trim());
+    const bit = match[1] === 'translate' ? 1 : match[1] === 'scale' ? 2 : match[1] === 'rotate' ? 4 :
+      match[1] === 'skewx' ? 8 : match[1] === 'skewy' ? 16 : match[1] === 'skew' ? 24 : 31;
+    if (primitive & bit) return undefined;
+    if (bit === 1 && parts.length === 2) {
+      const x = finite(parts[0], 'px'), y = finite(parts[1], 'px');
+      if (x === undefined || y === undefined) return undefined;
+      values[0] = x; values[1] = y;
+    } else if (bit === 2 && (parts.length === 1 || parts.length === 2)) {
+      const x = finite(parts[0], ''), y = parts.length === 2 ? finite(parts[1], '') : x;
+      if (x === undefined || y === undefined) return undefined;
+      values[2] = x; values[3] = y;
+    } else if (bit === 4 && parts.length === 1) {
+      const angle = finite(parts[0], 'deg');
+      if (angle === undefined) return undefined;
+      values[4] = angle;
+    } else if ((bit === 8 || bit === 16 || bit === 24) && (parts.length === 1 || (bit === 24 && parts.length === 2))) {
+      const x = finite(parts[0], 'deg'), y = parts.length === 2 ? finite(parts[1], 'deg') : 0;
+      if (x === undefined || y === undefined) return undefined;
+      if (bit === 16) values[6] = x; else { values[5] = x; values[6] = y; }
+    } else if (bit === 31 && parts.length === 6) {
+      const matrix = parts.map(part => finite(part, ''));
+      if (matrix.some(component => component === undefined)) return undefined;
+      const [a, b, c, d, tx, ty] = matrix as number[];
+      const scaleX = Math.hypot(a, b);
+      if (scaleX <= Number.EPSILON) return undefined;
+      values[0] = tx; values[1] = ty; values[2] = scaleX; values[3] = (a * d - b * c) / scaleX;
+      values[4] = Math.atan2(b, a) * 180 / Math.PI;
+      values[5] = Math.atan((a * c + b * d) / (scaleX * scaleX)) * 180 / Math.PI;
+    } else return undefined;
+    primitive |= bit;
+    cursor = pattern.lastIndex;
   }
-  if (match[1] === 'translate' && parts.length === 2) {
-    const x = finite(parts[0], 'px'), y = finite(parts[1], 'px');
-    if (x === undefined || y === undefined) return undefined;
-    return { values: [x, y, 1, 1, 0], primitive: 'translate' };
-  }
-  if (match[1] === 'rotate' && parts.length === 1) {
-    const angle = finite(parts[0], 'deg');
-    if (angle === undefined) return undefined;
-    return { values: [0, 0, 1, 1, angle], primitive: 'rotate' };
-  }
-  return undefined;
+  return primitive ? { values, primitive } : undefined;
 }
 
 function compileNativePlan(request: {
@@ -558,58 +707,79 @@ function compileNativePlan(request: {
   nativeOptions: {
     duration: number; delay: number; iterations: number; playbackRate: number;
     direction: RmlAnimationDirection; composite: 'replace' | 'layered-replace';
+    fill: RmlAnimationFillMode;
     compositionOrder?: number;
   };
 }): CompiledPlan | undefined {
   if (request.keyframes.length < 2 || request.keyframes.length > 4096) return undefined;
   const propertyText = request.property.trim().toLowerCase();
-  const property = propertyText === 'opacity' ? 1 : propertyText === 'transform' ? 2 : undefined;
-  if (!property) return undefined;
+  const descriptor = NATIVE_PROPERTY_DESCRIPTORS[propertyText];
+  if (!descriptor) return undefined;
+  const property = descriptor.id;
   const direction = ['normal', 'reverse', 'alternate', 'alternate-reverse'].indexOf(request.nativeOptions.direction);
   if (direction < 0) return undefined;
-  let commonPrimitive = 'none';
+  const fill = ['none', 'forwards', 'backwards', 'both'].indexOf(request.nativeOptions.fill);
+  if (fill < 0) return undefined;
+  let commonPrimitive = 0;
   const keyframes: CompiledKeyframe[] = [];
   for (const frame of request.keyframes) {
     if (!Number.isFinite(frame.offset)) return undefined;
     const easingValues = compiledEasing(frame.easing);
     if (!easingValues) return undefined;
-    if (property === 1) {
-      const value = Number(frame.value);
-      if (!Number.isFinite(value) || value < 0 || value > 1) return undefined;
+    if (property !== 2 && property < 10) {
+      let value: number;
+      if (property === 1) {
+        value = Number(frame.value);
+        if (!Number.isFinite(value) || value < 0 || value > 1) return undefined;
+      } else if (property === 9) {
+        const visibility = String(frame.value).trim().toLowerCase();
+        if (visibility !== 'visible' && visibility !== 'hidden') return undefined;
+        value = visibility === 'visible' ? 1 : 0;
+      } else {
+        const match = String(frame.value).trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))px$/i);
+        if (!match) return undefined;
+        value = Number(match[1]);
+        if (!Number.isFinite(value) || ((property === 7 || property === 8) && value < 0)) return undefined;
+      }
       keyframes.push({ offset: Math.fround(frame.offset), values: [Math.fround(value)], easing: easingValues });
-    } else {
+    } else if (property === 2) {
       const parsed = compiledTransform(frame.value);
       if (!parsed) return undefined;
-      if (parsed.primitive !== 'none') {
-        if (commonPrimitive !== 'none' && commonPrimitive !== parsed.primitive) return undefined;
+      if (parsed.primitive !== 0) {
+        if (commonPrimitive !== 0 && commonPrimitive !== parsed.primitive) return undefined;
         commonPrimitive = parsed.primitive;
       }
       keyframes.push({ offset: Math.fround(frame.offset), values: parsed.values, easing: easingValues });
+    } else {
+      const parsed = compiledColor(frame.value);
+      if (!parsed) return undefined;
+      keyframes.push({ offset: Math.fround(frame.offset), values: parsed, easing: easingValues });
     }
   }
   const plan: CompiledPlan = {
-    property, direction, iterations: request.nativeOptions.iterations,
+    property, costClass: descriptor.costClass, direction, fill, iterations: request.nativeOptions.iterations,
     duration: request.nativeOptions.duration, delay: request.nativeOptions.delay,
     playbackRate: request.nativeOptions.playbackRate, keyframes, key: '',
   };
-  plan.key = JSON.stringify([property, direction, plan.iterations, plan.duration, plan.delay,
+  plan.key = JSON.stringify([property, direction, fill, plan.iterations, plan.duration, plan.delay,
     plan.playbackRate, keyframes.map(frame => [frame.offset, ...frame.values, ...frame.easing])]);
   return plan;
 }
 
 function encodePlanBatch(plans: CompiledPlan[]): ArrayBuffer {
-  const byteLength = 12 + plans.reduce((sum, plan) => sum + 32 +
-    plan.keyframes.length * (plan.property === 1 ? 28 : 44), 0);
+  const byteLength = 12 + plans.reduce((sum, plan) => sum + 40 +
+    plan.keyframes.length * (plan.property === 2 ? 52 : plan.property >= 10 ? 40 : 28), 0);
   const buffer = new ArrayBuffer(byteLength);
   const view = new DataView(buffer);
-  view.setUint32(0, 0x31504152, true); view.setUint16(4, 1, true); view.setUint32(8, plans.length, true);
+  view.setUint32(0, 0x31504152, true); view.setUint16(4, 3, true); view.setUint32(8, plans.length, true);
   let offset = 12;
   for (const plan of plans) {
     view.setUint8(offset, plan.property); view.setUint8(offset + 1, plan.direction);
     view.setUint16(offset + 2, plan.keyframes.length, true);
     view.setUint32(offset + 4, plan.iterations, true);
     view.setFloat64(offset + 8, plan.duration, true); view.setFloat64(offset + 16, plan.delay, true);
-    view.setFloat64(offset + 24, plan.playbackRate, true); offset += 32;
+    view.setFloat64(offset + 24, plan.playbackRate, true);
+    view.setUint8(offset + 32, plan.fill); offset += 40;
     for (const frame of plan.keyframes) {
       view.setFloat32(offset, frame.offset, true); offset += 4;
       for (const value of frame.values) { view.setFloat32(offset, value, true); offset += 4; }
@@ -624,7 +794,7 @@ function encodePlanBatch(plans: CompiledPlan[]): ArrayBuffer {
 
 function compiledPlanEstimatedAllocatedBytes(plan: CompiledPlan): number {
   // Native definitions expand each segment easing to a 33-sample float LUT.
-  return plan.keyframes.length * (plan.property === 1 ? 140 : 156);
+  return plan.keyframes.length * (plan.property === 2 ? 164 : plan.property >= 10 ? 152 : 140);
 }
 
 function compiledPlanCacheLimits(): { entries: number; bytes: number } {
@@ -715,19 +885,35 @@ export function getAnimationStartDebugState(): {
   transport: 'compiled-packed' | 'json'; registrations: number; cacheHits: number; batches: number;
   cachedPlans: number; cacheBytes: number; activeBindings: number; evictions: number; budgetPressure: number;
   nativeAllocatedBytes?: number;
+  cachedPlansByCost: { visual: number; visualDiscrete: number; paint: number; layoutPosition: number; layoutSize: number };
+  activeTracksByCost?: { activeTracks: number; visual: number; visualDiscrete: number; paint: number; layoutPosition: number; layoutSize: number };
 } {
   const packed = native.bUseCompiledAnimationPlans !== false && !!native.RegisterAnimationPlansPacked &&
     !!native.StartCompiledAnimationBatchPacked && !!native.ReleaseAnimationPlansPacked;
   let nativeAllocatedBytes: number | undefined;
+  let activeTracksByCost: { activeTracks: number; visual: number; visualDiscrete: number; paint: number; layoutPosition: number; layoutSize: number } | undefined;
   if (native.GetAnimationPlanCacheStats) {
     try { nativeAllocatedBytes = JSON.parse(native.GetAnimationPlanCacheStats()).allocatedBytes; }
     catch (error) { report(error); }
+  }
+  if (native.GetAnimationRuntimeStats) {
+    try { activeTracksByCost = JSON.parse(native.GetAnimationRuntimeStats()); }
+    catch (error) { report(error); }
+  }
+  const cachedPlansByCost = { visual: 0, visualDiscrete: 0, paint: 0, layoutPosition: 0, layoutSize: 0 };
+  for (const entry of compiledPlanCache.values()) {
+    if (entry.costClass === 'visual') ++cachedPlansByCost.visual;
+    else if (entry.costClass === 'visual-discrete') ++cachedPlansByCost.visualDiscrete;
+    else if (entry.costClass === 'paint') ++cachedPlansByCost.paint;
+    else if (entry.costClass === 'layout-position') ++cachedPlansByCost.layoutPosition;
+    else ++cachedPlansByCost.layoutSize;
   }
   return { transport: packed ? 'compiled-packed' : 'json', registrations: compiledPlanRegistrations,
     cacheHits: compiledPlanCacheHits, batches: compiledStartBatches, cachedPlans: compiledPlanCache.size,
     cacheBytes: compiledPlanCacheBytes,
     activeBindings: [...compiledPlanCache.values()].reduce((sum, entry) => sum + entry.activeBindings, 0),
-    evictions: compiledPlanEvictions, budgetPressure: compiledPlanBudgetPressure, nativeAllocatedBytes };
+    evictions: compiledPlanEvictions, budgetPressure: compiledPlanBudgetPressure, nativeAllocatedBytes,
+    cachedPlansByCost, activeTracksByCost };
 }
 
 export function startAnimations(requests: RmlAnimationRequest[]): RmlAnimation[] {
@@ -744,10 +930,11 @@ export function startAnimations(requests: RmlAnimationRequest[]): RmlAnimation[]
     const playbackRate = options.playbackRate ?? 1; requirePositive(playbackRate, 'playbackRate');
     const direction = options.direction ?? 'normal';
     if (!['normal', 'reverse', 'alternate', 'alternate-reverse'].includes(direction)) throw new Error('Unsupported direction');
+    const fill: RmlAnimationFillMode = options.fill ?? 'both';
+    if (!['none', 'forwards', 'backwards', 'both'].includes(fill)) throw new Error('Unsupported animation fill mode');
     const composite = options.composite ?? 'replace';
-    if ((options.fill ?? 'both') !== 'both' ||
-        (composite !== 'replace' && composite !== 'layered-replace'))
-      throw new Error('Unsupported animation fill or composite mode');
+    if (composite !== 'replace' && composite !== 'layered-replace')
+      throw new Error('Unsupported animation composite mode');
     const compositionOrder = options.compositionOrder;
     if (composite === 'layered-replace' && !Number.isInteger(compositionOrder))
       throw new Error('layered-replace requires an integer compositionOrder');
@@ -766,7 +953,7 @@ export function startAnimations(requests: RmlAnimationRequest[]): RmlAnimation[]
     return {
       node, property: property.trim(), keyframes, options, key,
       nativeOptions: { duration: options.duration, delay, iterations, playbackRate, direction,
-        fill: 'both', composite,
+        fill, composite,
         ...(compositionOrder === undefined ? {} : { compositionOrder }) },
     };
   });
@@ -808,6 +995,7 @@ export function startAnimations(requests: RmlAnimationRequest[]): RmlAnimation[]
           handle: registration.handles[index],
           allocatedBytes: registration.allocatedBytes?.[index] ?? compiledPlanEstimatedAllocatedBytes(plan),
           activeBindings: 0, lastUsed: ++compiledPlanClock,
+          costClass: plan.costClass,
         };
         compiledPlanCache.set(plan.key, entry);
         compiledPlanCacheBytes += entry.allocatedBytes;
@@ -871,7 +1059,8 @@ export function startAnimations(requests: RmlAnimationRequest[]): RmlAnimation[]
         const entry = compiledPlanCache.get(planKey);
         if (!entry) throw new Error('Compiled animation plan disappeared before binding');
       }
-      const animation = new NativeAnimationController(result.handles[index], 'native', request.key, planKey);
+      const animation = new NativeAnimationController(result.handles[index], 'native', request.key, planKey,
+        getAnimationPropertyCostClass(request.property));
       addNativeAnimation(animation);
       trackTargetAnimation(request.key, animation);
       return animation;
@@ -885,16 +1074,21 @@ export function startAnimations(requests: RmlAnimationRequest[]): RmlAnimation[]
       'mixed_transform_primitives', 'unsupported_easing'].includes(result.error || ''))
     throw new Error(result.error || 'Animation was rejected');
 
-  const fallback = normalized.map(request => ({
-    request,
-    frames: fallbackFrames(request.keyframes),
-  }));
-  const animations = fallback.map(({ request, frames }) => {
+  const fallback = normalized.map(request => {
     replaceForFallback(request.key);
+    return {
+      request,
+      frames: fallbackFrames(request.keyframes),
+      underlyingValue: native.GetComputedProperty(request.node, request.property),
+    };
+  });
+  const animations = fallback.map(({ request, frames, underlyingValue }) => {
+    if (!underlyingValue) throw new Error(`Could not capture underlying ${request.property} value`);
     const handle = `js:${++fallbackSequence}`;
     const options = request.nativeOptions;
     const animation = new JsAnimationController(handle, request.key, request.node, request.property, frames,
-      options.duration, options.iterations, options.direction, options.delay, options.playbackRate);
+      options.duration, options.iterations, options.direction, options.fill, underlyingValue,
+      options.delay, options.playbackRate);
     fallbackAnimations.set(handle, animation);
     trackTargetAnimation(request.key, animation);
     return animation;
@@ -920,7 +1114,8 @@ export function disposeAnimations(): void {
   for (const animation of nativeControllers) {
     try { animation.cancel(); } catch (error) { report(error); }
   }
-  for (const animation of [...nativeControllers, ...fallbackAnimations.values()]) animation.settle('cancelled');
+  for (const animation of [...fallbackAnimations.values()]) animation.cancel();
+  for (const animation of nativeControllers) animation.settle('cancelled');
   try { releaseCompiledPlans(); } catch (error) { report(error); }
   nativeAnimations.clear(); fallbackAnimations.clear(); animationsByTarget.clear();
   if (nativeAnimationEventPackedDelegate)

@@ -18,6 +18,14 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RmlUi|Web Compatibility")
     bool bCompileDynamicBrowserCss = true;
 
+    /** Opt in for new documents: validate CSS against the selected renderer before loading it. RawRml remains unchanged. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RmlUi|Web Compatibility")
+    bool bEnforceRendererCapabilities = false;
+
+    /** Explicitly removable feature IDs, for example render.layers. Each removed declaration appears in diagnostics. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RmlUi|Web Compatibility", meta = (EditCondition = "bEnforceRendererCapabilities"))
+    TArray<FString> AllowedCssDegradations;
+
     UPROPERTY(BlueprintReadOnly, Transient, Category = "RmlUi|Web Compatibility")
     FString LastCompatibilityDiagnostics;
 

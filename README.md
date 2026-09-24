@@ -14,7 +14,9 @@ RmlUi Unreal is a unified Unreal Engine plugin for building game and editor inte
 
 ## Showcase
 
-The included Actor Observer demonstrates a live editor workflow: it reads actors from the current Editor World through a typed Puerts service, keeps selection stable, and optionally displays reflected properties and transforms. Its UI Lab demonstrates icons, Grid and Flex layouts, rounded corners, shadows, animation, images, color palettes, and responsive composition.
+The included Actor Observer demonstrates a live editor workflow: it reads actors from the current Editor World through a typed Puerts service, keeps selection stable, and optionally displays reflected properties and transforms. Its UI Lab demonstrates icons, Grid and Flex layouts, rounded corners, shadows, animation, images, color palettes, responsive composition, Apache ECharts no-DOM SVG SSR with an editable slider-backed data table, and a long-form text surface with an independently styled native scrollbar and draggable vertical split boundary. It also registers a real transient Unreal User Interface material under the host-owned `showcase.energy` alias and uses a native range input to update its MID vector parameter through a typed Puerts service. This editor showcase demonstrates the `UMaterial -> MID -> FSlateMaterialBrush` path; it is not a cooked `.uasset` sample. The separate Tree Canvas tab uses d3-hierarchy only for tidy-tree coordinates, then renders selectable and collapsible nodes plus orthogonal edges as native RmlUi elements with canvas pan and zoom controls. The Dialogs tab adapts the Headless UI Dialog contract and common shadcn/ui Dialog, Alert Dialog, and Sheet patterns to native RmlUi nodes, including backdrop dismissal, Escape, initial focus, and focus restoration. The Mask Frame tab combines a real SVG `<mask>`, layered LunaSVG gradients and rays with native RmlUi animation. Its four flow bands start with measured pixel endpoints after layout and restart on resize. Four moving energy bands and ten drifting sparks create a bright, overflowing gold edge while the center remains transparent; `pointer-events:none` keeps the overlay input-transparent. This effect does not use an Unreal material or per-frame C++ updates. RmlUi `ninepatch` or `tiled-box` remains the better alternative when the frame is authored as a fixed ornamental texture atlas. The Scene Overlay tab adds a translucent native HUD over an actual Unreal camera, high-contrast cyan/amber/blue cubes, a gold sphere, floor, backdrop, directional light, and three colored point lights. Its central opening leaves RmlUi pixels transparent, while a native range input changes panel alpha at runtime; it does not copy the scene into a UI texture or emulate browser `backdrop-filter`.
+
+The Actor Observer also includes a **Motion Menu** tab with a transitions.dev-inspired dropdown, origin-aware scale/opacity transitions, and Vue-driven selection and close state.
 
 ### Live Actor Inspector
 
@@ -74,6 +76,7 @@ The project recreates the parts of the web development stack that are most usefu
 - XML-compatible HTML/RML, RCSS, images, fonts, responsive media rules, Flexbox, and Taffy-backed native CSS Grid.
 - Common visual features including rounded corners, shadows, gradients, transforms, transitions, keyframe animation, clipping, scrolling, and responsive wide/narrow layouts.
 - A Vue 3 custom renderer with SFC compilation, Composition API, props/emits, keyed reconciliation, fragments, scoped styles, reactive forms, and frame-owned events and timers.
+- Host ABI 2 node queries, batched layout metrics, theme tokens, independent default-action cancellation, pointer capture, Teleport and nested modal focus. The Interaction Lab tab demonstrates these with radio/collection forms and scrolling popovers; see [the shared CSS contract](Tools/CSS_COMPILER.md) for strict profiles and explicit degradation.
 - Typed Puerts services for Unreal business data, plus an explicit JSON compatibility channel for dynamic or legacy protocols.
 - PostCSS and htmlparser2 build/runtime compilation that normalizes known browser conventions and rejects unsupported transformations atomically.
 - Native Markdown and syntax highlighting, UE HTTP/SSE streaming, versioned hot updates, state-preserving remounts, and rollback.
@@ -86,7 +89,12 @@ The compatibility work is tested against real framework and library patterns rat
 | Tailwind CSS 3 | Actor Observer and UI Lab utilities compiled into the supported RCSS subset |
 | markdown-it / highlight.js | Native Markdown Chat with tables, lists, code blocks, CJK, streaming, and error states |
 | Lucide | Build-time rasterized icons used by the UI Lab and Chat surfaces |
-| Magic.css / Hover.css | Upstream animation and transition syntax exercised by WebCompat conversion and packaged runtime tests |
+| Apache ECharts 6.1 | No-DOM SVG SSR rendered through RmlUi/LunaSVG; native range inputs update the table and regenerate chart markup |
+| d3-hierarchy 3.1 | DOM-free tidy-tree layout feeding native RmlUi nodes and edges; selection, branch collapse, canvas pan, and zoom are handled by Vue/RmlUi |
+| Floating UI core 1.8.0 | The actual package runs on a custom native measurement platform; Popover follows scrolling, viewport and DPI changes, with flip/shift/hide middleware |
+| TanStack Table / Virtual cores | Table Core 8.21.3 sorts and filters 2,000 records; Virtual Core 3.17.10 consumes native rect/offset observations and mounts only the RmlUi row window |
+| Headless UI / shadcn/ui patterns | Native RmlUi compatibility components exercise Dialog, Alert Dialog, and Sheet interactions; upstream DOM/Portal runtimes are not bundled or claimed compatible |
+| Magic.css / Hover.css / transitions.dev | Upstream animation, transition, and stateful dropdown patterns exercised by WebCompat conversion and native runtime tests |
 | Bulma | A Card-structure subset exercised through the WebModernV1 profile and native pixel fixture |
 
 Compatibility is established pattern by pattern; the table is not a claim that the complete distribution of every library works unchanged. The roadmap expands this corpus with more common component libraries, CSS patterns, form behavior, and browser-differential fixtures.
@@ -222,6 +230,7 @@ The latest unified-plugin validation used Unreal Engine 5.8.1 on Win64:
 - Vue packaged smoke passed 108 checks on DX11 and 109 on DX12, with the same 84 distinct labels.
 - Chat packaged smoke passed 117 checks on each RHI against a deterministic local SSE fixture.
 - Dynamic WebCompat packaged smoke passed 15 checks on each RHI, including Puerts runtime compilation and cache reuse.
+- Actor Observer standalone smoke passed 530 checks on each RHI with 29 screenshots, including the SVG-masked gold screen edge, UE UI Material, native overlay patterns, TanStack headless table/virtual-list interactions, and translucent composition over a verified World `AStaticMeshActor` using the Engine Cube mesh; its editor Nomad Tab automation passed with 0 warnings.
 - Eight packaged reports produced 42 non-empty screenshots with no fatal, assertion, or unhandled-exception signal in their runtime logs.
 
 These results do not claim Shipping runtime behavior, non-Windows support, production performance, physical OS input/IME coverage, arbitrary website compatibility, or real model-service quality.
@@ -252,7 +261,7 @@ RmlUiUnreal/
 
 - RmlUi markup is XML-compatible; normal browser error recovery and DOM APIs are not available.
 - Puerts is a trusted-code integration, not a JavaScript security sandbox. Remote manifests must come from a trusted publisher.
-- Native IME composition, complex-script shaping, SVG/Lottie, Lua extensions, and browser accessibility APIs are not implemented.
+- Windows IME is connected through UE's text input method context and tested at the native/UE interface level. Real OS candidate-window testing was blocked by desktop access permissions and is still outstanding. Complex-script shaping, Lottie, Lua extensions and browser accessibility APIs remain unsupported; trusted SVG is rasterized through LunaSVG, without a browser SVG DOM.
 - Vue updates remount the application and restore explicitly serialized state; they are not browser Vue HMR.
 - Performance budgets, long-running memory stability, multi-instance persistence, HDR, and device recovery require separate production validation.
 

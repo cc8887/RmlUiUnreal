@@ -366,21 +366,85 @@ RmlUE_AnimationTarget RmlUE_ResolveAnimationTarget(RmlUE_View* View, RmlUE_Node 
     auto* Element = GetNode(View, Node);
     return Element ? View->ResolveAnimationTarget(Node, Element) : 0;
 }
+static bool AnimationPropertyIds(uint32_t Property, std::vector<Rml::PropertyId>& OutIds)
+{
+    OutIds.clear();
+    switch (Property) {
+    case RMLUE_ANIMATED_PROPERTY_OPACITY: OutIds.push_back(Rml::PropertyId::Opacity); break;
+    case RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D: OutIds.push_back(Rml::PropertyId::Transform); break;
+    case RMLUE_ANIMATED_PROPERTY_LEFT_PX: OutIds.push_back(Rml::PropertyId::Left); break;
+    case RMLUE_ANIMATED_PROPERTY_TOP_PX: OutIds.push_back(Rml::PropertyId::Top); break;
+    case RMLUE_ANIMATED_PROPERTY_RIGHT_PX: OutIds.push_back(Rml::PropertyId::Right); break;
+    case RMLUE_ANIMATED_PROPERTY_BOTTOM_PX: OutIds.push_back(Rml::PropertyId::Bottom); break;
+    case RMLUE_ANIMATED_PROPERTY_WIDTH_PX: OutIds.push_back(Rml::PropertyId::Width); break;
+    case RMLUE_ANIMATED_PROPERTY_HEIGHT_PX: OutIds.push_back(Rml::PropertyId::Height); break;
+    case RMLUE_ANIMATED_PROPERTY_VISIBILITY: OutIds.push_back(Rml::PropertyId::Visibility); break;
+    case RMLUE_ANIMATED_PROPERTY_COLOR: OutIds.push_back(Rml::PropertyId::Color); break;
+    case RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR: OutIds.push_back(Rml::PropertyId::BackgroundColor); break;
+    case RMLUE_ANIMATED_PROPERTY_BORDER_COLOR:
+        OutIds = {Rml::PropertyId::BorderTopColor, Rml::PropertyId::BorderRightColor,
+            Rml::PropertyId::BorderBottomColor, Rml::PropertyId::BorderLeftColor};
+        break;
+    case RMLUE_ANIMATED_PROPERTY_IMAGE_COLOR: OutIds.push_back(Rml::PropertyId::ImageColor); break;
+    default: return false;
+    }
+    return true;
+}
 int RmlUE_PrepareAnimationTargetProperty(
     RmlUE_View* View, RmlUE_AnimationTarget Target, uint32_t Property)
 {
     if (!ValidView(View) || !Target ||
         (Property != RMLUE_ANIMATED_PROPERTY_OPACITY &&
-            Property != RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D)) return 0;
+            Property != RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D &&
+            Property != RMLUE_ANIMATED_PROPERTY_LEFT_PX &&
+            Property != RMLUE_ANIMATED_PROPERTY_TOP_PX &&
+            Property != RMLUE_ANIMATED_PROPERTY_RIGHT_PX &&
+            Property != RMLUE_ANIMATED_PROPERTY_BOTTOM_PX &&
+            Property != RMLUE_ANIMATED_PROPERTY_WIDTH_PX &&
+            Property != RMLUE_ANIMATED_PROPERTY_HEIGHT_PX &&
+            Property != RMLUE_ANIMATED_PROPERTY_VISIBILITY &&
+            Property != RMLUE_ANIMATED_PROPERTY_COLOR &&
+            Property != RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR &&
+            Property != RMLUE_ANIMATED_PROPERTY_BORDER_COLOR &&
+            Property != RMLUE_ANIMATED_PROPERTY_IMAGE_COLOR)) return 0;
     auto* Record = View->FindAnimationTarget(Target);
     if (!Record) return 0;
-    if (Record->PreparedVisualProperties & Property) return 1;
+    if (Record->PreparedBaseProperty && Record->PreparedBaseProperty != Property) return 0;
+    if (!Record->PreparedBaseProperty) {
+        for (const auto& Other : View->AnimationTargets) {
+            if (&Other != Record && Other.Active && Other.Element.get() == Record->Element.get() &&
+                Other.PreparedBaseProperty == Property) {
+                Record->BaseLocalProperties = Other.BaseLocalProperties;
+                break;
+            }
+        }
+        if (Record->BaseLocalProperties.empty()) {
+            thread_local std::vector<Rml::PropertyId> PropertyIds;
+            if (!AnimationPropertyIds(Property, PropertyIds)) return 0;
+            for (Rml::PropertyId PropertyId : PropertyIds) {
+                const Rml::Property* Local = Record->Element->GetLocalProperty(PropertyId);
+                Record->BaseLocalProperties.emplace_back(PropertyId,
+                    Local ? std::optional<Rml::Property>(*Local) : std::nullopt);
+            }
+        }
+        Record->PreparedBaseProperty = Property;
+    }
+    if (Property != RMLUE_ANIMATED_PROPERTY_OPACITY &&
+        Property != RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D &&
+        Property != RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR) return 1;
+    const uint32_t PropertyBit = 1u << Property;
+    if (Record->PreparedVisualProperties & PropertyBit) return 1;
     if (Property == RMLUE_ANIMATED_PROPERTY_OPACITY && View->SlateRenderer)
     {
         Record->PreparedOpacityState = View->SlateRenderer->RetainVisualOpacityBinding(Record->Node);
         if (!Record->PreparedOpacityState) return 0;
     }
-    Record->PreparedVisualProperties |= Property;
+    else if (Property == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR && View->SlateRenderer)
+    {
+        Record->PreparedBackgroundColorState = View->SlateRenderer->RetainVisualBackgroundColorBinding(Record->Node);
+        if (!Record->PreparedBackgroundColorState) return 0;
+    }
+    Record->PreparedVisualProperties |= PropertyBit;
     return 1;
 }
 int RmlUE_IsAnimationTargetValid(RmlUE_View* View, RmlUE_AnimationTarget Target)
@@ -390,6 +454,34 @@ int RmlUE_IsAnimationTargetValid(RmlUE_View* View, RmlUE_AnimationTarget Target)
 int RmlUE_ReleaseAnimationTarget(RmlUE_View* View, RmlUE_AnimationTarget Target)
 {
     return ValidView(View) && View->ReleaseAnimationTarget(Target) ? 1 : 0;
+}
+int RmlUE_RestoreAnimationTargetProperty(
+    RmlUE_View* View, RmlUE_AnimationTarget Target, int RestoreWhenShared)
+{
+    if (!ValidView(View)) return 0;
+    auto* Record = View->FindAnimationTarget(Target);
+    if (!Record || !Record->PreparedBaseProperty || Record->BaseLocalProperties.empty()) return 0;
+    if (!RestoreWhenShared) {
+        for (const auto& Other : View->AnimationTargets) {
+            if (&Other != Record && Other.Active && Other.Element.get() == Record->Element.get() &&
+                Other.PreparedBaseProperty == Record->PreparedBaseProperty)
+                return 1;
+        }
+    }
+    if (View->SlateRenderer) {
+        if (Record->PreparedBaseProperty == RMLUE_ANIMATED_PROPERTY_OPACITY)
+            View->SlateRenderer->ClearVisualOpacity(Record->Node);
+        else if (Record->PreparedBaseProperty == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR)
+            View->SlateRenderer->ClearVisualBackgroundColor(Record->Node);
+        else if (Record->PreparedBaseProperty == RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D)
+            View->SlateRenderer->ClearVisualTransform(Record->Node, Record->Element.get(), Target);
+    }
+    for (const auto& Saved : Record->BaseLocalProperties) {
+        if (Saved.second) Record->Element->SetProperty(Saved.first, *Saved.second);
+        else Record->Element->RemoveProperty(Saved.first);
+    }
+    View->MarkContentDirty();
+    return 1;
 }
 static Rml::Element* ResolveAnimatedElement(const RmlUE_AnimatedPropertyUpdate& Update,
     bool ViewValidated = false, RmlUE_View::AnimationTargetRecord** OutTarget = nullptr)
@@ -409,8 +501,11 @@ int RmlUE_ApplyAnimatedProperties(const RmlUE_AnimatedPropertyUpdate* Updates, i
     if (Count < 0 || Count > 1048576 || (Count && !Updates)) return Fail("Invalid animated property update batch.");
     if (!Count) return 0;
     thread_local std::vector<Rml::Element*> Elements;
+    thread_local std::vector<RmlUE_View*> DirtyViews;
     Elements.clear();
     Elements.reserve(static_cast<size_t>(Count));
+    DirtyViews.clear();
+    DirtyViews.reserve(static_cast<size_t>(Count));
     RmlUE_View* ValidatedView = nullptr;
     for (int I = 0; I < Count; ++I) {
         const auto& Update = Updates[I];
@@ -422,6 +517,23 @@ int RmlUE_ApplyAnimatedProperties(const RmlUE_AnimatedPropertyUpdate* Updates, i
             for (float Value : Update.Values)
                 if (!std::isfinite(Value)) return Fail("Invalid typed Transform2D update.");
         }
+        else if (Update.Property == RMLUE_ANIMATED_PROPERTY_VISIBILITY) {
+            if (Update.Values[0] != 0.f && Update.Values[0] != 1.f)
+                return Fail("Invalid typed visibility update.");
+        }
+        else if (Update.Property >= RMLUE_ANIMATED_PROPERTY_COLOR &&
+            Update.Property <= RMLUE_ANIMATED_PROPERTY_IMAGE_COLOR) {
+            for (int Component = 0; Component < 4; ++Component)
+                if (!std::isfinite(Update.Values[Component]) || Update.Values[Component] < 0.f || Update.Values[Component] > 1.f)
+                    return Fail("Invalid typed color update.");
+        }
+        else if (Update.Property >= RMLUE_ANIMATED_PROPERTY_LEFT_PX &&
+            Update.Property <= RMLUE_ANIMATED_PROPERTY_HEIGHT_PX) {
+            if (!std::isfinite(Update.Values[0]) ||
+                ((Update.Property == RMLUE_ANIMATED_PROPERTY_WIDTH_PX ||
+                    Update.Property == RMLUE_ANIMATED_PROPERTY_HEIGHT_PX) && Update.Values[0] < 0.f))
+                return Fail("Invalid typed layout scalar update.");
+        }
         else return Fail("Unknown typed animated property.");
         if (Update.View != ValidatedView) {
             if (!ValidView(Update.View)) return Fail("Animated property update targets a stale view or node.");
@@ -430,6 +542,8 @@ int RmlUE_ApplyAnimatedProperties(const RmlUE_AnimatedPropertyUpdate* Updates, i
         auto* Element = ResolveAnimatedElement(Update, true);
         if (!Element) return Fail("Animated property update targets a stale view or node.");
         Elements.push_back(Element);
+        if (std::find(DirtyViews.begin(), DirtyViews.end(), Update.View) == DirtyViews.end())
+            DirtyViews.push_back(Update.View);
     }
     for (int I = 0; I < Count; ++I) {
         const auto& Update = Updates[I];
@@ -438,23 +552,63 @@ int RmlUE_ApplyAnimatedProperties(const RmlUE_AnimatedPropertyUpdate* Updates, i
             Applied = Elements[static_cast<size_t>(I)]->SetProperty(
                 Rml::PropertyId::Opacity, Rml::Property(Update.Values[0], Rml::Unit::NUMBER));
         }
-        else {
+        else if (Update.Property == RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D) {
             Rml::Transform::PrimitiveList Primitives{
                 Rml::Transforms::Translate2D(Update.Values[0], Update.Values[1], Rml::Unit::PX),
                 Rml::Transforms::Rotate2D(Update.Values[4], Rml::Unit::DEG),
+                Rml::Transforms::Skew2D(Update.Values[5], Update.Values[6], Rml::Unit::DEG),
                 Rml::Transforms::Scale2D(Update.Values[2], Update.Values[3])};
             Applied = Elements[static_cast<size_t>(I)]->SetProperty(
                 Rml::PropertyId::Transform, Rml::Transform::MakeProperty(std::move(Primitives)));
         }
+        else if (Update.Property == RMLUE_ANIMATED_PROPERTY_VISIBILITY) {
+            Applied = Elements[static_cast<size_t>(I)]->SetProperty(Rml::PropertyId::Visibility,
+                Rml::Property(Update.Values[0] > 0.f ? Rml::Style::Visibility::Visible : Rml::Style::Visibility::Hidden));
+        }
+        else if (Update.Property >= RMLUE_ANIMATED_PROPERTY_COLOR &&
+            Update.Property <= RMLUE_ANIMATED_PROPERTY_IMAGE_COLOR) {
+            const auto Byte = [](float Value) { return static_cast<uint8_t>(std::lround(Value * 255.f)); };
+            const Rml::Property ColorProperty(Rml::Colourb(Byte(Update.Values[0]), Byte(Update.Values[1]),
+                Byte(Update.Values[2]), Byte(Update.Values[3])), Rml::Unit::COLOUR);
+            if (Update.Property == RMLUE_ANIMATED_PROPERTY_BORDER_COLOR) {
+                Applied = Elements[static_cast<size_t>(I)]->SetProperty(Rml::PropertyId::BorderTopColor, ColorProperty) &&
+                    Elements[static_cast<size_t>(I)]->SetProperty(Rml::PropertyId::BorderRightColor, ColorProperty) &&
+                    Elements[static_cast<size_t>(I)]->SetProperty(Rml::PropertyId::BorderBottomColor, ColorProperty) &&
+                    Elements[static_cast<size_t>(I)]->SetProperty(Rml::PropertyId::BorderLeftColor, ColorProperty);
+            }
+            else {
+                const Rml::PropertyId PropertyId = Update.Property == RMLUE_ANIMATED_PROPERTY_COLOR ? Rml::PropertyId::Color :
+                    Update.Property == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR ? Rml::PropertyId::BackgroundColor : Rml::PropertyId::ImageColor;
+                Applied = Elements[static_cast<size_t>(I)]->SetProperty(PropertyId, ColorProperty);
+            }
+        }
+        else {
+            Rml::PropertyId PropertyId = Rml::PropertyId::Invalid;
+            switch (Update.Property) {
+            case RMLUE_ANIMATED_PROPERTY_LEFT_PX: PropertyId = Rml::PropertyId::Left; break;
+            case RMLUE_ANIMATED_PROPERTY_TOP_PX: PropertyId = Rml::PropertyId::Top; break;
+            case RMLUE_ANIMATED_PROPERTY_RIGHT_PX: PropertyId = Rml::PropertyId::Right; break;
+            case RMLUE_ANIMATED_PROPERTY_BOTTOM_PX: PropertyId = Rml::PropertyId::Bottom; break;
+            case RMLUE_ANIMATED_PROPERTY_WIDTH_PX: PropertyId = Rml::PropertyId::Width; break;
+            case RMLUE_ANIMATED_PROPERTY_HEIGHT_PX: PropertyId = Rml::PropertyId::Height; break;
+            default: break;
+            }
+            Applied = PropertyId != Rml::PropertyId::Invalid &&
+                Elements[static_cast<size_t>(I)]->SetProperty(
+                    PropertyId, Rml::Property(Update.Values[0], Rml::Unit::PX));
+        }
         if (!Applied) return Fail("Cannot apply typed animated property update.");
-        Update.View->MarkContentDirty();
     }
+    for (RmlUE_View* View : DirtyViews) View->MarkContentDirty();
     return Count;
 }
 static int ApplyAnimatedVisualPropertiesImpl(
     const RmlUE_AnimatedPropertyUpdate* Updates, int Count, uint8_t* Accepted,
     RmlUE_AnimatedVisualCommitStats* Stats)
 {
+    // Background color is retained only when the renderer recorded an independent, untextured
+    // Background paint role. Other colors continue through the property sink because text, image,
+    // material, shadow, and border-side ownership/operations are not represented yet.
     using Clock = std::chrono::steady_clock;
     const auto NanosecondsSince = [](Clock::time_point Start) -> uint64_t {
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -470,12 +624,15 @@ static int ApplyAnimatedVisualPropertiesImpl(
     thread_local std::vector<float> BaseOpacities;
     thread_local std::vector<Rml::Element*> Elements;
     thread_local std::vector<void*> PreparedOpacityStates;
+    thread_local std::vector<void*> PreparedBackgroundColorStates;
     BaseOpacities.clear();
     BaseOpacities.reserve(static_cast<size_t>(Count));
     Elements.clear();
     Elements.reserve(static_cast<size_t>(Count));
     PreparedOpacityStates.clear();
     PreparedOpacityStates.reserve(static_cast<size_t>(Count));
+    PreparedBackgroundColorStates.clear();
+    PreparedBackgroundColorStates.reserve(static_cast<size_t>(Count));
     const Clock::time_point ValidateStart = Stats ? Clock::now() : Clock::time_point{};
     RmlUE_View* ValidatedView = nullptr;
     for (int I = 0; I < Count; ++I) {
@@ -490,6 +647,10 @@ static int ApplyAnimatedVisualPropertiesImpl(
         if (Update.Property == RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D)
             for (float Value : Update.Values)
                 if (!std::isfinite(Value)) { Fail("Invalid visual Transform2D update."); return -1; }
+        if (Update.Property == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR)
+            for (int Channel = 0; Channel < 4; ++Channel)
+                if (!std::isfinite(Update.Values[Channel]) || Update.Values[Channel] < 0.f || Update.Values[Channel] > 1.f)
+                { Fail("Invalid visual background-color update."); return -1; }
         if (Update.View != ValidatedView) {
             if (!ValidView(Update.View)) return -1;
             ValidatedView = Update.View;
@@ -499,7 +660,9 @@ static int ApplyAnimatedVisualPropertiesImpl(
         if (!Element) return -1;
         Elements.push_back(Element);
         PreparedOpacityStates.push_back(TargetRecord ? TargetRecord->PreparedOpacityState : nullptr);
-        BaseOpacities.push_back(Update.Property == RMLUE_ANIMATED_PROPERTY_OPACITY && Update.View->SlateRenderer
+        PreparedBackgroundColorStates.push_back(TargetRecord ? TargetRecord->PreparedBackgroundColorState : nullptr);
+        BaseOpacities.push_back((Update.Property == RMLUE_ANIMATED_PROPERTY_OPACITY ||
+            Update.Property == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR) && Update.View->SlateRenderer
             ? Element->GetComputedValues().opacity() : 0.f);
     }
     if (Stats) Stats->ValidateNanoseconds = NanosecondsSince(ValidateStart);
@@ -531,6 +694,10 @@ static int ApplyAnimatedVisualPropertiesImpl(
             Committed = Update.View->SlateRenderer->SetVisualOpacity(
                 Update.Node, Update.Values[0], BaseOpacities[static_cast<size_t>(I)],
                 PreparedOpacityStates[static_cast<size_t>(I)]);
+        else if (Update.Property == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR)
+            Committed = Update.View->SlateRenderer->SetVisualBackgroundColor(
+                Update.Node, Update.Values, BaseOpacities[static_cast<size_t>(I)],
+                PreparedBackgroundColorStates[static_cast<size_t>(I)]);
         else if (Update.Property == RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D) {
             Committed = Update.View->SlateRenderer->PrepareVisualTransform(
                 Update.Node, Elements[static_cast<size_t>(I)], Update.Values, Update.Target);
@@ -590,6 +757,8 @@ int RmlUE_ClearAnimatedVisualProperties(const RmlUE_AnimatedPropertyUpdate* Upda
         if (!Update.View->SlateRenderer) continue;
         if (Update.Property == RMLUE_ANIMATED_PROPERTY_OPACITY &&
             Update.View->SlateRenderer->ClearVisualOpacity(Update.Node)) ++Cleared;
+        else if (Update.Property == RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR &&
+            Update.View->SlateRenderer->ClearVisualBackgroundColor(Update.Node)) ++Cleared;
         else if (Update.Property == RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D &&
             Update.View->SlateRenderer->ClearVisualTransform(
                 Update.Node, ResolveAnimatedElement(Update, true), Update.Target)) ++Cleared;

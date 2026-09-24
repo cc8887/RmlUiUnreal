@@ -1,0 +1,92 @@
+{
+  "engine": "5.8.1-56057345+++UE5+Release-5.8",
+  "plugin_base_commit": "9435ea528eab3805521abe3b205efa067cb3b9ba",
+  "worktree": "dirty; includes current instrumentation/benchmark and pre-existing feature changes",
+  "v8": "11.8.172.0",
+  "runs": [
+    "20260912-132015-557-DX12",
+    "20260912-132635-615-DX11"
+  ],
+  "hashes": [
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnrealEditor/Private/RmlUiCommunicationBenchmark.cpp",
+      "sha256": "11F092DA31D2C3CED4E1897D49776A7DCE099748FB6C0093E888AB06533EF8AD"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnrealEditor/Private/RmlUiCommunicationBenchmark.h",
+      "sha256": "7C3F27708009E1CD7259B6774D60D45AF640D3891C3CB1DC35B9924F91488E99"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnrealEditor/Private/RmlUiPerformanceTests.cpp",
+      "sha256": "FE2EAD46CA206B4BE1FB3CB9C00B792AAC662032776CA0B49A6DEEF8FA7E377F"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnrealEditor/RmlUiUnrealEditor.Build.cs",
+      "sha256": "A5344FE28A521B928918ABD54BB024E8DBD1F70B3CB247202EB17641D4ED6F9B"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Content/Performance/communication.js",
+      "sha256": "18FFDA724139EB194EA0E456A6E32109EC04DB990421CE79DA97441F950ECE65"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Content/Performance/communication.html",
+      "sha256": "213566790F2559192260B32006B9C5B58D938D43E2EE8995D9418874D89625D5"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Tools/RunPerformanceComparison.ps1",
+      "sha256": "B56C6C108B11668B7586D8C5E34E49A5429B69756B4E62C768005059E06A0429"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Tools/SummarizePerformanceComparison.ps1",
+      "sha256": "B6E987EABFAF2627EAD104FBEA4015036007B3484696657BBEF7427EE16B39F2"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnreal/Public/RmlUiPerformance.h",
+      "sha256": "119D0006DB47C88FA57A525255F50289F4617CAAD56EAA72A84FF436FC1A852C"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnreal/Private/RmlUiPerformance.cpp",
+      "sha256": "E932E30735FEC5B5A4C1CC32C1C3FE8A95E4D65A12664F3ABE5D15D634FFFFC2"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnreal/Private/SRmlUiWidget.cpp",
+      "sha256": "A4FC76109E656A6492B12026AF7FE2FE838BA336964778D720F4DC5984503969"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnreal/Private/RmlUiSlateRhiRenderer.cpp",
+      "sha256": "CD8AF84B51922BE96E9F02E291285D1587A8CB85413D19B18477C1A419DA6CD5"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnrealJS/Private/RmlUiJSContext.cpp",
+      "sha256": "96003CD46B36F2203D6FCD2CF06B4980424EA876697F86D31A1ABC82B8E4C95A"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Source/RmlUiUnrealJS/Private/RmlUiJSRuntime.cpp",
+      "sha256": "AC83CFC7935E07DA2CFEBABE7C3D7FEE19B268A00FBF7470B667D2809D497E5F"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Binaries/ThirdParty/Win64/RmlUiBridge.dll",
+      "sha256": "C942582D3F080A7E2A3266D6FDB6FE43D2436524F9CABD66A65315AFFC85071E"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Binaries/Win64/UnrealEditor-RmlUiUnreal.dll",
+      "sha256": "1203579045F11F0A1337A796603B9075A8C01A6B468BE7DE9E02BDEA754BE9B7"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Binaries/Win64/UnrealEditor-RmlUiUnrealEditor.dll",
+      "sha256": "5D7A2158E7CBED1D7E33A373B5A04073C08AC3A758F01CBDE0F48B594693086B"
+    },
+    {
+      "project_relative_path": "Plugins/RmlUiUnreal/Binaries/Win64/UnrealEditor-RmlUiUnrealJS.dll",
+      "sha256": "194966BE54D090F8031D5A4988452C0C85B0BAD0D86DAC1595AC191B97C1F445"
+    },
+    {
+      "project_relative_path": "Plugins/Puerts/Binaries/Win64/UnrealEditor-JsEnv.dll",
+      "sha256": "F8D4E0C3A105FFF6ECCAE4A7BE5575F199ED77989F43687F69626962456463CE"
+    },
+    {
+      "project_relative_path": "Plugins/Puerts/ThirdParty/v8_11.8.172/Inc/v8-version.h",
+      "sha256": "3735F5B3C3194E0F1EDD5DECD08409E5751B69D9470D5E7D3C47CBBAC6FA8109"
+    }
+  ]
+}

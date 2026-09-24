@@ -1,0 +1,85 @@
+﻿{
+	"devices": [
+		{
+			"deviceName": "YUCHENCUI-PC2",
+			"instance": "4926E24C44B81B7560077584C2818138",
+			"instanceName": "YUCHENCUI-PC2-117368",
+			"platform": "WindowsEditor",
+			"oSVersion": "Windows 11 (24H2) [10.0.26100.9168] ",
+			"model": "Default",
+			"gPU": "Microsoft Remote Display Adapter",
+			"cPUModel": "AMD Ryzen 9 9950X 16-Core Processor            ",
+			"rAMInGB": 94,
+			"renderMode": "D3D11_SM5",
+			"rHI": "DirectX 11",
+			"appInstanceLog": ""
+		}
+	],
+	"reportCreatedOn": "2026.09.12-05.32.30",
+	"succeeded": 2,
+	"succeededWithWarnings": 0,
+	"failed": 0,
+	"notRun": 0,
+	"inProcess": 0,
+	"totalDuration": 330.1566162109375,
+	"comparisonExported": false,
+	"comparisonExportDirectory": "",
+	"tests": [
+		{
+			"testDisplayName": "Communication",
+			"fullTestPath": "RmlUiUnreal.Performance.Communication",
+			"tags": [],
+			"state": "Success",
+			"deviceInstance": [
+				"4926E24C44B81B7560077584C2818138"
+			],
+			"duration": 49.410240173339844,
+			"dateTime": "2026.09.12-05.27.00",
+			"entries": [
+				{
+					"event":
+					{
+						"type": "Info",
+						"message": "Communication comparison: F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132635-615-DX11/CommunicationComparison.json",
+						"context": "",
+						"artifact": "00000000000000000000000000000000"
+					},
+					"filename": "",
+					"lineNumber": -1,
+					"timestamp": "2026.09.12-05.27.49"
+				}
+			],
+			"warnings": 0,
+			"errors": 0,
+			"artifacts": []
+		},
+		{
+			"testDisplayName": "Comparison",
+			"fullTestPath": "RmlUiUnreal.Performance.Comparison",
+			"tags": [],
+			"state": "Success",
+			"deviceInstance": [
+				"4926E24C44B81B7560077584C2818138"
+			],
+			"duration": 280.74636840820312,
+			"dateTime": "2026.09.12-05.27.50",
+			"entries": [
+				{
+					"event":
+					{
+						"type": "Info",
+						"message": "Performance report: F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132635-615-DX11/RmlUiComparison-D3D11-Windowed.json",
+						"context": "",
+						"artifact": "00000000000000000000000000000000"
+					},
+					"filename": "",
+					"lineNumber": -1,
+					"timestamp": "2026.09.12-05.32.30"
+				}
+			],
+			"warnings": 0,
+			"errors": 0,
+			"artifacts": []
+		}
+	]
+}

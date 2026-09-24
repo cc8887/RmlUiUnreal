@@ -19,6 +19,17 @@ enum class BlendMode {
 	Replace, // Replace the destination colors from the source.
 };
 
+// Optional semantic role for geometry emitted by the core renderer. Hosts may use this to
+// update uniform paint values without rebuilding geometry. Unknown must remain the default:
+// custom elements, decorators, effects, and combined geometry cannot be classified safely.
+enum class PaintRole {
+	Unknown,
+	Background,
+	Border,
+	Text,
+	Image,
+};
+
 /**
     The abstract base class for application-specific rendering implementation. Your application must provide a concrete
     implementation of this class and install it through Rml::SetRenderInterface() in order for anything to be rendered.
@@ -100,6 +111,7 @@ public:
 	/// Nested elements receive their own begin/end pair.
 	virtual void BeginElement(Element* element);
 	virtual void EndElement(Element* element);
+	virtual void SetPaintRole(PaintRole role);
 	/// Optional host hook notifying retained renderers that an element changed its visual output.
 	virtual void OnElementRenderDirty(Element* element);
 

@@ -12,8 +12,8 @@ let response;
 try {
   const request = JSON.parse(await readFile(inputPath, 'utf8'));
   if (typeof request.markup !== 'string') throw new Error('Request field markup must be a string.');
-  const result = compileDocumentMarkup(request.markup, { from: request.sourcePath || 'memory.html' });
-  response = { success: true, markup: result.markup, diagnostics: result.diagnostics };
+  const result = compileDocumentMarkup(request.markup, { from: request.sourcePath || 'memory.html', profile: request.profile, mode: request.mode, allowDegrade: request.allowDegrade });
+  response = { success: true, markup: result.markup, diagnostics: result.diagnostics, capabilities: result.capabilities };
 } catch (error) {
   response = { success: false, error: error.message };
 }

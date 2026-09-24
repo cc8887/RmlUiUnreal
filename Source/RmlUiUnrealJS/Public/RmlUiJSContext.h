@@ -108,6 +108,7 @@ public:
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") FString ReleaseAnimationPlansPacked(
         const FArrayBuffer& Payload);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") FString GetAnimationPlanCacheStats() const;
+    UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") FString GetAnimationRuntimeStats() const;
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") FString ControlAnimation(
         const FString& Handle, const FString& Command, double Value);
     UFUNCTION(BlueprintCallable, Category="RmlUi|JavaScript|Animation") FString ApplyNodePropertyBatch(
@@ -152,6 +153,8 @@ private:
         uint32 UseCount = 0;
         uint64 AllocatedBytes = 0;
         uint8 Property = 0;
+        uint8 CostClass = 0;
+        uint8 Fill = 3;
         bool bActive = false;
     };
     TArray<FCompiledAnimationPlan> CompiledAnimationPlans;

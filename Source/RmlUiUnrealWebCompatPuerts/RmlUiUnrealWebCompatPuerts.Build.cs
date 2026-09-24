@@ -6,6 +6,6 @@ public class RmlUiUnrealWebCompatPuerts : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject" });
-        PrivateDependencyModuleNames.AddRange(new[] { "JsEnv", "Projects", "RmlUiUnrealWebCompat" });
+        PrivateDependencyModuleNames.AddRange(new[] { "JsEnv", "Projects", "Json", "RmlUiUnrealWebCompat" });
     }
 }

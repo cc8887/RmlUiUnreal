@@ -34,6 +34,7 @@ async function bundleFixture(entryPoint) {
         builder.onLoad({ filter: /^bridge$/, namespace: 'rmlui-fixture' }, () => ({
           contents: [
             "export const native = require('puerts').argv.getByName('bridge');",
+            "export function check(result) { if (!result) throw new Error(native.LastError || 'RmlUi native operation failed'); }",
             "export function report(error) { native.ReportError(error instanceof Error ? error.stack || error.message : String(error)); }",
           ].join('\n'),
           loader: 'js',

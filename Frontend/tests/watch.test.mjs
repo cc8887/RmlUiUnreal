@@ -21,15 +21,22 @@ test('SFC watch publishes changes and retains the last version on compile failur
   await mkdir(copy, { recursive: true });
   for (const item of ['src', 'tools', 'package.json']) await cp(path.join(frontend, item), path.join(copy, item), { recursive: true });
   await symlink(path.join(frontend, 'node_modules'), path.join(copy, 'node_modules'), 'junction');
+  // The Vue builder now imports the same compiler as dynamic WebCompat.
+  const compiler = path.resolve(copy, '../Tools');
+  await mkdir(compiler, { recursive: true });
+  await cp(path.resolve(frontend, '../Tools/src'), path.join(compiler, 'src'), { recursive: true });
+  await symlink(path.resolve(frontend, '../Tools/node_modules'), path.join(compiler, 'node_modules'), 'junction');
   const assets = path.join(fixture, 'Plugins/RmlUiUnreal/Content/RmlUi');
   await mkdir(assets, { recursive: true });
   await cp(path.resolve(frontend, '../../RmlUiUnreal/Content/RmlUi/hello_world.png'), path.join(assets, 'hello_world.png'));
   const child = spawn(process.execPath, ['tools/build.mjs', '--watch'], { cwd: copy, windowsHide: true });
+  const exited = once(child, 'exit');
   let stdout = '', stderr = '';
   child.stdout.on('data', data => { stdout += data; });
   child.stderr.on('data', data => { stderr += data; });
   try {
-    await until(() => stdout.includes('Watching Vue/TypeScript'), 'Watcher did not start: ' + stderr);
+    await until(() => stdout.includes('Watching Vue/TypeScript') || child.exitCode !== null, 'Watcher did not start');
+    assert.ok(stdout.includes('Watching Vue/TypeScript'), 'Watcher exited before startup: ' + stderr);
     const pointer = path.resolve(copy, '../Content/Vue/current.json');
     const initial = await readFile(pointer, 'utf8');
     const app = path.join(copy, 'src/App.vue');
@@ -43,8 +50,7 @@ test('SFC watch publishes changes and retains the last version on compile failur
     await writeFile(app, source);
     await until(async () => (await readFile(pointer, 'utf8')) === initial, 'Watcher did not recover after correcting the SFC');
   } finally {
-    const exited = once(child, 'exit');
-    child.kill();
+    if (child.exitCode === null && child.signalCode === null) child.kill();
     await exited;
   }
 });

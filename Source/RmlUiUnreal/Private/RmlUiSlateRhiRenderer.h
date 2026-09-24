@@ -29,6 +29,8 @@ struct FRmlUiSlateRhiDrawDesc
     FSlateRect ScissorRect;
     uint64 GeometryId = 0;
     float VisualOpacity = 1.0f;
+    bool bVisualColor = false;
+    FVector4f VisualColor = FVector4f::Zero();
     TArray<FRmlUiSlateRhiMaskDesc> ClipMasks;
 };
 

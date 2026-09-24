@@ -1,0 +1,3791 @@
+{
+  "schema_version": 1,
+  "generated_utc": "2026-09-12T05:30:21.8740424Z",
+  "limitations": [
+    "CPU仅对同一instance_key在scenario UTC区间内的累计CPU做差；分母是观测首尾墙秒，100%表示一个逻辑核持续占用，可超过100%。未扣除Editor背景负载。",
+    "CPU丢弃区间首尾到最近样本间的未观测部分；CEF按各实例首尾增量求和、以整体覆盖墙秒计算，实例生命周期或边界错位会低估，详情见cpu_instances。",
+    "内存按同一sample_index内成功观测聚合，均值是有效批次的算术均值；sample_index是一轮顺序采样，并非硬件同时快照，最大时间偏差另列。缺失/失败批次不补零。",
+    "Working set之和可能重复统计共享页；private bytes是私有提交量，不等于物理驻留。报告给出同时观测总和的均值/峰值，未相加各进程历史峰值。",
+    "各场景顺序运行，UE/CEF实例、VM、字体及资源缓存可能保留。内存是当时进程总量，不能当作该UI后端的新增内存。",
+    "CEF仅取本轮采样进程树中EpicWebHelper/UnrealCEFSubProcess/包含CEF名称的进程；UE按run.json editor_pid及instance匹配。zenserver、CrashReportClient等未计入。",
+    "通信batch均值分位数描述试次间波动；浏览器RTT分位数描述每请求延迟。异步排队RTT与Puerts同步每次读取CPU成本口径不同，不可称作CPU加速倍数。",
+    "通信JSON各阶段的浏览器计时受时钟精度限制；实测为0不表示该操作没有成本。原生阶段均值仅是调用内部阶段，未包含CEF进程和队列等待。",
+    "浏览器并发32衡量最多32个在途请求的完成吞吐；实际并发还受reads_per_trial限制。Puerts是同步循环，没有并发32对应行。",
+    "缺少scenario时间戳或不足两个成功CPU观测时，CPU为null；毫秒级Puerts批次短于进程采样间隔，不能从粗采样推导其独立CPU。",
+    "渲染frame是宿主automation间隔；widget_traversal包含子控件Tick，CEF异步子进程不在其范围内。GPU和input-to-photon未在本分析中测量。"
+  ],
+  "runs": [
+    {
+      "run_directory": "F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132015-557-DX12",
+      "manifest": {
+        "started_utc": "2026-09-12T05:20:15.5773779Z",
+        "finished_utc": "2026-09-12T05:26:11.6148858Z",
+        "project": "F:\\Github\\RmlUiUnrealTest\\RmlUiUnrealTest.uproject",
+        "engine_root": "C:\\Program Files\\Epic Games\\UE_5.8",
+        "editor": "C:\\Program Files\\Epic Games\\UE_5.8\\Engine\\Binaries\\Win64\\UnrealEditor.exe",
+        "editor_pid": 14372,
+        "editor_instance": "14372:639247872156630390",
+        "rhi": "DX12",
+        "arguments": [
+          "F:\\Github\\RmlUiUnrealTest\\RmlUiUnrealTest.uproject",
+          "-DX12",
+          "-windowed",
+          "-ResX=1280",
+          "-ResY=800",
+          "-unattended",
+          "-NoSound",
+          "-NoLiveCoding",
+          "-nosplash",
+          "-ExecCmds=r.VSync 0,t.MaxFPS 120,Automation RunTests RmlUiUnreal.Performance",
+          "-TestExit=Automation Test Queue Empty",
+          "-ReportExportPath=F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132015-557-DX12\\Automation",
+          "-abslog=F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132015-557-DX12\\UnrealEditor.log",
+          "-RmlUiPerfOutput=F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132015-557-DX12",
+          "-RmlUiPerfWarmup=10",
+          "-RmlUiPerfSeconds=60",
+          "-RmlUiCommTrials=5",
+          "-RmlUiCommRequests=128",
+          "-RmlUiCommReads=100000",
+          "-RmlUiCommWarmup=2"
+        ],
+        "output_directory": "F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132015-557-DX12",
+        "frame_limit": 120,
+        "vsync": 0,
+        "sample_interval_seconds": 0.5,
+        "warmup_seconds": 10.0,
+        "sample_seconds": 60.0,
+        "communication_trials": 5,
+        "communication_requests": 128,
+        "puerts_reads": 100000,
+        "communication_warmup_batches": 2,
+        "timeout_seconds": 900,
+        "timed_out": false,
+        "exit_code": 0,
+        "sampler_error": null,
+        "inventory_errors": 0,
+        "editor_successful_samples": 189,
+        "automation": {
+          "passed": 2,
+          "warnings": 0,
+          "failed": 0,
+          "not_run": 0,
+          "report": "F:\\Github\\RmlUiUnrealTest\\Saved\\Performance\\20260912-132015-557-DX12\\Automation\\index.json"
+        }
+      },
+      "communication_verified": true,
+      "communication_timing_scope": "Web: JS request-to-response RTT includes CEF/frame queues; Puerts: warmed synchronous loop batch, two clock boundary calls, no per-read clock. Both include loop bookkeeping; UI text update/report excluded.",
+      "communication_event_transport": "JSON.stringify -> bound Request(FString) -> UE parse/read/serialize -> ExecuteJavascript CustomEvent(JSON string) -> JSON.parse. Bound void Request additionally produces an unused official Promise ACK.",
+      "communication_property_scope": "Same native UObject and changed float epochs. Web uses native GetObjectValue (CEF exposes methods); Puerts measures the same getter plus cached UObject.Value and GetObject().Value. Direct property validation uses changed epochs and checksums, not a property getter counter.",
+      "csv_rows": 1322,
+      "root_ue_rows": 191,
+      "cef_rows": 752,
+      "cef_process_names": [
+        "EpicWebHelper.exe"
+      ],
+      "rendering_metadata": [
+        {
+          "source": "RmlUiComparison-D3D12-Windowed.json",
+          "engine": "5.8.1-56057345+++UE5+Release-5.8",
+          "rhi": "D3D12",
+          "cpu": "AMD Ryzen 9 9950X 16-Core Processor            ",
+          "rhi_adapter": "NVIDIA GeForce RTX 5080",
+          "primary_display_adapter": "Microsoft Remote Display Adapter",
+          "warmup_seconds": 10,
+          "sample_seconds": 60,
+          "created_rows": 100,
+          "method": "1280x800 requested client pixels; 100 fixed 29px rows, three fields, 48px header; LatoLatin 14px/20px; clipping; per-UE-frame header update; readiness then 10.000s warmup + 60.000s sample",
+          "frame_metric": "Elapsed wall time between automation updates in the UE host, not UI-only CPU time or browser presented-frame latency",
+          "widget_traversal_metric": "Outer SCompoundWidget::OnPaint including child traversal; child SWidget::Paint may execute Tick and OnPaint. This is not pure draw submission time. Browser work is asynchronous and CEF child CPU/GPU time is excluded.",
+          "workload_limitations": "Same visible content and per-host-frame update requests; browser refresh capped at 60Hz and may coalesce updates. Native Slate and RmlUi process updates in the UE host. Font rasterizers and widget/DOM implementations differ. Results are steady-state Editor measurements, not input-to-photon latency or packaged-runtime totals."
+        }
+      ],
+      "rendering": [
+        {
+          "source": "RmlUiComparison-D3D12-Windowed.json",
+          "name": "Slate",
+          "rhi": "D3D12",
+          "samples": 7124,
+          "frame_p50_ms": 8.28709825873375,
+          "frame_p95_ms": 10.619401931762695,
+          "frame_p99_ms": 12.371998280286789,
+          "widget_traversal_p50_ms": 0.2556,
+          "widget_traversal_p95_ms": 0.4163,
+          "widget_traversal_p99_ms": 0.5593,
+          "rmlui_stages": null,
+          "frames": null,
+          "draws": null,
+          "full_frame_upload_mib": null,
+          "geometry": {
+            "local_width": 1280,
+            "local_height": 800,
+            "layout_scale": 1,
+            "window_dpi_scale": 1,
+            "application_scale": 1
+          },
+          "content_pixels_verified": true,
+          "header_text_pixels_verified": true,
+          "rmlui_metrics_verified": null,
+          "unsupported_slate_features": null,
+          "screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/SlateBenchmark-D3D12-Windowed.png",
+          "process": {
+            "sample_started_utc": "2026-09-12T05:21:39.16Z",
+            "sample_finished_utc": "2026-09-12T05:22:39.162Z",
+            "ue": {
+              "group": "root_ue",
+              "status": "observed_interval",
+              "selected_row_count": 32,
+              "observed_instance_count": 1,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:21:40.6755811+00:00",
+              "last_observation_utc": "2026-09-12T05:22:38.4248679+00:00",
+              "cpu_delta_seconds": 96.546875,
+              "cpu_observed_wall_seconds": 57.7492868,
+              "cpu_single_core_percent": 167.1828006021366,
+              "cpu_coverage_fraction": 0.9624560314656178,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "14372:639247872156630390",
+                  "process_name": "UnrealEditor",
+                  "sample_count": 32,
+                  "first_utc": "2026-09-12T05:21:40.6755811+00:00",
+                  "last_utc": "2026-09-12T05:22:38.4248679+00:00",
+                  "delta_seconds": 96.546875,
+                  "wall_seconds": 57.7492868
+                }
+              ],
+              "memory_sample_count": 32,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 3413.70751953125,
+              "working_set_sum_peak_mib": 3698.22265625,
+              "private_sum_mean_mib": 3645.9114990234375,
+              "private_sum_peak_mib": 3646.61328125,
+              "memory_max_batch_skew_ms": 0.0,
+              "memory_samples": [
+                {
+                  "sample_index": "48",
+                  "first_utc": "2026-09-12T05:21:40.6755811+00:00",
+                  "last_utc": "2026-09-12T05:21:40.6755811+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3267.3671875,
+                  "private_sum_mib": 3646.390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "49",
+                  "first_utc": "2026-09-12T05:21:43.0546745+00:00",
+                  "last_utc": "2026-09-12T05:21:43.0546745+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3267.66015625,
+                  "private_sum_mib": 3646.515625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "50",
+                  "first_utc": "2026-09-12T05:21:45.5850700+00:00",
+                  "last_utc": "2026-09-12T05:21:45.5850700+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.56640625,
+                  "private_sum_mib": 3645.66015625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "51",
+                  "first_utc": "2026-09-12T05:21:47.8207066+00:00",
+                  "last_utc": "2026-09-12T05:21:47.8207066+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.75390625,
+                  "private_sum_mib": 3645.66015625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "52",
+                  "first_utc": "2026-09-12T05:21:49.9642802+00:00",
+                  "last_utc": "2026-09-12T05:21:49.9642802+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.7734375,
+                  "private_sum_mib": 3645.62109375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "53",
+                  "first_utc": "2026-09-12T05:21:52.0531978+00:00",
+                  "last_utc": "2026-09-12T05:21:52.0531978+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.79296875,
+                  "private_sum_mib": 3645.62109375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "54",
+                  "first_utc": "2026-09-12T05:21:53.9406102+00:00",
+                  "last_utc": "2026-09-12T05:21:53.9406102+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.171875,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "55",
+                  "first_utc": "2026-09-12T05:21:55.6776146+00:00",
+                  "last_utc": "2026-09-12T05:21:55.6776146+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.25390625,
+                  "private_sum_mib": 3645.73828125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "56",
+                  "first_utc": "2026-09-12T05:21:57.4038340+00:00",
+                  "last_utc": "2026-09-12T05:21:57.4038340+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.25390625,
+                  "private_sum_mib": 3645.73828125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "57",
+                  "first_utc": "2026-09-12T05:21:59.1406564+00:00",
+                  "last_utc": "2026-09-12T05:21:59.1406564+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.375,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "58",
+                  "first_utc": "2026-09-12T05:22:00.8722741+00:00",
+                  "last_utc": "2026-09-12T05:22:00.8722741+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3266.375,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "59",
+                  "first_utc": "2026-09-12T05:22:02.6155261+00:00",
+                  "last_utc": "2026-09-12T05:22:02.6155261+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3277.82421875,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "60",
+                  "first_utc": "2026-09-12T05:22:04.3985080+00:00",
+                  "last_utc": "2026-09-12T05:22:04.3985080+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3292.7421875,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "61",
+                  "first_utc": "2026-09-12T05:22:06.1856457+00:00",
+                  "last_utc": "2026-09-12T05:22:06.1856457+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3310.62890625,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "62",
+                  "first_utc": "2026-09-12T05:22:07.9123738+00:00",
+                  "last_utc": "2026-09-12T05:22:07.9123738+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3346.8671875,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "63",
+                  "first_utc": "2026-09-12T05:22:09.6378733+00:00",
+                  "last_utc": "2026-09-12T05:22:09.6378733+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3370.15234375,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "64",
+                  "first_utc": "2026-09-12T05:22:11.4010621+00:00",
+                  "last_utc": "2026-09-12T05:22:11.4010621+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3413.6796875,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "65",
+                  "first_utc": "2026-09-12T05:22:13.2075919+00:00",
+                  "last_utc": "2026-09-12T05:22:13.2075919+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3449.453125,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "66",
+                  "first_utc": "2026-09-12T05:22:14.9936053+00:00",
+                  "last_utc": "2026-09-12T05:22:14.9936053+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3465.453125,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "67",
+                  "first_utc": "2026-09-12T05:22:16.8630270+00:00",
+                  "last_utc": "2026-09-12T05:22:16.8630270+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3486.578125,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "68",
+                  "first_utc": "2026-09-12T05:22:18.6371719+00:00",
+                  "last_utc": "2026-09-12T05:22:18.6371719+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3491.95703125,
+                  "private_sum_mib": 3645.73046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "69",
+                  "first_utc": "2026-09-12T05:22:20.5009079+00:00",
+                  "last_utc": "2026-09-12T05:22:20.5009079+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3496.56640625,
+                  "private_sum_mib": 3645.85546875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "70",
+                  "first_utc": "2026-09-12T05:22:22.4695123+00:00",
+                  "last_utc": "2026-09-12T05:22:22.4695123+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3503.875,
+                  "private_sum_mib": 3645.85546875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "71",
+                  "first_utc": "2026-09-12T05:22:24.2112856+00:00",
+                  "last_utc": "2026-09-12T05:22:24.2112856+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3513.25390625,
+                  "private_sum_mib": 3645.85546875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "72",
+                  "first_utc": "2026-09-12T05:22:25.9984522+00:00",
+                  "last_utc": "2026-09-12T05:22:25.9984522+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3560.13671875,
+                  "private_sum_mib": 3646.61328125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "73",
+                  "first_utc": "2026-09-12T05:22:27.7350628+00:00",
+                  "last_utc": "2026-09-12T05:22:27.7350628+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3561.375,
+                  "private_sum_mib": 3646.61328125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "74",
+                  "first_utc": "2026-09-12T05:22:29.5553790+00:00",
+                  "last_utc": "2026-09-12T05:22:29.5553790+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3577.5,
+                  "private_sum_mib": 3646.61328125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "75",
+                  "first_utc": "2026-09-12T05:22:31.3285221+00:00",
+                  "last_utc": "2026-09-12T05:22:31.3285221+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3587.1953125,
+                  "private_sum_mib": 3645.578125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "76",
+                  "first_utc": "2026-09-12T05:22:33.0871321+00:00",
+                  "last_utc": "2026-09-12T05:22:33.0871321+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3605.78125,
+                  "private_sum_mib": 3646.203125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "77",
+                  "first_utc": "2026-09-12T05:22:34.8535566+00:00",
+                  "last_utc": "2026-09-12T05:22:34.8535566+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3627.48046875,
+                  "private_sum_mib": 3646.203125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "78",
+                  "first_utc": "2026-09-12T05:22:36.6371829+00:00",
+                  "last_utc": "2026-09-12T05:22:36.6371829+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3668.57421875,
+                  "private_sum_mib": 3646.203125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "79",
+                  "first_utc": "2026-09-12T05:22:38.4248679+00:00",
+                  "last_utc": "2026-09-12T05:22:38.4248679+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3698.22265625,
+                  "private_sum_mib": 3646.1328125,
+                  "batch_skew_ms": 0.0
+                }
+              ]
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "observed_interval",
+              "selected_row_count": 128,
+              "observed_instance_count": 4,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:21:40.6478086+00:00",
+              "last_observation_utc": "2026-09-12T05:22:38.5225198+00:00",
+              "cpu_delta_seconds": 0.078125,
+              "cpu_observed_wall_seconds": 57.8747112,
+              "cpu_single_core_percent": 0.13498987447215113,
+              "cpu_coverage_fraction": 0.9645463684543848,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "102484:639247872454443300",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 32,
+                  "first_utc": "2026-09-12T05:21:40.6478086+00:00",
+                  "last_utc": "2026-09-12T05:22:38.4002519+00:00",
+                  "delta_seconds": 0.078125,
+                  "wall_seconds": 57.7524433
+                },
+                {
+                  "instance_key": "117716:639247872454980310",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 32,
+                  "first_utc": "2026-09-12T05:21:40.7298893+00:00",
+                  "last_utc": "2026-09-12T05:22:38.4744031+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 57.7445138
+                },
+                {
+                  "instance_key": "120408:639247872454799320",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 32,
+                  "first_utc": "2026-09-12T05:21:40.7944654+00:00",
+                  "last_utc": "2026-09-12T05:22:38.5225198+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 57.7280544
+                },
+                {
+                  "instance_key": "51796:639247872455315220",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 32,
+                  "first_utc": "2026-09-12T05:21:40.7045053+00:00",
+                  "last_utc": "2026-09-12T05:22:38.4507575+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 57.7462522
+                }
+              ],
+              "memory_sample_count": 32,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 186.865234375,
+              "working_set_sum_peak_mib": 187.37890625,
+              "private_sum_mean_mib": 153.1082763671875,
+              "private_sum_peak_mib": 153.890625,
+              "memory_max_batch_skew_ms": 195.9847,
+              "memory_samples": [
+                {
+                  "sample_index": "48",
+                  "first_utc": "2026-09-12T05:21:40.6478086+00:00",
+                  "last_utc": "2026-09-12T05:21:40.7944654+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 187.37890625,
+                  "private_sum_mib": 153.890625,
+                  "batch_skew_ms": 146.6568
+                },
+                {
+                  "sample_index": "49",
+                  "first_utc": "2026-09-12T05:21:43.0258481+00:00",
+                  "last_utc": "2026-09-12T05:21:43.1926560+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 187.37890625,
+                  "private_sum_mib": 153.890625,
+                  "batch_skew_ms": 166.8079
+                },
+                {
+                  "sample_index": "50",
+                  "first_utc": "2026-09-12T05:21:45.5416426+00:00",
+                  "last_utc": "2026-09-12T05:21:45.7376273+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.96484375,
+                  "private_sum_mib": 153.2265625,
+                  "batch_skew_ms": 195.9847
+                },
+                {
+                  "sample_index": "51",
+                  "first_utc": "2026-09-12T05:21:47.7936289+00:00",
+                  "last_utc": "2026-09-12T05:21:47.9389148+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.71484375,
+                  "private_sum_mib": 152.890625,
+                  "batch_skew_ms": 145.2859
+                },
+                {
+                  "sample_index": "52",
+                  "first_utc": "2026-09-12T05:21:49.9389735+00:00",
+                  "last_utc": "2026-09-12T05:21:50.0741880+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.69921875,
+                  "private_sum_mib": 152.875,
+                  "batch_skew_ms": 135.2145
+                },
+                {
+                  "sample_index": "53",
+                  "first_utc": "2026-09-12T05:21:52.0274315+00:00",
+                  "last_utc": "2026-09-12T05:21:52.1570742+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.87890625,
+                  "private_sum_mib": 153.12109375,
+                  "batch_skew_ms": 129.6427
+                },
+                {
+                  "sample_index": "54",
+                  "first_utc": "2026-09-12T05:21:53.9169529+00:00",
+                  "last_utc": "2026-09-12T05:21:54.0364326+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.0703125,
+                  "batch_skew_ms": 119.4797
+                },
+                {
+                  "sample_index": "55",
+                  "first_utc": "2026-09-12T05:21:55.6545208+00:00",
+                  "last_utc": "2026-09-12T05:21:55.7724006+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.0703125,
+                  "batch_skew_ms": 117.8798
+                },
+                {
+                  "sample_index": "56",
+                  "first_utc": "2026-09-12T05:21:57.3806022+00:00",
+                  "last_utc": "2026-09-12T05:21:57.4971052+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.84375,
+                  "private_sum_mib": 153.0703125,
+                  "batch_skew_ms": 116.503
+                },
+                {
+                  "sample_index": "57",
+                  "first_utc": "2026-09-12T05:21:59.1167847+00:00",
+                  "last_utc": "2026-09-12T05:21:59.2344293+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 117.6446
+                },
+                {
+                  "sample_index": "58",
+                  "first_utc": "2026-09-12T05:22:00.8474878+00:00",
+                  "last_utc": "2026-09-12T05:22:00.9692954+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.859375,
+                  "private_sum_mib": 153.0859375,
+                  "batch_skew_ms": 121.8076
+                },
+                {
+                  "sample_index": "59",
+                  "first_utc": "2026-09-12T05:22:02.5921898+00:00",
+                  "last_utc": "2026-09-12T05:22:02.7109060+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 118.7162
+                },
+                {
+                  "sample_index": "60",
+                  "first_utc": "2026-09-12T05:22:04.3746464+00:00",
+                  "last_utc": "2026-09-12T05:22:04.4918815+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 117.2351
+                },
+                {
+                  "sample_index": "61",
+                  "first_utc": "2026-09-12T05:22:06.1615951+00:00",
+                  "last_utc": "2026-09-12T05:22:06.2823985+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 120.8034
+                },
+                {
+                  "sample_index": "62",
+                  "first_utc": "2026-09-12T05:22:07.8898093+00:00",
+                  "last_utc": "2026-09-12T05:22:08.0097356+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 119.9263
+                },
+                {
+                  "sample_index": "63",
+                  "first_utc": "2026-09-12T05:22:09.6125894+00:00",
+                  "last_utc": "2026-09-12T05:22:09.7351658+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 122.5764
+                },
+                {
+                  "sample_index": "64",
+                  "first_utc": "2026-09-12T05:22:11.3752837+00:00",
+                  "last_utc": "2026-09-12T05:22:11.4979702+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 122.6865
+                },
+                {
+                  "sample_index": "65",
+                  "first_utc": "2026-09-12T05:22:13.1858728+00:00",
+                  "last_utc": "2026-09-12T05:22:13.3025180+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 116.6452
+                },
+                {
+                  "sample_index": "66",
+                  "first_utc": "2026-09-12T05:22:14.9694748+00:00",
+                  "last_utc": "2026-09-12T05:22:15.1013929+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 131.9181
+                },
+                {
+                  "sample_index": "67",
+                  "first_utc": "2026-09-12T05:22:16.8382305+00:00",
+                  "last_utc": "2026-09-12T05:22:16.9651503+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 126.9198
+                },
+                {
+                  "sample_index": "68",
+                  "first_utc": "2026-09-12T05:22:18.6135133+00:00",
+                  "last_utc": "2026-09-12T05:22:18.7350824+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 121.5691
+                },
+                {
+                  "sample_index": "69",
+                  "first_utc": "2026-09-12T05:22:20.4752621+00:00",
+                  "last_utc": "2026-09-12T05:22:20.6078482+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 132.5861
+                },
+                {
+                  "sample_index": "70",
+                  "first_utc": "2026-09-12T05:22:22.4465389+00:00",
+                  "last_utc": "2026-09-12T05:22:22.5662075+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 119.6686
+                },
+                {
+                  "sample_index": "71",
+                  "first_utc": "2026-09-12T05:22:24.1872255+00:00",
+                  "last_utc": "2026-09-12T05:22:24.3046051+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.83984375,
+                  "private_sum_mib": 153.06640625,
+                  "batch_skew_ms": 117.3796
+                },
+                {
+                  "sample_index": "72",
+                  "first_utc": "2026-09-12T05:22:25.9718147+00:00",
+                  "last_utc": "2026-09-12T05:22:26.0933386+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 121.5239
+                },
+                {
+                  "sample_index": "73",
+                  "first_utc": "2026-09-12T05:22:27.7102888+00:00",
+                  "last_utc": "2026-09-12T05:22:27.8339232+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 123.6344
+                },
+                {
+                  "sample_index": "74",
+                  "first_utc": "2026-09-12T05:22:29.5299192+00:00",
+                  "last_utc": "2026-09-12T05:22:29.6541062+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 124.187
+                },
+                {
+                  "sample_index": "75",
+                  "first_utc": "2026-09-12T05:22:31.3052539+00:00",
+                  "last_utc": "2026-09-12T05:22:31.4209826+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 115.7287
+                },
+                {
+                  "sample_index": "76",
+                  "first_utc": "2026-09-12T05:22:33.0631914+00:00",
+                  "last_utc": "2026-09-12T05:22:33.1803986+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 117.2072
+                },
+                {
+                  "sample_index": "77",
+                  "first_utc": "2026-09-12T05:22:34.8298972+00:00",
+                  "last_utc": "2026-09-12T05:22:34.9511019+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 121.2047
+                },
+                {
+                  "sample_index": "78",
+                  "first_utc": "2026-09-12T05:22:36.6131954+00:00",
+                  "last_utc": "2026-09-12T05:22:36.7343309+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 121.1355
+                },
+                {
+                  "sample_index": "79",
+                  "first_utc": "2026-09-12T05:22:38.4002519+00:00",
+                  "last_utc": "2026-09-12T05:22:38.5225198+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 186.81640625,
+                  "private_sum_mib": 153.04296875,
+                  "batch_skew_ms": 122.2679
+                }
+              ]
+            }
+          }
+        },
+        {
+          "source": "RmlUiComparison-D3D12-Windowed.json",
+          "name": "WebBrowser",
+          "rhi": "D3D12",
+          "samples": 7064,
+          "frame_p50_ms": 8.334998041391373,
+          "frame_p95_ms": 10.369598865509033,
+          "frame_p99_ms": 13.27580213546753,
+          "widget_traversal_p50_ms": 0.011399999999999999,
+          "widget_traversal_p95_ms": 0.0188,
+          "widget_traversal_p99_ms": 0.027899999999999998,
+          "rmlui_stages": null,
+          "frames": null,
+          "draws": null,
+          "full_frame_upload_mib": null,
+          "geometry": {
+            "local_width": 1280,
+            "local_height": 800,
+            "layout_scale": 1,
+            "window_dpi_scale": 1,
+            "application_scale": 1
+          },
+          "content_pixels_verified": true,
+          "header_text_pixels_verified": true,
+          "rmlui_metrics_verified": null,
+          "unsupported_slate_features": null,
+          "screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/WebBrowserBenchmark-D3D12-Windowed.png",
+          "process": {
+            "sample_started_utc": "2026-09-12T05:22:49.37Z",
+            "sample_finished_utc": "2026-09-12T05:23:49.376Z",
+            "ue": {
+              "group": "root_ue",
+              "status": "observed_interval",
+              "selected_row_count": 30,
+              "observed_instance_count": 1,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:22:49.4469548+00:00",
+              "last_observation_utc": "2026-09-12T05:23:47.5879977+00:00",
+              "cpu_delta_seconds": 98.546875,
+              "cpu_observed_wall_seconds": 58.1410429,
+              "cpu_single_core_percent": 169.4962286271614,
+              "cpu_coverage_fraction": 0.9689204896177049,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "14372:639247872156630390",
+                  "process_name": "UnrealEditor",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:22:49.4469548+00:00",
+                  "last_utc": "2026-09-12T05:23:47.5879977+00:00",
+                  "delta_seconds": 98.546875,
+                  "wall_seconds": 58.1410429
+                }
+              ],
+              "memory_sample_count": 30,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 3747.32265625,
+              "working_set_sum_peak_mib": 3752.09375,
+              "private_sum_mean_mib": 3664.604036458333,
+              "private_sum_peak_mib": 3669.4296875,
+              "memory_max_batch_skew_ms": 0.0,
+              "memory_samples": [
+                {
+                  "sample_index": "100",
+                  "first_utc": "2026-09-12T05:23:19.7256138+00:00",
+                  "last_utc": "2026-09-12T05:23:19.7256138+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.22265625,
+                  "private_sum_mib": 3664.74609375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "101",
+                  "first_utc": "2026-09-12T05:23:21.8691058+00:00",
+                  "last_utc": "2026-09-12T05:23:21.8691058+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3743.29296875,
+                  "private_sum_mib": 3660.65625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "102",
+                  "first_utc": "2026-09-12T05:23:24.0475808+00:00",
+                  "last_utc": "2026-09-12T05:23:24.0475808+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3743.29296875,
+                  "private_sum_mib": 3660.65625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "103",
+                  "first_utc": "2026-09-12T05:23:26.0245113+00:00",
+                  "last_utc": "2026-09-12T05:23:26.0245113+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.2421875,
+                  "private_sum_mib": 3664.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "104",
+                  "first_utc": "2026-09-12T05:23:28.1269360+00:00",
+                  "last_utc": "2026-09-12T05:23:28.1269360+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.2578125,
+                  "private_sum_mib": 3664.796875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "105",
+                  "first_utc": "2026-09-12T05:23:30.0450531+00:00",
+                  "last_utc": "2026-09-12T05:23:30.0450531+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3749.1484375,
+                  "private_sum_mib": 3664.7890625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "106",
+                  "first_utc": "2026-09-12T05:23:32.0599425+00:00",
+                  "last_utc": "2026-09-12T05:23:32.0599425+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.2421875,
+                  "private_sum_mib": 3664.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "107",
+                  "first_utc": "2026-09-12T05:23:34.1039747+00:00",
+                  "last_utc": "2026-09-12T05:23:34.1039747+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.24609375,
+                  "private_sum_mib": 3664.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "108",
+                  "first_utc": "2026-09-12T05:23:36.1253734+00:00",
+                  "last_utc": "2026-09-12T05:23:36.1253734+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.24609375,
+                  "private_sum_mib": 3664.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "109",
+                  "first_utc": "2026-09-12T05:23:38.1445568+00:00",
+                  "last_utc": "2026-09-12T05:23:38.1445568+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.24609375,
+                  "private_sum_mib": 3664.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "110",
+                  "first_utc": "2026-09-12T05:23:40.0465983+00:00",
+                  "last_utc": "2026-09-12T05:23:40.0465983+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.25390625,
+                  "private_sum_mib": 3664.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "111",
+                  "first_utc": "2026-09-12T05:23:41.9180896+00:00",
+                  "last_utc": "2026-09-12T05:23:41.9180896+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.35546875,
+                  "private_sum_mib": 3664.8046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "112",
+                  "first_utc": "2026-09-12T05:23:43.7333837+00:00",
+                  "last_utc": "2026-09-12T05:23:43.7333837+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3749.24609375,
+                  "private_sum_mib": 3664.8125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "113",
+                  "first_utc": "2026-09-12T05:23:45.6276006+00:00",
+                  "last_utc": "2026-09-12T05:23:45.6276006+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.35546875,
+                  "private_sum_mib": 3664.8046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "114",
+                  "first_utc": "2026-09-12T05:23:47.5879977+00:00",
+                  "last_utc": "2026-09-12T05:23:47.5879977+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3745.2890625,
+                  "private_sum_mib": 3660.6875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "85",
+                  "first_utc": "2026-09-12T05:22:49.4469548+00:00",
+                  "last_utc": "2026-09-12T05:22:49.4469548+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3748.0546875,
+                  "private_sum_mib": 3669.3359375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "86",
+                  "first_utc": "2026-09-12T05:22:51.3454388+00:00",
+                  "last_utc": "2026-09-12T05:22:51.3454388+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3752.09375,
+                  "private_sum_mib": 3669.4296875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "87",
+                  "first_utc": "2026-09-12T05:22:53.1806935+00:00",
+                  "last_utc": "2026-09-12T05:22:53.1806935+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3744.29296875,
+                  "private_sum_mib": 3661.45703125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "88",
+                  "first_utc": "2026-09-12T05:22:54.9447368+00:00",
+                  "last_utc": "2026-09-12T05:22:54.9447368+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3748.2734375,
+                  "private_sum_mib": 3665.61328125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "89",
+                  "first_utc": "2026-09-12T05:22:56.8011873+00:00",
+                  "last_utc": "2026-09-12T05:22:56.8011873+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3750.25,
+                  "private_sum_mib": 3665.69140625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "90",
+                  "first_utc": "2026-09-12T05:22:58.6479574+00:00",
+                  "last_utc": "2026-09-12T05:22:58.6479574+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3748.4140625,
+                  "private_sum_mib": 3665.75390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "91",
+                  "first_utc": "2026-09-12T05:23:00.4943568+00:00",
+                  "last_utc": "2026-09-12T05:23:00.4943568+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3748.47265625,
+                  "private_sum_mib": 3665.78125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "92",
+                  "first_utc": "2026-09-12T05:23:02.3139167+00:00",
+                  "last_utc": "2026-09-12T05:23:02.3139167+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3748.50390625,
+                  "private_sum_mib": 3665.8125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "93",
+                  "first_utc": "2026-09-12T05:23:04.2807026+00:00",
+                  "last_utc": "2026-09-12T05:23:04.2807026+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3748.6015625,
+                  "private_sum_mib": 3665.91015625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "94",
+                  "first_utc": "2026-09-12T05:23:06.2939195+00:00",
+                  "last_utc": "2026-09-12T05:23:06.2939195+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.140625,
+                  "private_sum_mib": 3664.4453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "95",
+                  "first_utc": "2026-09-12T05:23:08.3990820+00:00",
+                  "last_utc": "2026-09-12T05:23:08.3990820+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.2578125,
+                  "private_sum_mib": 3664.5625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "96",
+                  "first_utc": "2026-09-12T05:23:10.7020809+00:00",
+                  "last_utc": "2026-09-12T05:23:10.7020809+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.28125,
+                  "private_sum_mib": 3664.5859375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "97",
+                  "first_utc": "2026-09-12T05:23:13.0188134+00:00",
+                  "last_utc": "2026-09-12T05:23:13.0188134+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.37890625,
+                  "private_sum_mib": 3664.68359375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "98",
+                  "first_utc": "2026-09-12T05:23:15.3160419+00:00",
+                  "last_utc": "2026-09-12T05:23:15.3160419+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3747.453125,
+                  "private_sum_mib": 3664.99609375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "99",
+                  "first_utc": "2026-09-12T05:23:17.5565679+00:00",
+                  "last_utc": "2026-09-12T05:23:17.5565679+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3743.2734375,
+                  "private_sum_mib": 3660.62109375,
+                  "batch_skew_ms": 0.0
+                }
+              ]
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "observed_interval",
+              "selected_row_count": 150,
+              "observed_instance_count": 5,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:22:49.4221434+00:00",
+              "last_observation_utc": "2026-09-12T05:23:47.7001319+00:00",
+              "cpu_delta_seconds": 18.546875,
+              "cpu_observed_wall_seconds": 58.2779885,
+              "cpu_single_core_percent": 31.824837262528373,
+              "cpu_coverage_fraction": 0.9712026880645269,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "102484:639247872454443300",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:22:49.4221434+00:00",
+                  "last_utc": "2026-09-12T05:23:47.5637366+00:00",
+                  "delta_seconds": 9.953125,
+                  "wall_seconds": 58.1415932
+                },
+                {
+                  "instance_key": "117716:639247872454980310",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:22:49.5211379+00:00",
+                  "last_utc": "2026-09-12T05:23:47.6533906+00:00",
+                  "delta_seconds": 0.015625,
+                  "wall_seconds": 58.1322527
+                },
+                {
+                  "instance_key": "120408:639247872454799320",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:22:49.5718136+00:00",
+                  "last_utc": "2026-09-12T05:23:47.7001319+00:00",
+                  "delta_seconds": 0.078125,
+                  "wall_seconds": 58.1283183
+                },
+                {
+                  "instance_key": "51796:639247872455315220",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:22:49.4950022+00:00",
+                  "last_utc": "2026-09-12T05:23:47.6313651+00:00",
+                  "delta_seconds": 8.5,
+                  "wall_seconds": 58.1363629
+                },
+                {
+                  "instance_key": "93660:639247873592106100",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:22:49.4705408+00:00",
+                  "last_utc": "2026-09-12T05:23:47.6087751+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 58.1382343
+                }
+              ],
+              "memory_sample_count": 30,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 297.90546875,
+              "working_set_sum_peak_mib": 306.9140625,
+              "private_sum_mean_mib": 242.39127604166666,
+              "private_sum_peak_mib": 250.22265625,
+              "memory_max_batch_skew_ms": 199.8866,
+              "memory_samples": [
+                {
+                  "sample_index": "100",
+                  "first_utc": "2026-09-12T05:23:19.6990180+00:00",
+                  "last_utc": "2026-09-12T05:23:19.8518883+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 297.62109375,
+                  "private_sum_mib": 244.19140625,
+                  "batch_skew_ms": 152.8703
+                },
+                {
+                  "sample_index": "101",
+                  "first_utc": "2026-09-12T05:23:21.8453150+00:00",
+                  "last_utc": "2026-09-12T05:23:22.0041598+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 294.703125,
+                  "private_sum_mib": 244.265625,
+                  "batch_skew_ms": 158.8448
+                },
+                {
+                  "sample_index": "102",
+                  "first_utc": "2026-09-12T05:23:24.0238667+00:00",
+                  "last_utc": "2026-09-12T05:23:24.1665956+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 295.48828125,
+                  "private_sum_mib": 244.48828125,
+                  "batch_skew_ms": 142.7289
+                },
+                {
+                  "sample_index": "103",
+                  "first_utc": "2026-09-12T05:23:26.0000496+00:00",
+                  "last_utc": "2026-09-12T05:23:26.1409198+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 296.734375,
+                  "private_sum_mib": 244.828125,
+                  "batch_skew_ms": 140.8702
+                },
+                {
+                  "sample_index": "104",
+                  "first_utc": "2026-09-12T05:23:28.1034946+00:00",
+                  "last_utc": "2026-09-12T05:23:28.2413978+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 297.80078125,
+                  "private_sum_mib": 246.26953125,
+                  "batch_skew_ms": 137.9032
+                },
+                {
+                  "sample_index": "105",
+                  "first_utc": "2026-09-12T05:23:30.0220361+00:00",
+                  "last_utc": "2026-09-12T05:23:30.1629999+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 298.8828125,
+                  "private_sum_mib": 246.3046875,
+                  "batch_skew_ms": 140.9638
+                },
+                {
+                  "sample_index": "106",
+                  "first_utc": "2026-09-12T05:23:32.0357742+00:00",
+                  "last_utc": "2026-09-12T05:23:32.1732011+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 306.9140625,
+                  "private_sum_mib": 250.22265625,
+                  "batch_skew_ms": 137.4269
+                },
+                {
+                  "sample_index": "107",
+                  "first_utc": "2026-09-12T05:23:34.0814889+00:00",
+                  "last_utc": "2026-09-12T05:23:34.2189973+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 303.24609375,
+                  "private_sum_mib": 246.32421875,
+                  "batch_skew_ms": 137.5084
+                },
+                {
+                  "sample_index": "108",
+                  "first_utc": "2026-09-12T05:23:36.1015426+00:00",
+                  "last_utc": "2026-09-12T05:23:36.2369745+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 299.61328125,
+                  "private_sum_mib": 246.35546875,
+                  "batch_skew_ms": 135.4319
+                },
+                {
+                  "sample_index": "109",
+                  "first_utc": "2026-09-12T05:23:38.1218909+00:00",
+                  "last_utc": "2026-09-12T05:23:38.2555533+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 299.73046875,
+                  "private_sum_mib": 246.40234375,
+                  "batch_skew_ms": 133.6624
+                },
+                {
+                  "sample_index": "110",
+                  "first_utc": "2026-09-12T05:23:40.0249362+00:00",
+                  "last_utc": "2026-09-12T05:23:40.1525701+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 303.90234375,
+                  "private_sum_mib": 246.515625,
+                  "batch_skew_ms": 127.6339
+                },
+                {
+                  "sample_index": "111",
+                  "first_utc": "2026-09-12T05:23:41.8963623+00:00",
+                  "last_utc": "2026-09-12T05:23:42.0309041+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 300.6640625,
+                  "private_sum_mib": 246.91796875,
+                  "batch_skew_ms": 134.5418
+                },
+                {
+                  "sample_index": "112",
+                  "first_utc": "2026-09-12T05:23:43.7116529+00:00",
+                  "last_utc": "2026-09-12T05:23:43.8427333+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 301.23046875,
+                  "private_sum_mib": 246.93359375,
+                  "batch_skew_ms": 131.0804
+                },
+                {
+                  "sample_index": "113",
+                  "first_utc": "2026-09-12T05:23:45.6053051+00:00",
+                  "last_utc": "2026-09-12T05:23:45.7406499+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 305.26171875,
+                  "private_sum_mib": 248.109375,
+                  "batch_skew_ms": 135.3448
+                },
+                {
+                  "sample_index": "114",
+                  "first_utc": "2026-09-12T05:23:47.5637366+00:00",
+                  "last_utc": "2026-09-12T05:23:47.7001319+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 301.2578125,
+                  "private_sum_mib": 248.046875,
+                  "batch_skew_ms": 136.3953
+                },
+                {
+                  "sample_index": "85",
+                  "first_utc": "2026-09-12T05:22:49.4221434+00:00",
+                  "last_utc": "2026-09-12T05:22:49.5718136+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 286.30859375,
+                  "private_sum_mib": 231.03125,
+                  "batch_skew_ms": 149.6702
+                },
+                {
+                  "sample_index": "86",
+                  "first_utc": "2026-09-12T05:22:51.3224098+00:00",
+                  "last_utc": "2026-09-12T05:22:51.4667900+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 287.2578125,
+                  "private_sum_mib": 231.72265625,
+                  "batch_skew_ms": 144.3802
+                },
+                {
+                  "sample_index": "87",
+                  "first_utc": "2026-09-12T05:22:53.1568262+00:00",
+                  "last_utc": "2026-09-12T05:22:53.2995374+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 293.203125,
+                  "private_sum_mib": 233.6484375,
+                  "batch_skew_ms": 142.7112
+                },
+                {
+                  "sample_index": "88",
+                  "first_utc": "2026-09-12T05:22:54.9216592+00:00",
+                  "last_utc": "2026-09-12T05:22:55.0630271+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 297.96875,
+                  "private_sum_mib": 234.79296875,
+                  "batch_skew_ms": 141.3679
+                },
+                {
+                  "sample_index": "89",
+                  "first_utc": "2026-09-12T05:22:56.7769541+00:00",
+                  "last_utc": "2026-09-12T05:22:56.9234761+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 295.27734375,
+                  "private_sum_mib": 235.9375,
+                  "batch_skew_ms": 146.522
+                },
+                {
+                  "sample_index": "90",
+                  "first_utc": "2026-09-12T05:22:58.6216428+00:00",
+                  "last_utc": "2026-09-12T05:22:58.7702659+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 296.19921875,
+                  "private_sum_mib": 236.8125,
+                  "batch_skew_ms": 148.6231
+                },
+                {
+                  "sample_index": "91",
+                  "first_utc": "2026-09-12T05:23:00.4679267+00:00",
+                  "last_utc": "2026-09-12T05:23:00.6172413+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 300.94921875,
+                  "private_sum_mib": 237.62890625,
+                  "batch_skew_ms": 149.3146
+                },
+                {
+                  "sample_index": "92",
+                  "first_utc": "2026-09-12T05:23:02.2903559+00:00",
+                  "last_utc": "2026-09-12T05:23:02.4324959+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 302.08984375,
+                  "private_sum_mib": 238.8359375,
+                  "batch_skew_ms": 142.14
+                },
+                {
+                  "sample_index": "93",
+                  "first_utc": "2026-09-12T05:23:04.2560348+00:00",
+                  "last_utc": "2026-09-12T05:23:04.4095724+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 303.046875,
+                  "private_sum_mib": 239.75390625,
+                  "batch_skew_ms": 153.5376
+                },
+                {
+                  "sample_index": "94",
+                  "first_utc": "2026-09-12T05:23:06.2687234+00:00",
+                  "last_utc": "2026-09-12T05:23:06.4181610+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 304.578125,
+                  "private_sum_mib": 241.06640625,
+                  "batch_skew_ms": 149.4376
+                },
+                {
+                  "sample_index": "95",
+                  "first_utc": "2026-09-12T05:23:08.3705650+00:00",
+                  "last_utc": "2026-09-12T05:23:08.5367777+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 301.76171875,
+                  "private_sum_mib": 238.203125,
+                  "batch_skew_ms": 166.2127
+                },
+                {
+                  "sample_index": "96",
+                  "first_utc": "2026-09-12T05:23:10.6732292+00:00",
+                  "last_utc": "2026-09-12T05:23:10.8508347+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 289.91015625,
+                  "private_sum_mib": 243.83984375,
+                  "batch_skew_ms": 177.6055
+                },
+                {
+                  "sample_index": "97",
+                  "first_utc": "2026-09-12T05:23:12.9806082+00:00",
+                  "last_utc": "2026-09-12T05:23:13.1804948+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 290.73828125,
+                  "private_sum_mib": 243.70703125,
+                  "batch_skew_ms": 199.8866
+                },
+                {
+                  "sample_index": "98",
+                  "first_utc": "2026-09-12T05:23:15.2859137+00:00",
+                  "last_utc": "2026-09-12T05:23:15.4663925+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 292.140625,
+                  "private_sum_mib": 244.44140625,
+                  "batch_skew_ms": 180.4788
+                },
+                {
+                  "sample_index": "99",
+                  "first_utc": "2026-09-12T05:23:17.5309931+00:00",
+                  "last_utc": "2026-09-12T05:23:17.6802062+00:00",
+                  "observed_processes": 5,
+                  "working_set_sum_mib": 292.68359375,
+                  "private_sum_mib": 244.140625,
+                  "batch_skew_ms": 149.2131
+                }
+              ]
+            }
+          }
+        },
+        {
+          "source": "RmlUiComparison-D3D12-Windowed.json",
+          "name": "RmlUiDX11",
+          "rhi": "D3D12",
+          "samples": 5107,
+          "frame_p50_ms": 11.585302650928497,
+          "frame_p95_ms": 13.991400599479675,
+          "frame_p99_ms": 15.809301286935806,
+          "widget_traversal_p50_ms": 6.2155,
+          "widget_traversal_p95_ms": 7.4226,
+          "widget_traversal_p99_ms": 9.027099999999999,
+          "rmlui_stages": {
+            "render_frame": {
+              "calls": 5107,
+              "total_ms": 32203.663899999996,
+              "mean_ms": 6.30578889759154
+            },
+            "bridge_render": {
+              "calls": 5107,
+              "total_ms": 31025.9562,
+              "mean_ms": 6.075182337967496
+            },
+            "draw_decode": {
+              "calls": 0,
+              "total_ms": 0,
+              "mean_ms": 0
+            },
+            "upload_prepare": {
+              "calls": 5107,
+              "total_ms": 1034.0865999999999,
+              "mean_ms": 0.20248415899745445
+            },
+            "on_paint": {
+              "calls": 5107,
+              "total_ms": 24.0042,
+              "mean_ms": 0.004700254552574897
+            }
+          },
+          "frames": 5107,
+          "draws": 0,
+          "full_frame_upload_mib": 19949.21875,
+          "geometry": {
+            "local_width": 1280,
+            "local_height": 800,
+            "layout_scale": 1,
+            "window_dpi_scale": 1,
+            "application_scale": 1
+          },
+          "content_pixels_verified": true,
+          "header_text_pixels_verified": true,
+          "rmlui_metrics_verified": true,
+          "unsupported_slate_features": 0,
+          "screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/RmlUiDX11Benchmark-D3D12-Windowed.png",
+          "process": {
+            "sample_started_utc": "2026-09-12T05:23:59.563Z",
+            "sample_finished_utc": "2026-09-12T05:24:59.563Z",
+            "ue": {
+              "group": "root_ue",
+              "status": "observed_interval",
+              "selected_row_count": 30,
+              "observed_instance_count": 1,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:24:01.0286252+00:00",
+              "last_observation_utc": "2026-09-12T05:24:57.7375474+00:00",
+              "cpu_delta_seconds": 103.703125,
+              "cpu_observed_wall_seconds": 56.7089222,
+              "cpu_single_core_percent": 182.86915176109625,
+              "cpu_coverage_fraction": 0.9451487033333333,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "14372:639247872156630390",
+                  "process_name": "UnrealEditor",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:24:01.0286252+00:00",
+                  "last_utc": "2026-09-12T05:24:57.7375474+00:00",
+                  "delta_seconds": 103.703125,
+                  "wall_seconds": 56.7089222
+                }
+              ],
+              "memory_sample_count": 30,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 3767.560546875,
+              "working_set_sum_peak_mib": 3768.09375,
+              "private_sum_mean_mib": 3712.4283854166665,
+              "private_sum_peak_mib": 3713.39453125,
+              "memory_max_batch_skew_ms": 0.0,
+              "memory_samples": [
+                {
+                  "sample_index": "121",
+                  "first_utc": "2026-09-12T05:24:01.0286252+00:00",
+                  "last_utc": "2026-09-12T05:24:01.0286252+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.5703125,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "122",
+                  "first_utc": "2026-09-12T05:24:02.9835700+00:00",
+                  "last_utc": "2026-09-12T05:24:02.9835700+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.5703125,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "123",
+                  "first_utc": "2026-09-12T05:24:04.8861386+00:00",
+                  "last_utc": "2026-09-12T05:24:04.8861386+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.6484375,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "124",
+                  "first_utc": "2026-09-12T05:24:06.8193898+00:00",
+                  "last_utc": "2026-09-12T05:24:06.8193898+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.6875,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "125",
+                  "first_utc": "2026-09-12T05:24:08.7416915+00:00",
+                  "last_utc": "2026-09-12T05:24:08.7416915+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.6875,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "126",
+                  "first_utc": "2026-09-12T05:24:10.5985979+00:00",
+                  "last_utc": "2026-09-12T05:24:10.5985979+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.6875,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "127",
+                  "first_utc": "2026-09-12T05:24:12.5560747+00:00",
+                  "last_utc": "2026-09-12T05:24:12.5560747+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.70703125,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "128",
+                  "first_utc": "2026-09-12T05:24:14.4797435+00:00",
+                  "last_utc": "2026-09-12T05:24:14.4797435+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.74609375,
+                  "private_sum_mib": 3713.39453125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "129",
+                  "first_utc": "2026-09-12T05:24:16.4102203+00:00",
+                  "last_utc": "2026-09-12T05:24:16.4102203+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.48828125,
+                  "private_sum_mib": 3711.84375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "130",
+                  "first_utc": "2026-09-12T05:24:18.3522832+00:00",
+                  "last_utc": "2026-09-12T05:24:18.3522832+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3766.8828125,
+                  "private_sum_mib": 3711.23828125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "131",
+                  "first_utc": "2026-09-12T05:24:20.2608070+00:00",
+                  "last_utc": "2026-09-12T05:24:20.2608070+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3766.9140625,
+                  "private_sum_mib": 3711.23828125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "132",
+                  "first_utc": "2026-09-12T05:24:22.2174488+00:00",
+                  "last_utc": "2026-09-12T05:24:22.2174488+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3766.9140625,
+                  "private_sum_mib": 3711.23828125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "133",
+                  "first_utc": "2026-09-12T05:24:24.1587176+00:00",
+                  "last_utc": "2026-09-12T05:24:24.1587176+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.125,
+                  "private_sum_mib": 3711.49609375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "134",
+                  "first_utc": "2026-09-12T05:24:26.0371842+00:00",
+                  "last_utc": "2026-09-12T05:24:26.0371842+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.15625,
+                  "private_sum_mib": 3711.49609375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "135",
+                  "first_utc": "2026-09-12T05:24:27.9576753+00:00",
+                  "last_utc": "2026-09-12T05:24:27.9576753+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.19140625,
+                  "private_sum_mib": 3711.49609375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "136",
+                  "first_utc": "2026-09-12T05:24:29.8541542+00:00",
+                  "last_utc": "2026-09-12T05:24:29.8541542+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.22265625,
+                  "private_sum_mib": 3711.75,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "137",
+                  "first_utc": "2026-09-12T05:24:31.8401860+00:00",
+                  "last_utc": "2026-09-12T05:24:31.8401860+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.5,
+                  "private_sum_mib": 3712.00390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "138",
+                  "first_utc": "2026-09-12T05:24:33.9454913+00:00",
+                  "last_utc": "2026-09-12T05:24:33.9454913+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.5,
+                  "private_sum_mib": 3712.00390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "139",
+                  "first_utc": "2026-09-12T05:24:35.9761615+00:00",
+                  "last_utc": "2026-09-12T05:24:35.9761615+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.5,
+                  "private_sum_mib": 3712.00390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "140",
+                  "first_utc": "2026-09-12T05:24:37.9331937+00:00",
+                  "last_utc": "2026-09-12T05:24:37.9331937+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.56640625,
+                  "private_sum_mib": 3712.00390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "141",
+                  "first_utc": "2026-09-12T05:24:39.9793469+00:00",
+                  "last_utc": "2026-09-12T05:24:39.9793469+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.62890625,
+                  "private_sum_mib": 3712.31640625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "142",
+                  "first_utc": "2026-09-12T05:24:42.1234340+00:00",
+                  "last_utc": "2026-09-12T05:24:42.1234340+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.69921875,
+                  "private_sum_mib": 3712.31640625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "143",
+                  "first_utc": "2026-09-12T05:24:44.2393173+00:00",
+                  "last_utc": "2026-09-12T05:24:44.2393173+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.78125,
+                  "private_sum_mib": 3712.51171875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "144",
+                  "first_utc": "2026-09-12T05:24:46.2670267+00:00",
+                  "last_utc": "2026-09-12T05:24:46.2670267+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.78125,
+                  "private_sum_mib": 3712.51171875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "145",
+                  "first_utc": "2026-09-12T05:24:48.1990277+00:00",
+                  "last_utc": "2026-09-12T05:24:48.1990277+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.78125,
+                  "private_sum_mib": 3712.51171875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "146",
+                  "first_utc": "2026-09-12T05:24:50.1430052+00:00",
+                  "last_utc": "2026-09-12T05:24:50.1430052+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.78125,
+                  "private_sum_mib": 3712.51171875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "147",
+                  "first_utc": "2026-09-12T05:24:52.0601505+00:00",
+                  "last_utc": "2026-09-12T05:24:52.0601505+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3767.98046875,
+                  "private_sum_mib": 3712.80078125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "148",
+                  "first_utc": "2026-09-12T05:24:53.9636439+00:00",
+                  "last_utc": "2026-09-12T05:24:53.9636439+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3768.0,
+                  "private_sum_mib": 3712.80078125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "149",
+                  "first_utc": "2026-09-12T05:24:55.8876305+00:00",
+                  "last_utc": "2026-09-12T05:24:55.8876305+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3768.0234375,
+                  "private_sum_mib": 3712.80078125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "150",
+                  "first_utc": "2026-09-12T05:24:57.7375474+00:00",
+                  "last_utc": "2026-09-12T05:24:57.7375474+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3768.09375,
+                  "private_sum_mib": 3712.80078125,
+                  "batch_skew_ms": 0.0
+                }
+              ]
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "observed_interval",
+              "selected_row_count": 121,
+              "observed_instance_count": 4,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:24:01.0022024+00:00",
+              "last_observation_utc": "2026-09-12T05:24:59.5454039+00:00",
+              "cpu_delta_seconds": 0.1875,
+              "cpu_observed_wall_seconds": 58.5432015,
+              "cpu_single_core_percent": 0.32027630057095524,
+              "cpu_coverage_fraction": 0.975720025,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "102484:639247872454443300",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 31,
+                  "first_utc": "2026-09-12T05:24:01.0022024+00:00",
+                  "last_utc": "2026-09-12T05:24:59.5454039+00:00",
+                  "delta_seconds": 0.171875,
+                  "wall_seconds": 58.5432015
+                },
+                {
+                  "instance_key": "117716:639247872454980310",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:24:01.0808002+00:00",
+                  "last_utc": "2026-09-12T05:24:57.7815779+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 56.7007777
+                },
+                {
+                  "instance_key": "120408:639247872454799320",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:24:01.1308689+00:00",
+                  "last_utc": "2026-09-12T05:24:57.8263857+00:00",
+                  "delta_seconds": 0.015625,
+                  "wall_seconds": 56.6955168
+                },
+                {
+                  "instance_key": "93660:639247873592106100",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 30,
+                  "first_utc": "2026-09-12T05:24:01.0546321+00:00",
+                  "last_utc": "2026-09-12T05:24:57.7592771+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 56.704645
+                }
+              ],
+              "memory_sample_count": 30,
+              "memory_rejected_batch_count": 1,
+              "working_set_sum_mean_mib": 207.57825520833333,
+              "working_set_sum_peak_mib": 207.6953125,
+              "private_sum_mean_mib": 193.83841145833333,
+              "private_sum_peak_mib": 194.6328125,
+              "memory_max_batch_skew_ms": 143.7474,
+              "memory_samples": [
+                {
+                  "sample_index": "121",
+                  "first_utc": "2026-09-12T05:24:01.0022024+00:00",
+                  "last_utc": "2026-09-12T05:24:01.1308689+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.50390625,
+                  "private_sum_mib": 192.546875,
+                  "batch_skew_ms": 128.6665
+                },
+                {
+                  "sample_index": "122",
+                  "first_utc": "2026-09-12T05:24:02.9595122+00:00",
+                  "last_utc": "2026-09-12T05:24:03.0881053+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 128.5931
+                },
+                {
+                  "sample_index": "123",
+                  "first_utc": "2026-09-12T05:24:04.8622324+00:00",
+                  "last_utc": "2026-09-12T05:24:04.9775497+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 115.3173
+                },
+                {
+                  "sample_index": "124",
+                  "first_utc": "2026-09-12T05:24:06.7910927+00:00",
+                  "last_utc": "2026-09-12T05:24:06.9348401+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 143.7474
+                },
+                {
+                  "sample_index": "125",
+                  "first_utc": "2026-09-12T05:24:08.7177772+00:00",
+                  "last_utc": "2026-09-12T05:24:08.8374067+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 119.6295
+                },
+                {
+                  "sample_index": "126",
+                  "first_utc": "2026-09-12T05:24:10.5704704+00:00",
+                  "last_utc": "2026-09-12T05:24:10.7038733+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 133.4029
+                },
+                {
+                  "sample_index": "127",
+                  "first_utc": "2026-09-12T05:24:12.5344036+00:00",
+                  "last_utc": "2026-09-12T05:24:12.6442747+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 109.8711
+                },
+                {
+                  "sample_index": "128",
+                  "first_utc": "2026-09-12T05:24:14.4583546+00:00",
+                  "last_utc": "2026-09-12T05:24:14.5697693+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 111.4147
+                },
+                {
+                  "sample_index": "129",
+                  "first_utc": "2026-09-12T05:24:16.3836868+00:00",
+                  "last_utc": "2026-09-12T05:24:16.5132092+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 129.5224
+                },
+                {
+                  "sample_index": "130",
+                  "first_utc": "2026-09-12T05:24:18.3299884+00:00",
+                  "last_utc": "2026-09-12T05:24:18.4435346+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 113.5462
+                },
+                {
+                  "sample_index": "131",
+                  "first_utc": "2026-09-12T05:24:20.2393571+00:00",
+                  "last_utc": "2026-09-12T05:24:20.3508305+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.484375,
+                  "private_sum_mib": 192.52734375,
+                  "batch_skew_ms": 111.4734
+                },
+                {
+                  "sample_index": "132",
+                  "first_utc": "2026-09-12T05:24:22.1914583+00:00",
+                  "last_utc": "2026-09-12T05:24:22.3079040+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 116.4457
+                },
+                {
+                  "sample_index": "133",
+                  "first_utc": "2026-09-12T05:24:24.1357283+00:00",
+                  "last_utc": "2026-09-12T05:24:24.2469357+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 111.2074
+                },
+                {
+                  "sample_index": "134",
+                  "first_utc": "2026-09-12T05:24:26.0144273+00:00",
+                  "last_utc": "2026-09-12T05:24:26.1250519+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 110.6246
+                },
+                {
+                  "sample_index": "135",
+                  "first_utc": "2026-09-12T05:24:27.9323934+00:00",
+                  "last_utc": "2026-09-12T05:24:28.0634085+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 131.0151
+                },
+                {
+                  "sample_index": "136",
+                  "first_utc": "2026-09-12T05:24:29.8286085+00:00",
+                  "last_utc": "2026-09-12T05:24:29.9582406+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 129.6321
+                },
+                {
+                  "sample_index": "137",
+                  "first_utc": "2026-09-12T05:24:31.8122378+00:00",
+                  "last_utc": "2026-09-12T05:24:31.9466960+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 134.4582
+                },
+                {
+                  "sample_index": "138",
+                  "first_utc": "2026-09-12T05:24:33.9207746+00:00",
+                  "last_utc": "2026-09-12T05:24:34.0556462+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 134.8716
+                },
+                {
+                  "sample_index": "139",
+                  "first_utc": "2026-09-12T05:24:35.9540090+00:00",
+                  "last_utc": "2026-09-12T05:24:36.0685703+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 114.5613
+                },
+                {
+                  "sample_index": "140",
+                  "first_utc": "2026-09-12T05:24:37.9114857+00:00",
+                  "last_utc": "2026-09-12T05:24:38.0205265+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 109.0408
+                },
+                {
+                  "sample_index": "141",
+                  "first_utc": "2026-09-12T05:24:39.9560719+00:00",
+                  "last_utc": "2026-09-12T05:24:40.0731284+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 117.0565
+                },
+                {
+                  "sample_index": "142",
+                  "first_utc": "2026-09-12T05:24:42.1000253+00:00",
+                  "last_utc": "2026-09-12T05:24:42.2257741+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 125.7488
+                },
+                {
+                  "sample_index": "143",
+                  "first_utc": "2026-09-12T05:24:44.2129338+00:00",
+                  "last_utc": "2026-09-12T05:24:44.3453118+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62109375,
+                  "private_sum_mib": 194.59765625,
+                  "batch_skew_ms": 132.378
+                },
+                {
+                  "sample_index": "144",
+                  "first_utc": "2026-09-12T05:24:46.2426673+00:00",
+                  "last_utc": "2026-09-12T05:24:46.3675396+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62890625,
+                  "private_sum_mib": 194.60546875,
+                  "batch_skew_ms": 124.8723
+                },
+                {
+                  "sample_index": "145",
+                  "first_utc": "2026-09-12T05:24:48.1735867+00:00",
+                  "last_utc": "2026-09-12T05:24:48.2998573+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.62890625,
+                  "private_sum_mib": 194.6328125,
+                  "batch_skew_ms": 126.2706
+                },
+                {
+                  "sample_index": "146",
+                  "first_utc": "2026-09-12T05:24:50.1189609+00:00",
+                  "last_utc": "2026-09-12T05:24:50.2442798+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.61328125,
+                  "private_sum_mib": 194.59375,
+                  "batch_skew_ms": 125.3189
+                },
+                {
+                  "sample_index": "147",
+                  "first_utc": "2026-09-12T05:24:52.0368371+00:00",
+                  "last_utc": "2026-09-12T05:24:52.1535981+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6953125,
+                  "private_sum_mib": 194.6171875,
+                  "batch_skew_ms": 116.761
+                },
+                {
+                  "sample_index": "148",
+                  "first_utc": "2026-09-12T05:24:53.9391001+00:00",
+                  "last_utc": "2026-09-12T05:24:54.0638242+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.66015625,
+                  "private_sum_mib": 194.5703125,
+                  "batch_skew_ms": 124.7241
+                },
+                {
+                  "sample_index": "149",
+                  "first_utc": "2026-09-12T05:24:55.8623451+00:00",
+                  "last_utc": "2026-09-12T05:24:55.9958676+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.66015625,
+                  "private_sum_mib": 194.5703125,
+                  "batch_skew_ms": 133.5225
+                },
+                {
+                  "sample_index": "150",
+                  "first_utc": "2026-09-12T05:24:57.7164859+00:00",
+                  "last_utc": "2026-09-12T05:24:57.8263857+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.66015625,
+                  "private_sum_mib": 194.5703125,
+                  "batch_skew_ms": 109.8998
+                }
+              ]
+            }
+          }
+        },
+        {
+          "source": "RmlUiComparison-D3D12-Windowed.json",
+          "name": "RmlUiSlate",
+          "rhi": "D3D12",
+          "samples": 7183,
+          "frame_p50_ms": 8.299201726913452,
+          "frame_p95_ms": 10.18429920077324,
+          "frame_p99_ms": 11.193100363016129,
+          "widget_traversal_p50_ms": 1.5045,
+          "widget_traversal_p95_ms": 2.0476,
+          "widget_traversal_p99_ms": 2.3686,
+          "rmlui_stages": {
+            "render_frame": {
+              "calls": 7183,
+              "total_ms": 10184.5796,
+              "mean_ms": 1.4178726994292077
+            },
+            "bridge_render": {
+              "calls": 7183,
+              "total_ms": 9907.652299999998,
+              "mean_ms": 1.3793195461506331
+            },
+            "draw_decode": {
+              "calls": 7183,
+              "total_ms": 37.3179,
+              "mean_ms": 0.005195308366977586
+            },
+            "upload_prepare": {
+              "calls": 0,
+              "total_ms": 0,
+              "mean_ms": 0
+            },
+            "on_paint": {
+              "calls": 7183,
+              "total_ms": 586.1767,
+              "mean_ms": 0.08160611165251287
+            }
+          },
+          "frames": 7183,
+          "draws": 1300123,
+          "full_frame_upload_mib": 0,
+          "geometry": {
+            "local_width": 1280,
+            "local_height": 800,
+            "layout_scale": 1,
+            "window_dpi_scale": 1,
+            "application_scale": 1
+          },
+          "content_pixels_verified": true,
+          "header_text_pixels_verified": true,
+          "rmlui_metrics_verified": true,
+          "unsupported_slate_features": 0,
+          "screenshot": "F:/Github/RmlUiUnrealTest/Saved/Performance/20260912-132015-557-DX12/RmlUiSlateBenchmark-D3D12-Windowed.png",
+          "process": {
+            "sample_started_utc": "2026-09-12T05:25:09.719Z",
+            "sample_finished_utc": "2026-09-12T05:26:09.725Z",
+            "ue": {
+              "group": "root_ue",
+              "status": "observed_interval",
+              "selected_row_count": 33,
+              "observed_instance_count": 1,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:25:10.6318857+00:00",
+              "last_observation_utc": "2026-09-12T05:26:08.1347047+00:00",
+              "cpu_delta_seconds": 113.59375,
+              "cpu_observed_wall_seconds": 57.502819,
+              "cpu_single_core_percent": 197.5446629842617,
+              "cpu_coverage_fraction": 0.958284488217845,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "14372:639247872156630390",
+                  "process_name": "UnrealEditor",
+                  "sample_count": 33,
+                  "first_utc": "2026-09-12T05:25:10.6318857+00:00",
+                  "last_utc": "2026-09-12T05:26:08.1347047+00:00",
+                  "delta_seconds": 113.59375,
+                  "wall_seconds": 57.502819
+                }
+              ],
+              "memory_sample_count": 33,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 3772.0171638257575,
+              "working_set_sum_peak_mib": 3778.95703125,
+              "private_sum_mean_mib": 3712.8938210227275,
+              "private_sum_peak_mib": 3717.74609375,
+              "memory_max_batch_skew_ms": 0.0,
+              "memory_samples": [
+                {
+                  "sample_index": "157",
+                  "first_utc": "2026-09-12T05:25:10.6318857+00:00",
+                  "last_utc": "2026-09-12T05:25:10.6318857+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3761.02734375,
+                  "private_sum_mib": 3710.03125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "158",
+                  "first_utc": "2026-09-12T05:25:12.5120880+00:00",
+                  "last_utc": "2026-09-12T05:25:12.5120880+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3761.03125,
+                  "private_sum_mib": 3710.03125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "159",
+                  "first_utc": "2026-09-12T05:25:14.4867862+00:00",
+                  "last_utc": "2026-09-12T05:25:14.4867862+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3761.13671875,
+                  "private_sum_mib": 3710.03125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "160",
+                  "first_utc": "2026-09-12T05:25:16.3976078+00:00",
+                  "last_utc": "2026-09-12T05:25:16.3976078+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3761.15234375,
+                  "private_sum_mib": 3710.03125,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "161",
+                  "first_utc": "2026-09-12T05:25:18.1765458+00:00",
+                  "last_utc": "2026-09-12T05:25:18.1765458+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3761.70703125,
+                  "private_sum_mib": 3710.57421875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "162",
+                  "first_utc": "2026-09-12T05:25:20.1553499+00:00",
+                  "last_utc": "2026-09-12T05:25:20.1553499+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3761.71875,
+                  "private_sum_mib": 3710.57421875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "163",
+                  "first_utc": "2026-09-12T05:25:21.9299178+00:00",
+                  "last_utc": "2026-09-12T05:25:21.9299178+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3778.95703125,
+                  "private_sum_mib": 3717.74609375,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "164",
+                  "first_utc": "2026-09-12T05:25:23.7532836+00:00",
+                  "last_utc": "2026-09-12T05:25:23.7532836+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3776.609375,
+                  "private_sum_mib": 3715.87890625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "165",
+                  "first_utc": "2026-09-12T05:25:25.5649276+00:00",
+                  "last_utc": "2026-09-12T05:25:25.5649276+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3776.6875,
+                  "private_sum_mib": 3715.87890625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "166",
+                  "first_utc": "2026-09-12T05:25:27.3502778+00:00",
+                  "last_utc": "2026-09-12T05:25:27.3502778+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3776.6875,
+                  "private_sum_mib": 3715.87890625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "167",
+                  "first_utc": "2026-09-12T05:25:29.1463220+00:00",
+                  "last_utc": "2026-09-12T05:25:29.1463220+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3776.0625,
+                  "private_sum_mib": 3715.25390625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "168",
+                  "first_utc": "2026-09-12T05:25:30.9729221+00:00",
+                  "last_utc": "2026-09-12T05:25:30.9729221+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.75390625,
+                  "private_sum_mib": 3712.87890625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "169",
+                  "first_utc": "2026-09-12T05:25:32.7409232+00:00",
+                  "last_utc": "2026-09-12T05:25:32.7409232+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "170",
+                  "first_utc": "2026-09-12T05:25:34.6496400+00:00",
+                  "last_utc": "2026-09-12T05:25:34.6496400+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "171",
+                  "first_utc": "2026-09-12T05:25:36.4492777+00:00",
+                  "last_utc": "2026-09-12T05:25:36.4492777+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "172",
+                  "first_utc": "2026-09-12T05:25:38.2406580+00:00",
+                  "last_utc": "2026-09-12T05:25:38.2406580+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "173",
+                  "first_utc": "2026-09-12T05:25:40.0165191+00:00",
+                  "last_utc": "2026-09-12T05:25:40.0165191+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "174",
+                  "first_utc": "2026-09-12T05:25:41.7524794+00:00",
+                  "last_utc": "2026-09-12T05:25:41.7524794+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "175",
+                  "first_utc": "2026-09-12T05:25:43.4918286+00:00",
+                  "last_utc": "2026-09-12T05:25:43.4918286+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "176",
+                  "first_utc": "2026-09-12T05:25:45.2341960+00:00",
+                  "last_utc": "2026-09-12T05:25:45.2341960+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.7421875,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "177",
+                  "first_utc": "2026-09-12T05:25:47.0314563+00:00",
+                  "last_utc": "2026-09-12T05:25:47.0314563+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.78125,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "178",
+                  "first_utc": "2026-09-12T05:25:48.7403567+00:00",
+                  "last_utc": "2026-09-12T05:25:48.7403567+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.78125,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "179",
+                  "first_utc": "2026-09-12T05:25:50.4962244+00:00",
+                  "last_utc": "2026-09-12T05:25:50.4962244+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.78125,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "180",
+                  "first_utc": "2026-09-12T05:25:52.2707675+00:00",
+                  "last_utc": "2026-09-12T05:25:52.2707675+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.78125,
+                  "private_sum_mib": 3712.84765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "181",
+                  "first_utc": "2026-09-12T05:25:54.0461851+00:00",
+                  "last_utc": "2026-09-12T05:25:54.0461851+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.66796875,
+                  "private_sum_mib": 3712.72265625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "182",
+                  "first_utc": "2026-09-12T05:25:55.8104489+00:00",
+                  "last_utc": "2026-09-12T05:25:55.8104489+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.66796875,
+                  "private_sum_mib": 3712.72265625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "183",
+                  "first_utc": "2026-09-12T05:25:57.5476935+00:00",
+                  "last_utc": "2026-09-12T05:25:57.5476935+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.734375,
+                  "private_sum_mib": 3712.72265625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "184",
+                  "first_utc": "2026-09-12T05:25:59.2981145+00:00",
+                  "last_utc": "2026-09-12T05:25:59.2981145+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.78515625,
+                  "private_sum_mib": 3712.9765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "185",
+                  "first_utc": "2026-09-12T05:26:01.0566079+00:00",
+                  "last_utc": "2026-09-12T05:26:01.0566079+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.8125,
+                  "private_sum_mib": 3712.9765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "186",
+                  "first_utc": "2026-09-12T05:26:02.7876230+00:00",
+                  "last_utc": "2026-09-12T05:26:02.7876230+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3773.9375,
+                  "private_sum_mib": 3712.9765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "187",
+                  "first_utc": "2026-09-12T05:26:04.6156557+00:00",
+                  "last_utc": "2026-09-12T05:26:04.6156557+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3774.0078125,
+                  "private_sum_mib": 3712.9765625,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "188",
+                  "first_utc": "2026-09-12T05:26:06.3765180+00:00",
+                  "last_utc": "2026-09-12T05:26:06.3765180+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3774.1796875,
+                  "private_sum_mib": 3713.23046875,
+                  "batch_skew_ms": 0.0
+                },
+                {
+                  "sample_index": "189",
+                  "first_utc": "2026-09-12T05:26:08.1347047+00:00",
+                  "last_utc": "2026-09-12T05:26:08.1347047+00:00",
+                  "observed_processes": 1,
+                  "working_set_sum_mib": 3774.1796875,
+                  "private_sum_mib": 3713.23046875,
+                  "batch_skew_ms": 0.0
+                }
+              ]
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "observed_interval",
+              "selected_row_count": 132,
+              "observed_instance_count": 4,
+              "failed_sample_count": 0,
+              "first_observation_utc": "2026-09-12T05:25:10.6078136+00:00",
+              "last_observation_utc": "2026-09-12T05:26:08.2211918+00:00",
+              "cpu_delta_seconds": 0.0625,
+              "cpu_observed_wall_seconds": 57.6133782,
+              "cpu_single_core_percent": 0.10848174842835374,
+              "cpu_coverage_fraction": 0.9601269573042696,
+              "cpu_complete_for_observed_instances": true,
+              "cpu_instances": [
+                {
+                  "instance_key": "102484:639247872454443300",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 33,
+                  "first_utc": "2026-09-12T05:25:10.6078136+00:00",
+                  "last_utc": "2026-09-12T05:26:08.1124046+00:00",
+                  "delta_seconds": 0.046875,
+                  "wall_seconds": 57.504591
+                },
+                {
+                  "instance_key": "117716:639247872454980310",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 33,
+                  "first_utc": "2026-09-12T05:25:10.6803070+00:00",
+                  "last_utc": "2026-09-12T05:26:08.1778825+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 57.4975755
+                },
+                {
+                  "instance_key": "120408:639247872454799320",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 33,
+                  "first_utc": "2026-09-12T05:25:10.7277801+00:00",
+                  "last_utc": "2026-09-12T05:26:08.2211918+00:00",
+                  "delta_seconds": 0.015625,
+                  "wall_seconds": 57.4934117
+                },
+                {
+                  "instance_key": "93660:639247873592106100",
+                  "process_name": "EpicWebHelper.exe",
+                  "sample_count": 33,
+                  "first_utc": "2026-09-12T05:25:10.6563016+00:00",
+                  "last_utc": "2026-09-12T05:26:08.1564996+00:00",
+                  "delta_seconds": 0.0,
+                  "wall_seconds": 57.500198
+                }
+              ],
+              "memory_sample_count": 33,
+              "memory_rejected_batch_count": 0,
+              "working_set_sum_mean_mib": 207.91311553030303,
+              "working_set_sum_peak_mib": 208.3125,
+              "private_sum_mean_mib": 194.0452178030303,
+              "private_sum_peak_mib": 194.84375,
+              "memory_max_batch_skew_ms": 123.0966,
+              "memory_samples": [
+                {
+                  "sample_index": "157",
+                  "first_utc": "2026-09-12T05:25:10.6078136+00:00",
+                  "last_utc": "2026-09-12T05:25:10.7277801+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.66015625,
+                  "private_sum_mib": 194.5703125,
+                  "batch_skew_ms": 119.9665
+                },
+                {
+                  "sample_index": "158",
+                  "first_utc": "2026-09-12T05:25:12.4897175+00:00",
+                  "last_utc": "2026-09-12T05:25:12.6051903+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.66015625,
+                  "private_sum_mib": 194.5703125,
+                  "batch_skew_ms": 115.4728
+                },
+                {
+                  "sample_index": "159",
+                  "first_utc": "2026-09-12T05:25:14.4628489+00:00",
+                  "last_utc": "2026-09-12T05:25:14.5807367+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6484375,
+                  "private_sum_mib": 194.50390625,
+                  "batch_skew_ms": 117.8878
+                },
+                {
+                  "sample_index": "160",
+                  "first_utc": "2026-09-12T05:25:16.3754747+00:00",
+                  "last_utc": "2026-09-12T05:25:16.4848042+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6640625,
+                  "private_sum_mib": 194.53515625,
+                  "batch_skew_ms": 109.3295
+                },
+                {
+                  "sample_index": "161",
+                  "first_utc": "2026-09-12T05:25:18.1547987+00:00",
+                  "last_utc": "2026-09-12T05:25:18.2632526+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6640625,
+                  "private_sum_mib": 194.53515625,
+                  "batch_skew_ms": 108.4539
+                },
+                {
+                  "sample_index": "162",
+                  "first_utc": "2026-09-12T05:25:20.1347928+00:00",
+                  "last_utc": "2026-09-12T05:25:20.2404422+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6640625,
+                  "private_sum_mib": 194.53515625,
+                  "batch_skew_ms": 105.6494
+                },
+                {
+                  "sample_index": "163",
+                  "first_utc": "2026-09-12T05:25:21.9029284+00:00",
+                  "last_utc": "2026-09-12T05:25:22.0260250+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6640625,
+                  "private_sum_mib": 194.53515625,
+                  "batch_skew_ms": 123.0966
+                },
+                {
+                  "sample_index": "164",
+                  "first_utc": "2026-09-12T05:25:23.7297299+00:00",
+                  "last_utc": "2026-09-12T05:25:23.8527802+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 123.0503
+                },
+                {
+                  "sample_index": "165",
+                  "first_utc": "2026-09-12T05:25:25.5421776+00:00",
+                  "last_utc": "2026-09-12T05:25:25.6600057+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 117.8281
+                },
+                {
+                  "sample_index": "166",
+                  "first_utc": "2026-09-12T05:25:27.3271531+00:00",
+                  "last_utc": "2026-09-12T05:25:27.4398290+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 112.6759
+                },
+                {
+                  "sample_index": "167",
+                  "first_utc": "2026-09-12T05:25:29.1242402+00:00",
+                  "last_utc": "2026-09-12T05:25:29.2391395+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 114.8993
+                },
+                {
+                  "sample_index": "168",
+                  "first_utc": "2026-09-12T05:25:30.9506097+00:00",
+                  "last_utc": "2026-09-12T05:25:31.0667560+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 116.1463
+                },
+                {
+                  "sample_index": "169",
+                  "first_utc": "2026-09-12T05:25:32.7182211+00:00",
+                  "last_utc": "2026-09-12T05:25:32.8361890+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 117.9679
+                },
+                {
+                  "sample_index": "170",
+                  "first_utc": "2026-09-12T05:25:34.6265882+00:00",
+                  "last_utc": "2026-09-12T05:25:34.7368820+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 110.2938
+                },
+                {
+                  "sample_index": "171",
+                  "first_utc": "2026-09-12T05:25:36.4287328+00:00",
+                  "last_utc": "2026-09-12T05:25:36.5305742+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 101.8414
+                },
+                {
+                  "sample_index": "172",
+                  "first_utc": "2026-09-12T05:25:38.2194658+00:00",
+                  "last_utc": "2026-09-12T05:25:38.3290104+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 109.5446
+                },
+                {
+                  "sample_index": "173",
+                  "first_utc": "2026-09-12T05:25:39.9932072+00:00",
+                  "last_utc": "2026-09-12T05:25:40.1031746+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 109.9674
+                },
+                {
+                  "sample_index": "174",
+                  "first_utc": "2026-09-12T05:25:41.7317012+00:00",
+                  "last_utc": "2026-09-12T05:25:41.8351498+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 103.4486
+                },
+                {
+                  "sample_index": "175",
+                  "first_utc": "2026-09-12T05:25:43.4699114+00:00",
+                  "last_utc": "2026-09-12T05:25:43.5790183+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 109.1069
+                },
+                {
+                  "sample_index": "176",
+                  "first_utc": "2026-09-12T05:25:45.2133216+00:00",
+                  "last_utc": "2026-09-12T05:25:45.3186203+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 207.6796875,
+                  "private_sum_mib": 194.56640625,
+                  "batch_skew_ms": 105.2987
+                },
+                {
+                  "sample_index": "177",
+                  "first_utc": "2026-09-12T05:25:47.0107089+00:00",
+                  "last_utc": "2026-09-12T05:25:47.1160857+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.3125,
+                  "private_sum_mib": 194.84375,
+                  "batch_skew_ms": 105.3768
+                },
+                {
+                  "sample_index": "178",
+                  "first_utc": "2026-09-12T05:25:48.7191377+00:00",
+                  "last_utc": "2026-09-12T05:25:48.8241723+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.3125,
+                  "private_sum_mib": 194.84375,
+                  "batch_skew_ms": 105.0346
+                },
+                {
+                  "sample_index": "179",
+                  "first_utc": "2026-09-12T05:25:50.4751681+00:00",
+                  "last_utc": "2026-09-12T05:25:50.5794205+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.3125,
+                  "private_sum_mib": 194.84375,
+                  "batch_skew_ms": 104.2524
+                },
+                {
+                  "sample_index": "180",
+                  "first_utc": "2026-09-12T05:25:52.2496554+00:00",
+                  "last_utc": "2026-09-12T05:25:52.3556964+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 106.041
+                },
+                {
+                  "sample_index": "181",
+                  "first_utc": "2026-09-12T05:25:54.0244301+00:00",
+                  "last_utc": "2026-09-12T05:25:54.1361709+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 111.7408
+                },
+                {
+                  "sample_index": "182",
+                  "first_utc": "2026-09-12T05:25:55.7892222+00:00",
+                  "last_utc": "2026-09-12T05:25:55.8967667+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 107.5445
+                },
+                {
+                  "sample_index": "183",
+                  "first_utc": "2026-09-12T05:25:57.5266203+00:00",
+                  "last_utc": "2026-09-12T05:25:57.6307110+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 104.0907
+                },
+                {
+                  "sample_index": "184",
+                  "first_utc": "2026-09-12T05:25:59.2776705+00:00",
+                  "last_utc": "2026-09-12T05:25:59.3802958+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 102.6253
+                },
+                {
+                  "sample_index": "185",
+                  "first_utc": "2026-09-12T05:26:01.0341550+00:00",
+                  "last_utc": "2026-09-12T05:26:01.1434236+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 109.2686
+                },
+                {
+                  "sample_index": "186",
+                  "first_utc": "2026-09-12T05:26:02.7655552+00:00",
+                  "last_utc": "2026-09-12T05:26:02.8781625+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 112.6073
+                },
+                {
+                  "sample_index": "187",
+                  "first_utc": "2026-09-12T05:26:04.5934624+00:00",
+                  "last_utc": "2026-09-12T05:26:04.7025810+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 109.1186
+                },
+                {
+                  "sample_index": "188",
+                  "first_utc": "2026-09-12T05:26:06.3562501+00:00",
+                  "last_utc": "2026-09-12T05:26:06.4592378+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 102.9877
+                },
+                {
+                  "sample_index": "189",
+                  "first_utc": "2026-09-12T05:26:08.1124046+00:00",
+                  "last_utc": "2026-09-12T05:26:08.2211918+00:00",
+                  "observed_processes": 4,
+                  "working_set_sum_mib": 208.2734375,
+                  "private_sum_mib": 192.78125,
+                  "batch_skew_ms": 108.7872
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "communication": [
+        {
+          "mode": "event_float",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 1,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 4937500.0,
+          "batch_mean_ns_per_read_p95": 8328906.25018626,
+          "batch_mean_ns_per_read_p99": 8328906.25018626,
+          "completed_reads_per_second_p50": 202.53164556962025,
+          "round_trip_ms_p50": 7.30000007152557,
+          "round_trip_ms_p95": 9.79999995231628,
+          "round_trip_ms_p99": 11.0,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 2.03972,
+            "native_read_ms": 0.005519999999999999,
+            "native_serialize_ms": 1.77864,
+            "native_enqueue_ms": 3.43992,
+            "stringify_ms": 0.36000003814697284,
+            "parse_ms": 0.8599999427795412
+          }
+        },
+        {
+          "mode": "event_float",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 32,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 213281.250558794,
+          "batch_mean_ns_per_read_p95": 215625.000186265,
+          "batch_mean_ns_per_read_p99": 215625.000186265,
+          "completed_reads_per_second_p50": 4688.644676360513,
+          "round_trip_ms_p50": 5.79999995231628,
+          "round_trip_ms_p95": 11.6999999284744,
+          "round_trip_ms_p99": 12.5,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.5114599999999999,
+            "native_read_ms": 0.0028399999999999996,
+            "native_serialize_ms": 0.6447,
+            "native_enqueue_ms": 1.48186,
+            "stringify_ms": 0.14000003337860117,
+            "parse_ms": 0.1799999952316285
+          }
+        },
+        {
+          "mode": "event_property",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 1,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 8327343.74981374,
+          "batch_mean_ns_per_read_p95": 8390625.0,
+          "batch_mean_ns_per_read_p99": 8390625.0,
+          "completed_reads_per_second_p50": 120.0863120394625,
+          "round_trip_ms_p50": 7.89999997615814,
+          "round_trip_ms_p95": 10.3999999761581,
+          "round_trip_ms_p99": 11.2000000476837,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 2.6005,
+            "native_read_ms": 0.036160000000000005,
+            "native_serialize_ms": 2.11892,
+            "native_enqueue_ms": 4.12654,
+            "stringify_ms": 0.48000004291534415,
+            "parse_ms": 0.9999999761581414
+          }
+        },
+        {
+          "mode": "event_property",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 32,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 192187.500186265,
+          "batch_mean_ns_per_read_p95": 235937.499441206,
+          "batch_mean_ns_per_read_p99": 235937.499441206,
+          "completed_reads_per_second_p50": 5203.2520274774315,
+          "round_trip_ms_p50": 5.39999997615814,
+          "round_trip_ms_p95": 10.0,
+          "round_trip_ms_p99": 10.5,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.5020199999999999,
+            "native_read_ms": 0.004960000000000001,
+            "native_serialize_ms": 0.64418,
+            "native_enqueue_ms": 1.4575,
+            "stringify_ms": 0.1599999904632568,
+            "parse_ms": 0.1800000429153444
+          }
+        },
+        {
+          "mode": "promise_float",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 1,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 8332812.50018626,
+          "batch_mean_ns_per_read_p95": 9085156.24981374,
+          "batch_mean_ns_per_read_p99": 9085156.24981374,
+          "completed_reads_per_second_p50": 120.00750046609676,
+          "round_trip_ms_p50": 8.29999995231628,
+          "round_trip_ms_p95": 10.2000000476837,
+          "round_trip_ms_p99": 11.5,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": 0.0,
+            "parse_ms": 0.0
+          }
+        },
+        {
+          "mode": "promise_float",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 32,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 149218.749254942,
+          "batch_mean_ns_per_read_p95": 154687.500558794,
+          "batch_mean_ns_per_read_p99": 154687.500558794,
+          "completed_reads_per_second_p50": 6701.570714089612,
+          "round_trip_ms_p50": 2.40000009536743,
+          "round_trip_ms_p95": 10.2999999523163,
+          "round_trip_ms_p99": 10.6000000238419,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": 0.0,
+            "parse_ms": 0.0
+          }
+        },
+        {
+          "mode": "promise_property",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 1,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 8326562.49962747,
+          "batch_mean_ns_per_read_p95": 8337500.00037253,
+          "batch_mean_ns_per_read_p99": 8337500.00037253,
+          "completed_reads_per_second_p50": 120.09757928854071,
+          "round_trip_ms_p50": 7.80000007152557,
+          "round_trip_ms_p95": 10.1000000238419,
+          "round_trip_ms_p99": 10.8000000715256,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": 0.0,
+            "parse_ms": 0.0
+          }
+        },
+        {
+          "mode": "promise_property",
+          "runtime": "WebBrowser_CEF",
+          "concurrency": 32,
+          "reads_per_trial": 128,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 110937.500372529,
+          "batch_mean_ns_per_read_p95": 212500.000372529,
+          "batch_mean_ns_per_read_p99": 212500.000372529,
+          "completed_reads_per_second_p50": 9014.084476772885,
+          "round_trip_ms_p50": 1.20000004768372,
+          "round_trip_ms_p95": 9.90000009536743,
+          "round_trip_ms_p99": 10.3000000715256,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": 0.0,
+            "parse_ms": 0.0
+          }
+        },
+        {
+          "mode": "typed_float",
+          "runtime": "RmlUi_Puerts",
+          "concurrency": 1,
+          "reads_per_trial": 100000,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 105.117,
+          "batch_mean_ns_per_read_p95": 121.627,
+          "batch_mean_ns_per_read_p99": 121.627,
+          "completed_reads_per_second_p50": 9513209.090822607,
+          "round_trip_ms_p50": null,
+          "round_trip_ms_p95": null,
+          "round_trip_ms_p99": null,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": null,
+            "parse_ms": null
+          }
+        },
+        {
+          "mode": "typed_property_getter",
+          "runtime": "RmlUi_Puerts",
+          "concurrency": 1,
+          "reads_per_trial": 100000,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 81.044,
+          "batch_mean_ns_per_read_p95": 107.31,
+          "batch_mean_ns_per_read_p99": 107.31,
+          "completed_reads_per_second_p50": 12338976.358521298,
+          "round_trip_ms_p50": null,
+          "round_trip_ms_p95": null,
+          "round_trip_ms_p99": null,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": null,
+            "parse_ms": null
+          }
+        },
+        {
+          "mode": "typed_property_cached",
+          "runtime": "RmlUi_Puerts",
+          "concurrency": 1,
+          "reads_per_trial": 100000,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 58.405,
+          "batch_mean_ns_per_read_p95": 82.296,
+          "batch_mean_ns_per_read_p99": 82.296,
+          "completed_reads_per_second_p50": 17121821.76183546,
+          "round_trip_ms_p50": null,
+          "round_trip_ms_p95": null,
+          "round_trip_ms_p99": null,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": null,
+            "parse_ms": null
+          }
+        },
+        {
+          "mode": "typed_property_resolve",
+          "runtime": "RmlUi_Puerts",
+          "concurrency": 1,
+          "reads_per_trial": 100000,
+          "measured_trials": 5,
+          "batch_mean_ns_per_read_p50": 175.506,
+          "batch_mean_ns_per_read_p95": 214.286,
+          "batch_mean_ns_per_read_p99": 214.286,
+          "completed_reads_per_second_p50": 5697810.9010518165,
+          "round_trip_ms_p50": null,
+          "round_trip_ms_p95": null,
+          "round_trip_ms_p99": null,
+          "process": {
+            "sample_started_utc": null,
+            "sample_finished_utc": null,
+            "ue": {
+              "group": "root_ue",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            },
+            "cef": {
+              "group": "cef_descendants",
+              "status": "missing_scenario_timestamps",
+              "selected_row_count": null,
+              "observed_instance_count": null,
+              "failed_sample_count": null,
+              "first_observation_utc": null,
+              "last_observation_utc": null,
+              "cpu_delta_seconds": null,
+              "cpu_observed_wall_seconds": null,
+              "cpu_single_core_percent": null,
+              "cpu_coverage_fraction": null,
+              "cpu_complete_for_observed_instances": null,
+              "cpu_instances": [],
+              "memory_sample_count": null,
+              "memory_rejected_batch_count": null,
+              "working_set_sum_mean_mib": null,
+              "working_set_sum_peak_mib": null,
+              "private_sum_mean_mib": null,
+              "private_sum_peak_mib": null,
+              "memory_max_batch_skew_ms": null,
+              "memory_samples": []
+            }
+          },
+          "native_and_json_mean_ms_per_trial": {
+            "native_parse_ms": 0.0,
+            "native_read_ms": 0.0,
+            "native_serialize_ms": 0.0,
+            "native_enqueue_ms": 0.0,
+            "stringify_ms": null,
+            "parse_ms": null
+          }
+        }
+      ]
+    }
+  ]
+}

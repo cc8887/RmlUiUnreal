@@ -11,6 +11,9 @@ inline constexpr int32 EasingLutIntervals = 32;
 struct FEasingLut
 {
     float Values[EasingLutIntervals + 1] = {};
+    uint16 StepCount = 1;
+    uint8 Type = 0;
+    uint8 StepPosition = 0;
 };
 
 struct FFloatKeyframe
@@ -33,6 +36,7 @@ struct FTrack
     const FFloatKeyframe* Keyframes = nullptr;
     int32 KeyframeCount = 0;
     bool bSuppressBeforeStart = false;
+    bool bDiscrete = false;
 };
 
 struct FSample
@@ -65,6 +69,8 @@ struct FTransform2DValue
     float ScaleX = 1.0f;
     float ScaleY = 1.0f;
     float RotationDegrees = 0.0f;
+    float SkewXDegrees = 0.0f;
+    float SkewYDegrees = 0.0f;
 };
 
 struct FTransform2DTrack

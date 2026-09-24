@@ -24,7 +24,84 @@ bool TryParseOpacity(const FString& Source, float& OutValue)
     return FMath::IsFinite(OutValue) && OutValue >= 0.0f && OutValue <= 1.0f;
 }
 
-enum class ETransformPrimitive : uint8 { None, Translate, Scale, Rotate };
+bool TryParseColor(const FString& Source, FRmlUiColor& OutValue)
+{
+    FString Text = Source.TrimStartAndEnd().ToLower();
+    if (Text == TEXT("transparent")) { OutValue = {0.f, 0.f, 0.f, 0.f}; return true; }
+    if (Text.StartsWith(TEXT("#")))
+    {
+        FString Hex = Text.Mid(1);
+        if (Hex.Len() == 3 || Hex.Len() == 4)
+        {
+            FString Expanded;
+            for (TCHAR Digit : Hex) { Expanded.AppendChar(Digit); Expanded.AppendChar(Digit); }
+            Hex = MoveTemp(Expanded);
+        }
+        if (Hex.Len() != 6 && Hex.Len() != 8) return false;
+        const FColor Color = FColor::FromHex(Hex);
+        OutValue = {Color.R / 255.f, Color.G / 255.f, Color.B / 255.f, Color.A / 255.f};
+        return true;
+    }
+    const bool bRgba = Text.StartsWith(TEXT("rgba("));
+    if (!bRgba && !Text.StartsWith(TEXT("rgb("))) return false;
+    if (!Text.EndsWith(TEXT(")"))) return false;
+    TArray<FString> Parts;
+    Text.Mid(bRgba ? 5 : 4, Text.Len() - (bRgba ? 6 : 5)).ParseIntoArray(Parts, TEXT(","), true);
+    if (Parts.Num() != (bRgba ? 4 : 3)) return false;
+    float Components[4] = {0.f, 0.f, 0.f, 1.f};
+    for (int32 Index = 0; Index < 3; ++Index)
+    {
+        Parts[Index].TrimStartAndEndInline();
+        if (!Parts[Index].IsNumeric()) return false;
+        Components[Index] = FCString::Atof(*Parts[Index]) / 255.f;
+    }
+    if (bRgba)
+    {
+        Parts[3].TrimStartAndEndInline();
+        if (!Parts[3].IsNumeric()) return false;
+        Components[3] = FCString::Atof(*Parts[3]);
+    }
+    for (float Component : Components)
+        if (!FMath::IsFinite(Component) || Component < 0.f || Component > 1.f) return false;
+    OutValue = {Components[0], Components[1], Components[2], Components[3]};
+    return true;
+}
+
+bool TryParseAnimatedProperty(const FString& Source, ERmlUiAnimatedProperty& OutProperty)
+{
+    if (Source.Equals(TEXT("opacity"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::Opacity;
+    else if (Source.Equals(TEXT("transform"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::Transform2D;
+    else if (Source.Equals(TEXT("left"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::LeftPx;
+    else if (Source.Equals(TEXT("top"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::TopPx;
+    else if (Source.Equals(TEXT("right"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::RightPx;
+    else if (Source.Equals(TEXT("bottom"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::BottomPx;
+    else if (Source.Equals(TEXT("width"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::WidthPx;
+    else if (Source.Equals(TEXT("height"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::HeightPx;
+    else if (Source.Equals(TEXT("visibility"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::Visibility;
+    else if (Source.Equals(TEXT("color"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::Color;
+    else if (Source.Equals(TEXT("background-color"), ESearchCase::IgnoreCase) || Source.Equals(TEXT("backgroundColor"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::BackgroundColor;
+    else if (Source.Equals(TEXT("border-color"), ESearchCase::IgnoreCase) || Source.Equals(TEXT("borderColor"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::BorderColor;
+    else if (Source.Equals(TEXT("image-color"), ESearchCase::IgnoreCase) || Source.Equals(TEXT("imageColor"), ESearchCase::IgnoreCase)) OutProperty = ERmlUiAnimatedProperty::ImageColor;
+    else return false;
+    return true;
+}
+
+bool IsScalarAnimatedProperty(ERmlUiAnimatedProperty Property)
+{
+    return Property == ERmlUiAnimatedProperty::Opacity ||
+        Property == ERmlUiAnimatedProperty::Visibility ||
+        (Property >= ERmlUiAnimatedProperty::LeftPx &&
+            Property <= ERmlUiAnimatedProperty::HeightPx);
+}
+
+bool IsNonNegativeLayoutProperty(ERmlUiAnimatedProperty Property)
+{
+    return Property == ERmlUiAnimatedProperty::WidthPx ||
+        Property == ERmlUiAnimatedProperty::HeightPx;
+}
+
+enum ETransformPrimitive : uint8 { TransformNone = 0, TransformTranslate = 1, TransformScale = 2, TransformRotate = 4,
+    TransformSkewX = 8, TransformSkewY = 16 };
 
 bool TryParseNumberWithSuffix(const FString& Source, const TCHAR* Suffix, float& OutValue)
 {
@@ -41,66 +118,141 @@ bool TryParseNumberWithSuffix(const FString& Source, const TCHAR* Suffix, float&
     return FMath::IsFinite(OutValue);
 }
 
-bool TryParseTransform2D(const FString& Source, FRmlUiTransform2D& OutValue, ETransformPrimitive& OutPrimitive)
+bool TryParseTransform2D(const FString& Source, FRmlUiTransform2D& OutValue, uint8& OutPrimitives)
 {
     const FString Text = Source.TrimStartAndEnd();
     OutValue = {};
+    OutPrimitives = TransformNone;
     if (Text.Equals(TEXT("none"), ESearchCase::IgnoreCase))
-    {
-        OutPrimitive = ETransformPrimitive::None;
         return true;
-    }
-    int32 Open = INDEX_NONE;
-    if (!Text.FindChar(TEXT('('), Open) || Open <= 0 || !Text.EndsWith(TEXT(")")) ||
-        Text.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromStart, Open + 1) != INDEX_NONE)
-        return false;
-    const FString Name = Text.Left(Open).TrimStartAndEnd().ToLower();
-    const FString Arguments = Text.Mid(Open + 1, Text.Len() - Open - 2);
-    TArray<FString> Parts;
-    Arguments.ParseIntoArray(Parts, TEXT(","), false);
-
-    if (Name == TEXT("scale") && (Parts.Num() == 1 || Parts.Num() == 2))
+    int32 Cursor = 0;
+    while (Cursor < Text.Len())
     {
-        float X = 0.0f, Y = 0.0f;
-        if (!TryParseNumberWithSuffix(Parts[0], TEXT(""), X)) return false;
-        if (Parts.Num() == 2) { if (!TryParseNumberWithSuffix(Parts[1], TEXT(""), Y)) return false; }
-        else Y = X;
-        OutValue.ScaleX = X;
-        OutValue.ScaleY = Y;
-        OutPrimitive = ETransformPrimitive::Scale;
-        return true;
+        while (Cursor < Text.Len() && FChar::IsWhitespace(Text[Cursor])) ++Cursor;
+        if (Cursor >= Text.Len()) break;
+        const int32 Open = Text.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromStart, Cursor);
+        const int32 Close = Open == INDEX_NONE ? INDEX_NONE :
+            Text.Find(TEXT(")"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Open + 1);
+        const int32 NestedOpen = Open == INDEX_NONE ? INDEX_NONE :
+            Text.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromStart, Open + 1);
+        if (Open <= Cursor || Close == INDEX_NONE || (NestedOpen != INDEX_NONE && NestedOpen < Close))
+            return false;
+        const FString Name = Text.Mid(Cursor, Open - Cursor).TrimStartAndEnd().ToLower();
+        const FString Arguments = Text.Mid(Open + 1, Close - Open - 1);
+        TArray<FString> Parts;
+        Arguments.ParseIntoArray(Parts, TEXT(","), false);
+        uint8 Primitive = TransformNone;
+        if (Name == TEXT("scale") && (Parts.Num() == 1 || Parts.Num() == 2))
+        {
+            float X = 0.0f, Y = 0.0f;
+            if (!TryParseNumberWithSuffix(Parts[0], TEXT(""), X)) return false;
+            if (Parts.Num() == 2) { if (!TryParseNumberWithSuffix(Parts[1], TEXT(""), Y)) return false; }
+            else Y = X;
+            OutValue.ScaleX = X; OutValue.ScaleY = Y; Primitive = TransformScale;
+        }
+        else if (Name == TEXT("translate") && Parts.Num() == 2)
+        {
+            if (!TryParseNumberWithSuffix(Parts[0], TEXT("px"), OutValue.TranslationX) ||
+                !TryParseNumberWithSuffix(Parts[1], TEXT("px"), OutValue.TranslationY)) return false;
+            Primitive = TransformTranslate;
+        }
+        else if (Name == TEXT("rotate") && Parts.Num() == 1)
+        {
+            if (!TryParseNumberWithSuffix(Parts[0], TEXT("deg"), OutValue.RotationDegrees)) return false;
+            Primitive = TransformRotate;
+        }
+        else if ((Name == TEXT("skew") || Name == TEXT("skewx") || Name == TEXT("skewy")) &&
+            (Parts.Num() == 1 || (Name == TEXT("skew") && Parts.Num() == 2)))
+        {
+            if (Name != TEXT("skewy") && !TryParseNumberWithSuffix(Parts[0], TEXT("deg"), OutValue.SkewXDegrees)) return false;
+            if (Name == TEXT("skewy")) {
+                if (!TryParseNumberWithSuffix(Parts[0], TEXT("deg"), OutValue.SkewYDegrees)) return false;
+                Primitive = TransformSkewY;
+            }
+            else {
+                if (Parts.Num() == 2 && !TryParseNumberWithSuffix(Parts[1], TEXT("deg"), OutValue.SkewYDegrees)) return false;
+                Primitive = Parts.Num() == 2 ? TransformSkewX | TransformSkewY : TransformSkewX;
+            }
+        }
+        else if (Name == TEXT("matrix") && Parts.Num() == 6)
+        {
+            float A, B, C, D;
+            if (!TryParseNumberWithSuffix(Parts[0], TEXT(""), A) || !TryParseNumberWithSuffix(Parts[1], TEXT(""), B) ||
+                !TryParseNumberWithSuffix(Parts[2], TEXT(""), C) || !TryParseNumberWithSuffix(Parts[3], TEXT(""), D) ||
+                !TryParseNumberWithSuffix(Parts[4], TEXT(""), OutValue.TranslationX) ||
+                !TryParseNumberWithSuffix(Parts[5], TEXT(""), OutValue.TranslationY)) return false;
+            const float ScaleX = FMath::Sqrt(A * A + B * B);
+            if (ScaleX <= UE_SMALL_NUMBER) return false;
+            OutValue.ScaleX = ScaleX;
+            OutValue.ScaleY = (A * D - B * C) / ScaleX;
+            OutValue.RotationDegrees = FMath::RadiansToDegrees(FMath::Atan2(B, A));
+            OutValue.SkewXDegrees = FMath::RadiansToDegrees(FMath::Atan((A * C + B * D) / (ScaleX * ScaleX)));
+            Primitive = TransformTranslate | TransformScale | TransformRotate | TransformSkewX | TransformSkewY;
+        }
+        else return false;
+        if (OutPrimitives & Primitive) return false;
+        OutPrimitives |= Primitive;
+        Cursor = Close + 1;
     }
-    if (Name == TEXT("translate") && Parts.Num() == 2)
-    {
-        if (!TryParseNumberWithSuffix(Parts[0], TEXT("px"), OutValue.TranslationX) ||
-            !TryParseNumberWithSuffix(Parts[1], TEXT("px"), OutValue.TranslationY)) return false;
-        OutPrimitive = ETransformPrimitive::Translate;
-        return true;
-    }
-    if (Name == TEXT("rotate") && Parts.Num() == 1)
-    {
-        if (!TryParseNumberWithSuffix(Parts[0], TEXT("deg"), OutValue.RotationDegrees)) return false;
-        OutPrimitive = ETransformPrimitive::Rotate;
-        return true;
-    }
-    return false;
+    return OutPrimitives != TransformNone;
 }
 
 bool TryParseTransform2DPair(const FString& From, const FString& To, FRmlUiTransform2D& OutFrom, FRmlUiTransform2D& OutTo)
 {
-    ETransformPrimitive FromPrimitive = ETransformPrimitive::None;
-    ETransformPrimitive ToPrimitive = ETransformPrimitive::None;
+    uint8 FromPrimitive = TransformNone;
+    uint8 ToPrimitive = TransformNone;
     if (!TryParseTransform2D(From, OutFrom, FromPrimitive) || !TryParseTransform2D(To, OutTo, ToPrimitive)) return false;
-    return FromPrimitive == ETransformPrimitive::None || ToPrimitive == ETransformPrimitive::None || FromPrimitive == ToPrimitive;
+    return FromPrimitive == TransformNone || ToPrimitive == TransformNone || FromPrimitive == ToPrimitive;
 }
 
 bool TryParseAnimationEasing(const FString& Source, FRmlUiAnimationEasing& OutEasing)
 {
     FString Text = Source.TrimStartAndEnd().ToLower();
+    OutEasing = {};
     if (Text.IsEmpty() || Text == TEXT("linear"))
     {
-        OutEasing = {};
         return true;
+    }
+    const auto SetSteps = [&OutEasing](int32 Count, ERmlUiAnimationStepPosition Position)
+    {
+        OutEasing.Type = ERmlUiAnimationEasingType::Steps;
+        OutEasing.StepCount = Count;
+        OutEasing.StepPosition = Position;
+        return true;
+    };
+    if (Text == TEXT("step-start"))
+        return SetSteps(1, ERmlUiAnimationStepPosition::JumpStart);
+    if (Text == TEXT("step-end"))
+        return SetSteps(1, ERmlUiAnimationStepPosition::JumpEnd);
+    constexpr TCHAR StepsPrefix[] = TEXT("steps(");
+    if (Text.StartsWith(StepsPrefix) && Text.EndsWith(TEXT(")")))
+    {
+        const FString Arguments = Text.Mid(UE_ARRAY_COUNT(StepsPrefix) - 1,
+            Text.Len() - (UE_ARRAY_COUNT(StepsPrefix) - 1) - 1);
+        TArray<FString> Parts;
+        Arguments.ParseIntoArray(Parts, TEXT(","), false);
+        float CountValue = 0.0f;
+        if ((Parts.Num() != 1 && Parts.Num() != 2) ||
+            !TryParseNumberWithSuffix(Parts[0], TEXT(""), CountValue) ||
+            CountValue < 1.0f || CountValue > MAX_uint16 ||
+            !FMath::IsNearlyEqual(CountValue, FMath::RoundToFloat(CountValue))) return false;
+        ERmlUiAnimationStepPosition Position = ERmlUiAnimationStepPosition::JumpEnd;
+        if (Parts.Num() == 2)
+        {
+            const FString PositionText = Parts[1].TrimStartAndEnd();
+            if (PositionText == TEXT("start") || PositionText == TEXT("jump-start"))
+                Position = ERmlUiAnimationStepPosition::JumpStart;
+            else if (PositionText == TEXT("end") || PositionText == TEXT("jump-end"))
+                Position = ERmlUiAnimationStepPosition::JumpEnd;
+            else if (PositionText == TEXT("jump-none"))
+                Position = ERmlUiAnimationStepPosition::JumpNone;
+            else if (PositionText == TEXT("jump-both"))
+                Position = ERmlUiAnimationStepPosition::JumpBoth;
+            else return false;
+        }
+        const int32 Count = FMath::RoundToInt(CountValue);
+        return Position != ERmlUiAnimationStepPosition::JumpNone || Count >= 2
+            ? SetSteps(Count, Position) : false;
     }
     OutEasing.Type = ERmlUiAnimationEasingType::CubicBezier;
     if (Text == TEXT("ease"))
@@ -193,12 +345,24 @@ FString AnimationResult(
     return JsonString(Result);
 }
 
-FString PropertyBatchResult(bool bAccepted, int32 Applied, const FString& Error = FString())
+FString PropertyBatchResult(
+    bool bAccepted,
+    int32 Applied,
+    const FString& Error = FString(),
+    const TArray<int32>* FailedIndices = nullptr)
 {
     TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetBoolField(TEXT("accepted"), bAccepted);
     Result->SetNumberField(TEXT("applied"), Applied);
     if (!Error.IsEmpty()) Result->SetStringField(TEXT("error"), Error);
+    if (FailedIndices && !FailedIndices->IsEmpty())
+    {
+        TArray<TSharedPtr<FJsonValue>> Values;
+        Values.Reserve(FailedIndices->Num());
+        for (const int32 Index : *FailedIndices)
+            Values.Add(MakeShared<FJsonValueNumber>(Index));
+        Result->SetArrayField(TEXT("failedIndices"), MoveTemp(Values));
+    }
     return JsonString(Result);
 }
 
@@ -234,6 +398,22 @@ bool TryParseAnimationDirection(const FString& Source, ERmlUiAnimationDirection&
     return true;
 }
 
+bool TryParseAnimationFillMode(const FString& Source, ERmlUiAnimationFillMode& OutFill)
+{
+    const FString Fill = Source.TrimStartAndEnd().ToLower();
+    if (Fill.IsEmpty() || Fill == TEXT("both"))
+        OutFill = ERmlUiAnimationFillMode::Both;
+    else if (Fill == TEXT("none"))
+        OutFill = ERmlUiAnimationFillMode::None;
+    else if (Fill == TEXT("forwards"))
+        OutFill = ERmlUiAnimationFillMode::Forwards;
+    else if (Fill == TEXT("backwards"))
+        OutFill = ERmlUiAnimationFillMode::Backwards;
+    else
+        return false;
+    return true;
+}
+
 struct FPreparedNodeAnimation
 {
     FRmlUiAnimationDefinitionHandle Definition;
@@ -255,20 +435,22 @@ bool TryHashAnimationDefinition(
     int32 Iterations,
     double PlaybackRate,
     ERmlUiAnimationDirection Direction,
+    ERmlUiAnimationFillMode Fill,
     FSHAHash& OutHash)
 {
-    const bool bOpacity = Property.Equals(TEXT("opacity"), ESearchCase::IgnoreCase);
-    const bool bTransform = Property.Equals(TEXT("transform"), ESearchCase::IgnoreCase);
-    if (!bOpacity && !bTransform) return false;
+    ERmlUiAnimatedProperty ParsedProperty = ERmlUiAnimatedProperty::None;
+    if (!TryParseAnimatedProperty(Property, ParsedProperty)) return false;
+    const bool bOpacity = ParsedProperty == ERmlUiAnimatedProperty::Opacity;
 
     FSHA1 Hash;
-    const uint8 PropertyKind = bOpacity ? 1 : 2;
+    const uint8 PropertyKind = static_cast<uint8>(ParsedProperty);
     Hash.Update(PropertyKind);
     Hash.Update(Duration);
     Hash.Update(Delay);
     Hash.Update(Iterations);
     Hash.Update(PlaybackRate);
     Hash.Update(static_cast<uint8>(Direction));
+    Hash.Update(static_cast<uint8>(Fill));
     Hash.Update(Input.Num());
     const auto UpdateString = [&Hash](const FString& Value)
     {
@@ -396,27 +578,46 @@ private:
     uint64 Offset = 0;
 };
 
-bool ReadPackedHeader(FPackedAnimationReader& Reader, uint32 ExpectedMagic, uint32& OutCount)
+bool ReadPackedHeader(FPackedAnimationReader& Reader, uint32 ExpectedMagic, uint32& OutCount,
+    uint16 MaxVersion = 1, uint16* OutVersion = nullptr)
 {
     uint32 Magic = 0;
     uint16 Version = 0;
     uint16 Reserved = 0;
-    return Reader.Read(Magic) && Reader.Read(Version) && Reader.Read(Reserved) &&
-        Reader.Read(OutCount) && Magic == ExpectedMagic && Version == 1 && Reserved == 0 &&
-        OutCount > 0 && OutCount <= 4096;
+    const bool bValid = Reader.Read(Magic) && Reader.Read(Version) && Reader.Read(Reserved) &&
+        Reader.Read(OutCount) && Magic == ExpectedMagic && Version >= 1 && Version <= MaxVersion &&
+        Reserved == 0 && OutCount > 0 && OutCount <= 4096;
+    if (bValid && OutVersion) *OutVersion = Version;
+    return bValid;
 }
 
 bool ReadPackedEasing(FPackedAnimationReader& Reader, FRmlUiAnimationEasing& OutEasing)
 {
     uint8 Type = 0;
     uint8 Reserved[3]{};
+    float Payload[4]{};
     if (!Reader.Read(Type) || !Reader.Read(Reserved) ||
-        !Reader.Read(OutEasing.X1) || !Reader.Read(OutEasing.Y1) ||
-        !Reader.Read(OutEasing.X2) || !Reader.Read(OutEasing.Y2) ||
-        Type > static_cast<uint8>(ERmlUiAnimationEasingType::CubicBezier) ||
+        !Reader.Read(Payload[0]) || !Reader.Read(Payload[1]) ||
+        !Reader.Read(Payload[2]) || !Reader.Read(Payload[3]) ||
+        Type > static_cast<uint8>(ERmlUiAnimationEasingType::Steps) ||
         Reserved[0] != 0 || Reserved[1] != 0 || Reserved[2] != 0)
         return false;
+    OutEasing = {};
     OutEasing.Type = static_cast<ERmlUiAnimationEasingType>(Type);
+    if (OutEasing.Type == ERmlUiAnimationEasingType::Steps)
+    {
+        if (!FMath::IsFinite(Payload[0]) || !FMath::IsFinite(Payload[1]) ||
+            Payload[0] < 1.0f || Payload[0] > MAX_uint16 ||
+            !FMath::IsNearlyEqual(Payload[0], FMath::RoundToFloat(Payload[0])) ||
+            Payload[1] < 0.0f || Payload[1] > static_cast<float>(ERmlUiAnimationStepPosition::JumpBoth) ||
+            !FMath::IsNearlyEqual(Payload[1], FMath::RoundToFloat(Payload[1])) ||
+            Payload[2] != 0.0f || Payload[3] != 0.0f) return false;
+        OutEasing.StepCount = FMath::RoundToInt(Payload[0]);
+        OutEasing.StepPosition = static_cast<ERmlUiAnimationStepPosition>(FMath::RoundToInt(Payload[1]));
+        return OutEasing.StepPosition != ERmlUiAnimationStepPosition::JumpNone || OutEasing.StepCount >= 2;
+    }
+    OutEasing.X1 = Payload[0]; OutEasing.Y1 = Payload[1];
+    OutEasing.X2 = Payload[2]; OutEasing.Y2 = Payload[3];
     return FMath::IsFinite(OutEasing.X1) && FMath::IsFinite(OutEasing.Y1) &&
         FMath::IsFinite(OutEasing.X2) && FMath::IsFinite(OutEasing.Y2) &&
         OutEasing.X1 >= 0.0f && OutEasing.X1 <= 1.0f &&
@@ -518,7 +719,8 @@ bool PrepareNodeKeyframeAnimation(
         OutError = TEXT("invalid_fill_type");
         return false;
     }
-    if (!Fill.Equals(TEXT("both"), ESearchCase::IgnoreCase))
+    ERmlUiAnimationFillMode FillMode = ERmlUiAnimationFillMode::Both;
+    if (!TryParseAnimationFillMode(Fill, FillMode))
     {
         OutError = TEXT("unsupported_fill");
         return false;
@@ -552,7 +754,8 @@ bool PrepareNodeKeyframeAnimation(
     }
     OutPrepared.bLayeredContribution = bLayeredContribution;
     OutPrepared.Contribution.Order = static_cast<int32>(CompositionOrder);
-    OutPrepared.Contribution.bSuppressBeforeStart = true;
+    OutPrepared.Contribution.bSuppressBeforeStart =
+        FillMode == ERmlUiAnimationFillMode::None || FillMode == ERmlUiAnimationFillMode::Forwards;
     OutPrepared.Contribution.bLayered = bLayeredContribution;
     if (Input.Num() < 2 || Input.Num() > 4096)
     {
@@ -561,9 +764,15 @@ bool PrepareNodeKeyframeAnimation(
     }
 
     const int32 Iterations = static_cast<int32>(IterationsNumber);
+    ERmlUiAnimatedProperty AnimatedProperty = ERmlUiAnimatedProperty::None;
+    if (!TryParseAnimatedProperty(Property, AnimatedProperty))
+    {
+        OutError = TEXT("unsupported_property");
+        return false;
+    }
     FSHAHash DefinitionKey;
     const bool bHasDefinitionKey = SharedDefinitions && TryHashAnimationDefinition(
-        Property, Input, Duration, Delay, Iterations, PlaybackRate, Direction, DefinitionKey);
+        Property, Input, Duration, Delay, Iterations, PlaybackRate, Direction, FillMode, DefinitionKey);
     if (bHasDefinitionKey)
     {
         if (const FRmlUiAnimationDefinitionHandle* Existing = SharedDefinitions->Find(DefinitionKey))
@@ -575,7 +784,7 @@ bool PrepareNodeKeyframeAnimation(
     }
 
     const bool bNeedsDefinition = !OutPrepared.Definition.IsValid();
-    if (bNeedsDefinition && Property.Equals(TEXT("opacity"), ESearchCase::IgnoreCase))
+    if (bNeedsDefinition && IsScalarAnimatedProperty(AnimatedProperty))
     {
         FRmlUiFloatAnimationDefinition Parsed;
         Parsed.DurationSeconds = Duration;
@@ -583,6 +792,7 @@ bool PrepareNodeKeyframeAnimation(
         Parsed.Iterations = Iterations;
         Parsed.PlaybackRate = PlaybackRate;
         Parsed.Direction = Direction;
+        Parsed.Fill = FillMode;
         Parsed.Keyframes.Reserve(Input.Num());
         for (const TSharedPtr<FJsonValue>& Value : Input)
         {
@@ -598,8 +808,10 @@ bool PrepareNodeKeyframeAnimation(
                 OutError = TEXT("keyframe_offset_must_be_numeric");
                 return false;
             }
+            float ScalarValue = 0.0f;
             FString TextValue;
-            if (!Object->TryGetStringField(TEXT("value"), TextValue))
+            if (AnimatedProperty == ERmlUiAnimatedProperty::Opacity &&
+                !Object->TryGetStringField(TEXT("value"), TextValue))
             {
                 double NumberValue = 0.0;
                 if (!Object->TryGetNumberField(TEXT("value"), NumberValue))
@@ -609,10 +821,27 @@ bool PrepareNodeKeyframeAnimation(
                 }
                 TextValue = FString::SanitizeFloat(NumberValue);
             }
-            float Opacity = 0.0f;
-            if (!TryParseOpacity(TextValue, Opacity))
+            else if (AnimatedProperty != ERmlUiAnimatedProperty::Opacity &&
+                !Object->TryGetStringField(TEXT("value"), TextValue))
             {
-                OutError = TEXT("opacity_value_out_of_range");
+                OutError = TEXT("layout_value_must_use_px");
+                return false;
+            }
+            bool bValidScalar = false;
+            if (AnimatedProperty == ERmlUiAnimatedProperty::Opacity)
+                bValidScalar = TryParseOpacity(TextValue, ScalarValue);
+            else if (AnimatedProperty == ERmlUiAnimatedProperty::Visibility)
+            {
+                if (TextValue.Equals(TEXT("visible"), ESearchCase::IgnoreCase)) { ScalarValue = 1.f; bValidScalar = true; }
+                else if (TextValue.Equals(TEXT("hidden"), ESearchCase::IgnoreCase)) { ScalarValue = 0.f; bValidScalar = true; }
+            }
+            else bValidScalar = TryParseNumberWithSuffix(TextValue, TEXT("px"), ScalarValue);
+            if (!bValidScalar ||
+                (IsNonNegativeLayoutProperty(AnimatedProperty) && ScalarValue < 0.0f))
+            {
+                OutError = AnimatedProperty == ERmlUiAnimatedProperty::Opacity
+                    ? TEXT("opacity_value_out_of_range") : AnimatedProperty == ERmlUiAnimatedProperty::Visibility
+                        ? TEXT("invalid_visibility_value") : TEXT("invalid_layout_px_value");
                 return false;
             }
             FString EasingText;
@@ -628,11 +857,11 @@ bool PrepareNodeKeyframeAnimation(
                 OutError = TEXT("unsupported_easing");
                 return false;
             }
-            Parsed.Keyframes.Add({static_cast<float>(Offset), Opacity, Easing});
+            Parsed.Keyframes.Add({static_cast<float>(Offset), ScalarValue, Easing});
         }
-        OutPrepared.Definition = Runtime.RegisterFloatDefinition(ERmlUiAnimatedProperty::Opacity, Parsed);
+        OutPrepared.Definition = Runtime.RegisterFloatDefinition(AnimatedProperty, Parsed);
     }
-    else if (bNeedsDefinition && Property.Equals(TEXT("transform"), ESearchCase::IgnoreCase))
+    else if (bNeedsDefinition && AnimatedProperty == ERmlUiAnimatedProperty::Transform2D)
     {
         FRmlUiTransform2DAnimationDefinition Parsed;
         Parsed.DurationSeconds = Duration;
@@ -640,8 +869,9 @@ bool PrepareNodeKeyframeAnimation(
         Parsed.Iterations = Iterations;
         Parsed.PlaybackRate = PlaybackRate;
         Parsed.Direction = Direction;
+        Parsed.Fill = FillMode;
         Parsed.Keyframes.Reserve(Input.Num());
-        ETransformPrimitive CommonPrimitive = ETransformPrimitive::None;
+        uint8 CommonPrimitive = TransformNone;
         for (const TSharedPtr<FJsonValue>& Value : Input)
         {
             if (!Value || Value->Type != EJson::Object)
@@ -659,15 +889,15 @@ bool PrepareNodeKeyframeAnimation(
                 return false;
             }
             FRmlUiTransform2D Transform;
-            ETransformPrimitive Primitive = ETransformPrimitive::None;
+            uint8 Primitive = TransformNone;
             if (!TryParseTransform2D(TextValue, Transform, Primitive))
             {
                 OutError = TEXT("unsupported_transform_value");
                 return false;
             }
-            if (Primitive != ETransformPrimitive::None)
+            if (Primitive != TransformNone)
             {
-                if (CommonPrimitive != ETransformPrimitive::None && CommonPrimitive != Primitive)
+                if (CommonPrimitive != TransformNone && CommonPrimitive != Primitive)
                 {
                     OutError = TEXT("mixed_transform_primitives");
                     return false;
@@ -690,6 +920,35 @@ bool PrepareNodeKeyframeAnimation(
             Parsed.Keyframes.Add({static_cast<float>(Offset), Transform, Easing});
         }
         OutPrepared.Definition = Runtime.RegisterTransform2DDefinition(Parsed);
+    }
+    else if (bNeedsDefinition && AnimatedProperty >= ERmlUiAnimatedProperty::Color &&
+        AnimatedProperty <= ERmlUiAnimatedProperty::ImageColor)
+    {
+        FRmlUiColorAnimationDefinition Parsed;
+        Parsed.DurationSeconds = Duration;
+        Parsed.DelaySeconds = Delay;
+        Parsed.Iterations = Iterations;
+        Parsed.PlaybackRate = PlaybackRate;
+        Parsed.Direction = Direction;
+        Parsed.Fill = FillMode;
+        Parsed.Keyframes.Reserve(Input.Num());
+        for (const TSharedPtr<FJsonValue>& Value : Input)
+        {
+            if (!Value || Value->Type != EJson::Object) { OutError = TEXT("keyframes_must_be_objects"); return false; }
+            const TSharedPtr<FJsonObject> Object = Value->AsObject();
+            double Offset = 0.0;
+            FString TextValue, EasingText;
+            FRmlUiColor Color;
+            if (!Object->TryGetNumberField(TEXT("offset"), Offset) ||
+                !Object->TryGetStringField(TEXT("value"), TextValue) || !TryParseColor(TextValue, Color))
+            { OutError = TEXT("invalid_color_value"); return false; }
+            if (Object->HasField(TEXT("easing")) && !Object->TryGetStringField(TEXT("easing"), EasingText))
+            { OutError = TEXT("invalid_easing_type"); return false; }
+            FRmlUiAnimationEasing Easing;
+            if (!TryParseAnimationEasing(EasingText, Easing)) { OutError = TEXT("unsupported_easing"); return false; }
+            Parsed.Keyframes.Add({static_cast<float>(Offset), Color, Easing});
+        }
+        OutPrepared.Definition = Runtime.RegisterColorDefinition(AnimatedProperty, Parsed);
     }
     else if (bNeedsDefinition)
     {
@@ -1454,8 +1713,9 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
         ERmlUiPerformanceStage::AnimationPlanRegisterPacked);
     FPackedAnimationReader Reader(Payload);
     uint32 Count = 0;
+    uint16 PlanPayloadVersion = 0;
     constexpr uint32 Magic = 0x31504152; // RAP1
-    if (!ReadPackedHeader(Reader, Magic, Count)) return Fail(TEXT("invalid_plan_header"));
+    if (!ReadPackedHeader(Reader, Magic, Count, 3, &PlanPayloadVersion)) return Fail(TEXT("invalid_plan_header"));
     int32 ActivePlanCount = 0;
     for (const FCompiledAnimationPlan& Plan : CompiledAnimationPlans)
         ActivePlanCount += Plan.bActive ? 1 : 0;
@@ -1467,6 +1727,7 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
         FRmlUiAnimationDefinitionHandle Definition;
         uint64 AllocatedBytes = 0;
         ERmlUiAnimatedProperty Property = ERmlUiAnimatedProperty::None;
+        ERmlUiAnimationFillMode Fill = ERmlUiAnimationFillMode::Both;
     };
     TArray<FRegisteredPlan> Registered;
     Registered.Reserve(Count);
@@ -1486,12 +1747,18 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
         double Duration = 0.0;
         double Delay = 0.0;
         double PlaybackRate = 0.0;
+        uint8 FillByte = static_cast<uint8>(ERmlUiAnimationFillMode::Both);
+        uint8 Reserved[7]{};
         if (!Reader.Read(PropertyByte) || !Reader.Read(DirectionByte) ||
             !Reader.Read(KeyframeCount) || !Reader.Read(Iterations) ||
             !Reader.Read(Duration) || !Reader.Read(Delay) || !Reader.Read(PlaybackRate) ||
-            (PropertyByte != static_cast<uint8>(ERmlUiAnimatedProperty::Opacity) &&
-                PropertyByte != static_cast<uint8>(ERmlUiAnimatedProperty::Transform2D)) ||
+            (PlanPayloadVersion >= 2 && (!Reader.Read(FillByte) || !Reader.Read(Reserved))) ||
+            (PropertyByte < static_cast<uint8>(ERmlUiAnimatedProperty::Opacity) ||
+                PropertyByte > static_cast<uint8>(ERmlUiAnimatedProperty::ImageColor)) ||
             DirectionByte > static_cast<uint8>(ERmlUiAnimationDirection::AlternateReverse) ||
+            FillByte > static_cast<uint8>(ERmlUiAnimationFillMode::Both) ||
+            (PlanPayloadVersion >= 2 && (Reserved[0] || Reserved[1] || Reserved[2] || Reserved[3] ||
+                Reserved[4] || Reserved[5] || Reserved[6])) ||
             KeyframeCount < 2 || KeyframeCount > 4096 || Iterations < 1 ||
             Iterations > static_cast<uint32>(MAX_int32) ||
             !FMath::IsFinite(Duration) || Duration < 0.0 ||
@@ -1504,7 +1771,8 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
 
         FRegisteredPlan Parsed;
         Parsed.Property = static_cast<ERmlUiAnimatedProperty>(PropertyByte);
-        if (Parsed.Property == ERmlUiAnimatedProperty::Opacity)
+        Parsed.Fill = static_cast<ERmlUiAnimationFillMode>(FillByte);
+        if (IsScalarAnimatedProperty(Parsed.Property))
         {
             FRmlUiFloatAnimationDefinition Definition;
             Definition.DurationSeconds = Duration;
@@ -1512,6 +1780,7 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
             Definition.Iterations = static_cast<int32>(Iterations);
             Definition.PlaybackRate = PlaybackRate;
             Definition.Direction = static_cast<ERmlUiAnimationDirection>(DirectionByte);
+            Definition.Fill = Parsed.Fill;
             Definition.Keyframes.Reserve(KeyframeCount);
             for (uint16 KeyframeIndex = 0; KeyframeIndex < KeyframeCount; ++KeyframeIndex)
             {
@@ -1519,7 +1788,11 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
                 if (!Reader.Read(Keyframe.Offset) || !Reader.Read(Keyframe.Value) ||
                     !ReadPackedEasing(Reader, Keyframe.EasingToNext) ||
                     !FMath::IsFinite(Keyframe.Offset) || !FMath::IsFinite(Keyframe.Value) ||
-                    Keyframe.Value < 0.0f || Keyframe.Value > 1.0f)
+                    (Parsed.Property == ERmlUiAnimatedProperty::Opacity &&
+                        (Keyframe.Value < 0.0f || Keyframe.Value > 1.0f)) ||
+                    (Parsed.Property == ERmlUiAnimatedProperty::Visibility &&
+                        Keyframe.Value != 0.0f && Keyframe.Value != 1.0f) ||
+                    (IsNonNegativeLayoutProperty(Parsed.Property) && Keyframe.Value < 0.0f))
                 {
                     Rollback();
                     return Fail(TEXT("invalid_plan_keyframe"), static_cast<int32>(Index));
@@ -1528,7 +1801,7 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
             }
             Parsed.Definition = AnimationRuntime->RegisterFloatDefinition(Parsed.Property, Definition);
         }
-        else
+        else if (Parsed.Property == ERmlUiAnimatedProperty::Transform2D)
         {
             FRmlUiTransform2DAnimationDefinition Definition;
             Definition.DurationSeconds = Duration;
@@ -1536,6 +1809,7 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
             Definition.Iterations = static_cast<int32>(Iterations);
             Definition.PlaybackRate = PlaybackRate;
             Definition.Direction = static_cast<ERmlUiAnimationDirection>(DirectionByte);
+            Definition.Fill = Parsed.Fill;
             Definition.Keyframes.Reserve(KeyframeCount);
             for (uint16 KeyframeIndex = 0; KeyframeIndex < KeyframeCount; ++KeyframeIndex)
             {
@@ -1546,13 +1820,17 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
                     !Reader.Read(Keyframe.Value.ScaleX) ||
                     !Reader.Read(Keyframe.Value.ScaleY) ||
                     !Reader.Read(Keyframe.Value.RotationDegrees) ||
+                    !Reader.Read(Keyframe.Value.SkewXDegrees) ||
+                    !Reader.Read(Keyframe.Value.SkewYDegrees) ||
                     !ReadPackedEasing(Reader, Keyframe.EasingToNext) ||
                     !FMath::IsFinite(Keyframe.Offset) ||
                     !FMath::IsFinite(Keyframe.Value.TranslationX) ||
                     !FMath::IsFinite(Keyframe.Value.TranslationY) ||
                     !FMath::IsFinite(Keyframe.Value.ScaleX) ||
                     !FMath::IsFinite(Keyframe.Value.ScaleY) ||
-                    !FMath::IsFinite(Keyframe.Value.RotationDegrees))
+                    !FMath::IsFinite(Keyframe.Value.RotationDegrees) ||
+                    !FMath::IsFinite(Keyframe.Value.SkewXDegrees) ||
+                    !FMath::IsFinite(Keyframe.Value.SkewYDegrees))
                 {
                     Rollback();
                     return Fail(TEXT("invalid_plan_keyframe"), static_cast<int32>(Index));
@@ -1560,6 +1838,30 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
                 Definition.Keyframes.Add(Keyframe);
             }
             Parsed.Definition = AnimationRuntime->RegisterTransform2DDefinition(Definition);
+        }
+        else
+        {
+            FRmlUiColorAnimationDefinition Definition;
+            Definition.DurationSeconds = Duration;
+            Definition.DelaySeconds = Delay;
+            Definition.Iterations = static_cast<int32>(Iterations);
+            Definition.PlaybackRate = PlaybackRate;
+            Definition.Direction = static_cast<ERmlUiAnimationDirection>(DirectionByte);
+            Definition.Fill = Parsed.Fill;
+            Definition.Keyframes.Reserve(KeyframeCount);
+            for (uint16 KeyframeIndex = 0; KeyframeIndex < KeyframeCount; ++KeyframeIndex)
+            {
+                FRmlUiColorAnimationKeyframe Keyframe;
+                if (!Reader.Read(Keyframe.Offset) || !Reader.Read(Keyframe.Value.Red) ||
+                    !Reader.Read(Keyframe.Value.Green) || !Reader.Read(Keyframe.Value.Blue) ||
+                    !Reader.Read(Keyframe.Value.Alpha) || !ReadPackedEasing(Reader, Keyframe.EasingToNext) ||
+                    !FMath::IsFinite(Keyframe.Offset) || Keyframe.Value.Red < 0.f || Keyframe.Value.Red > 1.f ||
+                    Keyframe.Value.Green < 0.f || Keyframe.Value.Green > 1.f || Keyframe.Value.Blue < 0.f ||
+                    Keyframe.Value.Blue > 1.f || Keyframe.Value.Alpha < 0.f || Keyframe.Value.Alpha > 1.f)
+                { Rollback(); return Fail(TEXT("invalid_plan_keyframe"), static_cast<int32>(Index)); }
+                Definition.Keyframes.Add(Keyframe);
+            }
+            Parsed.Definition = AnimationRuntime->RegisterColorDefinition(Parsed.Property, Definition);
         }
         if (!Parsed.Definition.IsValid())
         {
@@ -1605,6 +1907,8 @@ FString URmlUiJSContext::RegisterAnimationPlansPacked(const FArrayBuffer& Payloa
         Plan.UseCount = 0;
         Plan.AllocatedBytes = RegisteredPlan.AllocatedBytes;
         Plan.Property = static_cast<uint8>(RegisteredPlan.Property);
+        Plan.CostClass = static_cast<uint8>(GetRmlUiAnimationCostClass(RegisteredPlan.Property));
+        Plan.Fill = static_cast<uint8>(RegisteredPlan.Fill);
         Plan.bActive = true;
         CompiledAnimationPlanAllocatedBytes += Plan.AllocatedBytes;
         Handles.Add((static_cast<uint64>(Plan.Generation) << 32) | (static_cast<uint64>(Slot) + 1));
@@ -1697,7 +2001,9 @@ FString URmlUiJSContext::StartCompiledAnimationBatchPacked(const FArrayBuffer& P
         Item.PlanSlot = Slot;
         Item.bLayered = Composite == 1;
         Item.Contribution.Order = CompositionOrder;
-        Item.Contribution.bSuppressBeforeStart = true;
+        Item.Contribution.bSuppressBeforeStart =
+            Plan.Fill == static_cast<uint8>(ERmlUiAnimationFillMode::None) ||
+            Plan.Fill == static_cast<uint8>(ERmlUiAnimationFillMode::Forwards);
         Item.Contribution.bLayered = Item.bLayered;
         Item.Binding = AnimationRuntime->BindNode(
             FRmlUiAnimationDefinitionHandle{Plan.Definition}, View, Node);
@@ -1801,6 +2107,7 @@ FString URmlUiJSContext::ReleaseAnimationPlansPacked(const FArrayBuffer& Payload
         Plan.UseCount = 0;
         Plan.AllocatedBytes = 0;
         Plan.Property = 0;
+        Plan.CostClass = 0;
         Plan.bActive = false;
         ++Plan.Generation;
         if (Plan.Generation == 0) Plan.Generation = 1;
@@ -1813,10 +2120,24 @@ FString URmlUiJSContext::ReleaseAnimationPlansPacked(const FArrayBuffer& Payload
 FString URmlUiJSContext::GetAnimationPlanCacheStats() const
 {
     int32 ActivePlans = 0;
+    int32 VisualPlans = 0;
+    int32 LayoutPositionPlans = 0;
+    int32 LayoutSizePlans = 0;
+    int32 VisualDiscretePlans = 0;
+    int32 PaintPlans = 0;
     for (const FCompiledAnimationPlan& Plan : CompiledAnimationPlans)
     {
         if (!Plan.bActive) continue;
         ++ActivePlans;
+        switch (static_cast<ERmlUiAnimationCostClass>(Plan.CostClass))
+        {
+        case ERmlUiAnimationCostClass::Visual: ++VisualPlans; break;
+        case ERmlUiAnimationCostClass::LayoutPosition: ++LayoutPositionPlans; break;
+        case ERmlUiAnimationCostClass::LayoutSize: ++LayoutSizePlans; break;
+        case ERmlUiAnimationCostClass::VisualDiscrete: ++VisualDiscretePlans; break;
+        case ERmlUiAnimationCostClass::Paint: ++PaintPlans; break;
+        default: break;
+        }
     }
     TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetNumberField(TEXT("activePlans"), ActivePlans);
@@ -1824,6 +2145,28 @@ FString URmlUiJSContext::GetAnimationPlanCacheStats() const
     Result->SetNumberField(TEXT("residentLimitBytes"), static_cast<double>(
         FMath::Max<int64>(CompiledAnimationPlanResidentLimitBytes, 1024)));
     Result->SetNumberField(TEXT("slotCapacity"), CompiledAnimationPlans.Max());
+    TSharedRef<FJsonObject> PlansByCost = MakeShared<FJsonObject>();
+    PlansByCost->SetNumberField(TEXT("visual"), VisualPlans);
+    PlansByCost->SetNumberField(TEXT("layoutPosition"), LayoutPositionPlans);
+    PlansByCost->SetNumberField(TEXT("layoutSize"), LayoutSizePlans);
+    PlansByCost->SetNumberField(TEXT("visualDiscrete"), VisualDiscretePlans);
+    PlansByCost->SetNumberField(TEXT("paint"), PaintPlans);
+    Result->SetObjectField(TEXT("plansByCost"), PlansByCost);
+    return JsonString(Result);
+}
+
+FString URmlUiJSContext::GetAnimationRuntimeStats() const
+{
+    const FRmlUiAnimationViewActivity Activity = AnimationRuntime && View
+        ? AnimationRuntime->GetViewActivity(View)
+        : FRmlUiAnimationViewActivity{};
+    TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("activeTracks"), Activity.Total);
+    Result->SetNumberField(TEXT("visual"), Activity.Visual);
+    Result->SetNumberField(TEXT("layoutPosition"), Activity.LayoutPosition);
+    Result->SetNumberField(TEXT("layoutSize"), Activity.LayoutSize);
+    Result->SetNumberField(TEXT("visualDiscrete"), Activity.VisualDiscrete);
+    Result->SetNumberField(TEXT("paint"), Activity.Paint);
     return JsonString(Result);
 }
 
@@ -1911,8 +2254,10 @@ FString URmlUiJSContext::ApplyNodePropertyBatch(const FString& UpdatesJson)
     };
     TArray<FUpdate> Updates;
     Updates.Reserve(Input.Num());
-    for (const TSharedPtr<FJsonValue>& Value : Input)
+    TArray<int32> StaleIndices;
+    for (int32 Index = 0; Index < Input.Num(); ++Index)
     {
+        const TSharedPtr<FJsonValue>& Value = Input[Index];
         if (!Value || Value->Type != EJson::Object)
             return Fail(0, TEXT("property_updates_must_be_objects"));
         const TSharedPtr<FJsonObject> Object = Value->AsObject();
@@ -1932,9 +2277,14 @@ FString URmlUiJSContext::ApplyNodePropertyBatch(const FString& UpdatesJson)
         }
         Update.Node = static_cast<int32>(NodeNumber);
         if (!RmlUE_IsNodeValid(View, Update.Node))
-            return Fail(0, TEXT("stale_property_target"));
+        {
+            StaleIndices.Add(Index);
+            continue;
+        }
         Updates.Add(MoveTemp(Update));
     }
+    if (!StaleIndices.IsEmpty())
+        return PropertyBatchResult(false, 0, TEXT("stale_property_target"), &StaleIndices);
 
     CountNodeCall();
     int32 Applied = 0;
@@ -2110,6 +2460,7 @@ void URmlUiJSContext::ReleaseAllAnimationPlans()
         Plan.UseCount = 0;
         Plan.AllocatedBytes = 0;
         Plan.Property = 0;
+        Plan.CostClass = 0;
         Plan.bActive = false;
     }
     CompiledAnimationPlans.Empty();

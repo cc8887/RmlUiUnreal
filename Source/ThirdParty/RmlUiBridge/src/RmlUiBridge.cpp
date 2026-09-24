@@ -28,6 +28,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -309,20 +310,33 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
         bool Enabled = false;
         bool Active = true;
     };
+    struct VisualBackgroundColorState
+    {
+        float R = 0.f, G = 0.f, B = 0.f, A = 0.f;
+        uint64_t TopologyGeneration = 0;
+        std::vector<size_t> DrawIndices;
+        uint32_t BindingRefCount = 0;
+        bool Active = false;
+    };
     struct VisualNodeSlot
     {
         RmlUE_Node Node = 0;
         float PendingOpacity = 1.f;
         VisualTransformState PendingTransform;
+        float PendingColorR = 0.f, PendingColorG = 0.f, PendingColorB = 0.f, PendingColorA = 0.f;
         bool OpacityPending = false;
+        bool BackgroundColorPending = false;
+        bool BackgroundColorEnabled = false;
         bool TransformPending = false;
         bool Queued = false;
     };
     std::unordered_map<RmlUE_Node, VisualOpacityState> VisualOpacityOverrides;
+    std::unordered_map<RmlUE_Node, VisualBackgroundColorState> VisualBackgroundColorOverrides;
     std::unordered_map<RmlUE_Node, VisualTransformState> VisualTransformOverrides;
     struct NodeDrawState
     {
         std::vector<size_t> DrawIndices;
+        std::vector<size_t> BackgroundDrawIndices;
         uint32_t VisualSlot = UINT32_MAX;
     };
     std::unordered_map<RmlUE_Node, NodeDrawState> DrawIndicesByNode;
@@ -389,9 +403,12 @@ class SlateCommandRenderer final : public Rml::RenderInterface {
     std::vector<TransformMaskNode> TransformMaskScratch;
     std::vector<TransformBindingCache> TransformBindingCaches;
     std::unordered_map<uint32_t, std::vector<TransformMaskNode>> TransformMaskBindingsByIndex;
+    // Element ownership is complemented by a conservative paint role. Only independent background
+    // geometry is currently eligible for replacement color; all unknown/combined draws fall back.
     struct ElementVisualState { RmlUE_Node Node = 0; float Opacity = 1.f; };
     std::vector<ElementVisualState> ElementVisualStack;
     ElementVisualState CurrentElementVisual;
+    Rml::PaintRole CurrentPaintRole = Rml::PaintRole::Unknown;
     uint64_t ContentRevision = 1;
     uint64_t VisualRevision = 1;
     uint64_t RecordedContentRevision = 0;
@@ -565,6 +582,94 @@ public:
             }
         }
         if (!State.BindingRefCount) VisualOpacityOverrides.erase(Existing);
+        return true;
+    }
+    bool RefreshVisualBackgroundColorTopology(RmlUE_Node Node, VisualBackgroundColorState& State)
+    {
+        if (State.TopologyGeneration == TopologyGeneration) return false;
+        State.TopologyGeneration = TopologyGeneration;
+        State.DrawIndices.clear();
+        const auto DrawState = DrawIndicesByNode.find(Node);
+        if (DrawState != DrawIndicesByNode.end()) State.DrawIndices = DrawState->second.BackgroundDrawIndices;
+        return true;
+    }
+    void* RetainVisualBackgroundColorBinding(RmlUE_Node Node)
+    {
+        if (!Node) return nullptr;
+        VisualBackgroundColorState& State = VisualBackgroundColorOverrides.try_emplace(Node).first->second;
+        ++State.BindingRefCount;
+        State.TopologyGeneration = 0;
+        RefreshVisualBackgroundColorTopology(Node, State);
+        return &State;
+    }
+    void ReleaseVisualBackgroundColorBinding(RmlUE_Node Node)
+    {
+        const auto Existing = VisualBackgroundColorOverrides.find(Node);
+        if (Existing == VisualBackgroundColorOverrides.end()) return;
+        VisualBackgroundColorState& State = Existing->second;
+        if (State.BindingRefCount) --State.BindingRefCount;
+        if (!State.BindingRefCount && !State.Active) VisualBackgroundColorOverrides.erase(Existing);
+    }
+    bool SetVisualBackgroundColor(RmlUE_Node Node, const float* Values, float BaseOpacity,
+        void* PreparedState = nullptr)
+    {
+        if (!Node || !Values || !std::isfinite(BaseOpacity) || BaseOpacity < 0.f || BaseOpacity > 1.f) return false;
+        VisualBackgroundColorState* StatePtr = static_cast<VisualBackgroundColorState*>(PreparedState);
+        bool Inserted = false;
+        if (!StatePtr)
+        {
+            auto Result = VisualBackgroundColorOverrides.try_emplace(Node);
+            StatePtr = &Result.first->second;
+            Inserted = Result.second;
+        }
+        VisualBackgroundColorState& State = *StatePtr;
+        const bool TopologyChanged = RefreshVisualBackgroundColorTopology(Node, State);
+        if (HasRecordedFrame && State.DrawIndices.empty()) return false;
+        const float Alpha = Values[3] * BaseOpacity;
+        const float R = Values[0] * Alpha;
+        const float G = Values[1] * Alpha;
+        const float B = Values[2] * Alpha;
+        if (!TopologyChanged && !Inserted && State.Active && State.R == R && State.G == G && State.B == B && State.A == Alpha)
+            return true;
+        State.R = R; State.G = G; State.B = B; State.A = Alpha; State.Active = true;
+        if (++VisualRevision == 0) VisualRevision = 1;
+        for (size_t Index : State.DrawIndices)
+        {
+            if (Index >= Draws.size()) continue;
+            RmlUE_SlateDraw& Draw = Draws[Index];
+            Draw.VisualColorEnabled = 1;
+            Draw.VisualColorR = R; Draw.VisualColorG = G; Draw.VisualColorB = B; Draw.VisualColorA = Alpha;
+        }
+        const auto DrawState = DrawIndicesByNode.find(Node);
+        if (DrawState != DrawIndicesByNode.end() && DrawState->second.VisualSlot < VisualNodeSlots.size())
+        {
+            VisualNodeSlot& Slot = VisualNodeSlots[DrawState->second.VisualSlot];
+            Slot.PendingColorR = R; Slot.PendingColorG = G; Slot.PendingColorB = B; Slot.PendingColorA = Alpha;
+            Slot.BackgroundColorEnabled = true;
+            Slot.BackgroundColorPending = true;
+            QueueVisualSlot(DrawState->second.VisualSlot);
+        }
+        return true;
+    }
+    bool ClearVisualBackgroundColor(RmlUE_Node Node)
+    {
+        const auto Existing = VisualBackgroundColorOverrides.find(Node);
+        if (Existing == VisualBackgroundColorOverrides.end() || !Existing->second.Active) return false;
+        VisualBackgroundColorState& State = Existing->second;
+        State.Active = false;
+        if (++VisualRevision == 0) VisualRevision = 1;
+        RefreshVisualBackgroundColorTopology(Node, State);
+        for (size_t Index : State.DrawIndices)
+            if (Index < Draws.size()) Draws[Index].VisualColorEnabled = 0;
+        const auto DrawState = DrawIndicesByNode.find(Node);
+        if (DrawState != DrawIndicesByNode.end() && DrawState->second.VisualSlot < VisualNodeSlots.size())
+        {
+            VisualNodeSlot& Slot = VisualNodeSlots[DrawState->second.VisualSlot];
+            Slot.BackgroundColorEnabled = false;
+            Slot.BackgroundColorPending = true;
+            QueueVisualSlot(DrawState->second.VisualSlot);
+        }
+        if (!State.BindingRefCount) VisualBackgroundColorOverrides.erase(Existing);
         return true;
     }
     static bool ReadElementTransform(Rml::Element* Element, VisualTransformState& State)
@@ -925,7 +1030,7 @@ public:
             !Element->GetComputedValues().transform() || !ResolveTransformDrawNodes(Element, Target))
             return RejectActiveOverride();
 
-        Element->SetAnimationTransform2D(Values[0], Values[1], Values[2], Values[3], Values[4]);
+        Element->SetAnimationTransform2D(Values[0], Values[1], Values[2], Values[3], Values[4], Values[5], Values[6]);
         if (TransformBindingCache* Cache = FindTransformBindingCache(Target))
         {
             Cache->OverrideActive = true;
@@ -1065,16 +1170,31 @@ public:
             PublicClipMasks.insert(PublicClipMasks.end(), ActiveClipMasks.begin(), ActiveClipMasks.end());
         const uint32_t ClipMaskCount = static_cast<uint32_t>(PublicClipMasks.size()) - ClipMaskStart;
         const size_t DrawIndex = Draws.size();
+        // Geometry contains final premultiplied vertex colors. PaintRole is set only around core
+        // geometry whose semantics are known; custom or combined draws remain Unknown.
         Draws.push_back({Geometry->Id, static_cast<uint64_t>(Texture), Translation.x, Translation.y,
             TransformEnabled ? 1 : 0, TransformM00, TransformM01, TransformM10, TransformM11, TransformX, TransformY,
             ScissorEnabled ? 1 : 0, static_cast<float>(Region.Left()), static_cast<float>(Region.Top()),
             static_cast<float>(Region.Width()), static_cast<float>(Region.Height()), ClipMaskStart, ClipMaskCount,
             CurrentElementVisual.Node, CurrentElementVisual.Opacity});
+        RmlUE_SlateDraw& Draw = Draws.back();
+        Draw.PaintRole = static_cast<int>(CurrentPaintRole);
         if (CurrentElementVisual.Node)
         {
             EnsureVisualNodeSlot(CurrentElementVisual.Node);
             auto StateIt = DrawIndicesByNode.find(CurrentElementVisual.Node);
             StateIt->second.DrawIndices.push_back(DrawIndex);
+            if (CurrentPaintRole == Rml::PaintRole::Background && !Texture)
+            {
+                StateIt->second.BackgroundDrawIndices.push_back(DrawIndex);
+                const auto Override = VisualBackgroundColorOverrides.find(CurrentElementVisual.Node);
+                if (Override != VisualBackgroundColorOverrides.end() && Override->second.Active)
+                {
+                    Draw.VisualColorEnabled = 1;
+                    Draw.VisualColorR = Override->second.R; Draw.VisualColorG = Override->second.G;
+                    Draw.VisualColorB = Override->second.B; Draw.VisualColorA = Override->second.A;
+                }
+            }
         }
         if (ActiveStats) ++ActiveStats->GeometryDraws;
     }
@@ -1237,6 +1357,7 @@ public:
         CurrentElementVisual = ElementVisualStack.back();
         ElementVisualStack.pop_back();
     }
+    void SetPaintRole(Rml::PaintRole Role) override { CurrentPaintRole = Role; }
     Rml::LayerHandle PushLayer() override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_LAYER; return 0; }
     void CompositeLayers(Rml::LayerHandle, Rml::LayerHandle, Rml::BlendMode, Rml::Span<const Rml::CompiledFilterHandle>) override { UnsupportedFeatures |= RMLUE_UNSUPPORTED_LAYER; }
     void PopLayer() override {}
@@ -1263,6 +1384,7 @@ public:
         UnsupportedFeatures = 0;
         ElementVisualStack.clear();
         CurrentElementVisual = {};
+        CurrentPaintRole = Rml::PaintRole::Unknown;
         for (auto It = GeometryDataById.begin(); It != GeometryDataById.end();)
         {
             GeometryData* Geometry = It->second;
@@ -1343,6 +1465,16 @@ public:
                 Slot.OpacityPending = false;
                 Changed = true;
             }
+            if (Slot.BackgroundColorPending)
+            {
+                Delta.ColorChanged = 1;
+                Delta.PaintRole = RMLUE_PAINT_ROLE_BACKGROUND;
+                Delta.VisualColorEnabled = Slot.BackgroundColorEnabled ? 1 : 0;
+                Delta.VisualColorR = Slot.PendingColorR; Delta.VisualColorG = Slot.PendingColorG;
+                Delta.VisualColorB = Slot.PendingColorB; Delta.VisualColorA = Slot.PendingColorA;
+                Slot.BackgroundColorPending = false;
+                Changed = true;
+            }
             if (Slot.TransformPending)
             {
                 const VisualTransformState& State = Slot.PendingTransform;
@@ -1395,6 +1527,11 @@ public:
                 RefreshVisualOpacityTopology(It->first, It->second);
                 ++It;
             }
+        }
+        for (auto It = VisualBackgroundColorOverrides.begin(); It != VisualBackgroundColorOverrides.end();)
+        {
+            if (!It->second.Active && !It->second.BindingRefCount) It = VisualBackgroundColorOverrides.erase(It);
+            else { It->second.TopologyGeneration = 0; RefreshVisualBackgroundColorTopology(It->first, It->second); ++It; }
         }
         for (auto It = VisualTransformOverrides.begin(); It != VisualTransformOverrides.end();)
         {
@@ -1515,9 +1652,14 @@ struct RmlUE_View final : public Rml::EventListener {
     struct AnimationTargetRecord {
         Rml::ObserverPtr<Rml::Element> Element;
         void* PreparedOpacityState = nullptr;
+        void* PreparedBackgroundColorState = nullptr;
         RmlUE_Node Node = 0;
         uint32_t Generation = 1;
         uint32_t PreparedVisualProperties = 0;
+        // Frozen at binding time so lifecycle restoration never queries the
+        // element tree from the animation Tick hot path.
+        uint32_t PreparedBaseProperty = 0;
+        std::vector<std::pair<Rml::PropertyId, std::optional<Rml::Property>>> BaseLocalProperties;
         bool Active = false;
     };
     struct NodeListener final : Rml::EventListener {
@@ -1626,9 +1768,12 @@ struct RmlUE_View final : public Rml::EventListener {
         AnimationTargetRecord& Record = AnimationTargets[Index];
         Record.Element = Element->GetObserverPtr();
         Record.PreparedOpacityState = nullptr;
+        Record.PreparedBackgroundColorState = nullptr;
         Record.Node = Node;
         Record.Generation = ++NextAnimationTargetGeneration;
         Record.PreparedVisualProperties = 0;
+        Record.PreparedBaseProperty = 0;
+        Record.BaseLocalProperties.clear();
         Record.Active = true;
         return PackAnimationTarget(Index, Record.Generation);
     }
@@ -1639,14 +1784,19 @@ struct RmlUE_View final : public Rml::EventListener {
         if (!Record.Active || Record.Generation != Generation) return false;
         if (SlateRenderer)
         {
-            if (Record.PreparedVisualProperties & RMLUE_ANIMATED_PROPERTY_OPACITY)
+            if (Record.PreparedVisualProperties & (1u << RMLUE_ANIMATED_PROPERTY_OPACITY))
                 SlateRenderer->ReleaseVisualOpacityBinding(Record.Node);
+            if (Record.PreparedVisualProperties & (1u << RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR))
+                SlateRenderer->ReleaseVisualBackgroundColorBinding(Record.Node);
             SlateRenderer->ReleaseTransformBinding(Target);
         }
         Record.Element = nullptr;
         Record.PreparedOpacityState = nullptr;
+        Record.PreparedBackgroundColorState = nullptr;
         Record.Node = 0;
         Record.PreparedVisualProperties = 0;
+        Record.PreparedBaseProperty = 0;
+        Record.BaseLocalProperties.clear();
         Record.Active = false;
         FreeAnimationTargets.push_back(Index);
         return true;
@@ -1658,12 +1808,18 @@ struct RmlUE_View final : public Rml::EventListener {
         for (uint32_t Index = 0; Index < AnimationTargets.size(); ++Index) {
             AnimationTargetRecord& Record = AnimationTargets[Index];
             if (SlateRenderer && Record.Active &&
-                (Record.PreparedVisualProperties & RMLUE_ANIMATED_PROPERTY_OPACITY))
+                (Record.PreparedVisualProperties & (1u << RMLUE_ANIMATED_PROPERTY_OPACITY)))
                 SlateRenderer->ReleaseVisualOpacityBinding(Record.Node);
+            if (SlateRenderer && Record.Active &&
+                (Record.PreparedVisualProperties & (1u << RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR)))
+                SlateRenderer->ReleaseVisualBackgroundColorBinding(Record.Node);
             Record.Element = nullptr;
             Record.PreparedOpacityState = nullptr;
+            Record.PreparedBackgroundColorState = nullptr;
             Record.Node = 0;
             Record.PreparedVisualProperties = 0;
+            Record.PreparedBaseProperty = 0;
+            Record.BaseLocalProperties.clear();
             Record.Active = false;
             FreeAnimationTargets.push_back(Index);
         }
@@ -1680,7 +1836,7 @@ struct RmlUE_View final : public Rml::EventListener {
             [](const auto& L) { return L->Removed || !L->Element; }), NodeListeners.end());
         for (auto It = Nodes.begin(); It != Nodes.end();) {
             if (!It->second.Element) {
-                if (SlateRenderer) SlateRenderer->ClearVisualOpacity(It->first);
+                if (SlateRenderer) { SlateRenderer->ClearVisualOpacity(It->first); SlateRenderer->ClearVisualBackgroundColor(It->first); }
                 It = Nodes.erase(It);
             }
             else ++It;
@@ -1699,7 +1855,7 @@ struct RmlUE_View final : public Rml::EventListener {
         NodeUser = nullptr;
         NodeListeners.clear();
         if (SlateRenderer)
-            for (const auto& Pair : Nodes) SlateRenderer->ClearVisualOpacity(Pair.first);
+            for (const auto& Pair : Nodes) { SlateRenderer->ClearVisualOpacity(Pair.first); SlateRenderer->ClearVisualBackgroundColor(Pair.first); }
         NodeIds.clear();
         Nodes.clear();
     }

@@ -4,10 +4,17 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
+#include "RmlUiWidget.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/UnrealType.h"
+
+#if WITH_EDITOR
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#endif
 
 namespace
 {
@@ -41,6 +48,44 @@ FString CompactRotation(const FRotator& Value)
 void URmlUiActorObserverService::Initialize(UObject* InWorldContext)
 {
     WorldContext = InWorldContext;
+}
+
+bool URmlUiActorObserverService::AttachMaterialShowcase(URmlUiWidget* Widget)
+{
+    MaterialWidget = Widget;
+    bUiMaterialReady = false;
+#if WITH_EDITOR
+    if (!Widget) return false;
+    UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+    Material->MaterialDomain = MD_UI;
+    Material->BlendMode = BLEND_Translucent;
+    UMaterialExpressionVectorParameter* Tint = NewObject<UMaterialExpressionVectorParameter>(Material);
+    Tint->ParameterName = TEXT("Tint");
+    Tint->DefaultValue = FLinearColor(0.03f, 0.55f, 0.42f, 1.0f);
+    Material->GetExpressionCollection().AddExpression(Tint);
+    UMaterialEditorOnlyData* EditorOnly = Material->GetEditorOnlyData();
+    EditorOnly->EmissiveColor.Expression = Tint;
+    EditorOnly->Opacity.UseConstant = true;
+    EditorOnly->Opacity.Constant = 1.0f;
+    Material->PostEditChange();
+    ShowcaseMaterial = Material;
+    bUiMaterialReady = Widget->RegisterMaterial(TEXT("showcase.energy"), Material);
+    if (bUiMaterialReady) SetUiMaterialIntensity(72);
+#endif
+    return bUiMaterialReady;
+}
+
+FString URmlUiActorObserverService::SetUiMaterialIntensity(int32 Intensity)
+{
+    const int32 Clamped = FMath::Clamp(Intensity, 0, 100);
+    if (!bUiMaterialReady || !MaterialWidget.IsValid()) return TEXT("UE UI Material unavailable");
+    const float Alpha = static_cast<float>(Clamped) / 100.0f;
+    const FLinearColor Low(0.025f, 0.10f, 0.14f, 1.0f);
+    const FLinearColor High(0.04f, 0.82f, 0.55f, 1.0f);
+    if (!MaterialWidget->SetMaterialVector(TEXT("showcase.energy"), TEXT("Tint"), FMath::Lerp(Low, High, Alpha)))
+        return TEXT("UE MID update failed");
+    ++UiMaterialUpdateCount;
+    return FString::Printf(TEXT("UE MID / %d%%"), Clamped);
 }
 
 UWorld* URmlUiActorObserverService::ResolveWorld() const

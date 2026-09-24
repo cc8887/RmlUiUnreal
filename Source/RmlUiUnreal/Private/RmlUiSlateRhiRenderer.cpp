@@ -77,6 +77,8 @@ public:
         SHADER_PARAMETER_TEXTURE(Texture2D, InTexture)
         SHADER_PARAMETER_SAMPLER(SamplerState, TextureSampler)
         SHADER_PARAMETER(float, VisualOpacity)
+        SHADER_PARAMETER(float, VisualColorEnabled)
+        SHADER_PARAMETER(FVector4f, VisualColor)
     END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -371,6 +373,8 @@ public:
                 PixelParameters.InTexture = ClipOwner.Texture;
                 PixelParameters.TextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
                 PixelParameters.VisualOpacity = ClipOwner.VisualOpacity;
+                PixelParameters.VisualColorEnabled = 0.0f;
+                PixelParameters.VisualColor = FVector4f::Zero();
 
                 const auto SetScissor = [&](const FSlateRect& Rect)
                 {
@@ -462,6 +466,8 @@ public:
                         }
                         PixelParameters.InTexture = ContentDraw.Texture;
                         PixelParameters.VisualOpacity = ContentDraw.VisualOpacity;
+                        PixelParameters.VisualColorEnabled = ContentDraw.bVisualColor ? 1.0f : 0.0f;
+                        PixelParameters.VisualColor = ContentDraw.VisualColor;
                         SetPipeline(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha,
                             BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI(), ContentDepthStencil);
                         RHICmdList.SetStencilRef(StencilReference);

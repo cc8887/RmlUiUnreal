@@ -1,4 +1,6 @@
 import postcss from 'postcss';
+import { applyCssProfile, cssDiagnostic } from './css-profile.mjs';
+import { resolveProfile } from './capabilities.mjs';
 
 const motionFields = {
   animation: new Map([
@@ -23,7 +25,7 @@ const supportedVendorProperties = new Set([
 ]);
 
 function diagnostic(decl, severity, code, message) {
-  return { severity, code, message, source: decl.source?.input?.file ?? '<css>', line: decl.source?.start?.line ?? 0, column: decl.source?.start?.column ?? 0 };
+  return cssDiagnostic(decl, severity, code, message, severity === 'error' ? 'rejected' : 'approximate');
 }
 
 function isInsideKeyframes(rule) {
@@ -40,7 +42,10 @@ function normalizeVendorDeclarations(rule, diagnostics) {
     const match = decl.prop.toLowerCase().match(/^-(webkit|moz|o)-(.+)$/);
     if (!match) continue;
     const standard = match[2];
-    if (standardProperties.has(standard)) decl.remove();
+    if (standardProperties.has(standard)) {
+      diagnostics.push(cssDiagnostic(decl, 'info', 'vendor-duplicate-normalized', 'Removed a vendor declaration already supplied by the standard property.'));
+      decl.remove();
+    }
     else if (supportedVendorProperties.has(standard)) {
       decl.prop = standard;
       standardProperties.add(standard);
@@ -68,6 +73,12 @@ function normalizeBorderStyleTokens(rule, diagnostics) {
       continue;
     }
     decl.value = decl.value.replace(/\bsolid\b/ig, ' ').replace(/\s+/g, ' ').trim();
+  }
+  for (const decl of [...(rule.nodes ?? [])].filter(node => node.type === 'decl' && node.prop.toLowerCase() === 'border-style')) {
+    if (decl.value.trim().toLowerCase() === 'solid') {
+      diagnostics.push(cssDiagnostic(decl, 'info', 'solid-border-style-normalized', 'RmlUi border geometry always uses the solid style.'));
+      decl.remove();
+    } else diagnostics.push(diagnostic(decl, 'error', 'unsupported-border-style', 'Only border-style:solid has an equivalent native border model.'));
   }
 }
 
@@ -206,7 +217,9 @@ function emitComposedRules(root, records, kind, diagnostics) {
 }
 
 export function compileCss(source, options = {}) {
-  const root = postcss.parse(source, { from: options.from });
+  resolveProfile(options.profile);
+  const input = typeof source === 'string' ? source : source.toString();
+  const root = typeof source === 'string' ? postcss.parse(source, { from: options.from }) : source.clone();
   const diagnostics = [];
   const records = { animation: [], transition: [] };
   const standardKeyframes = new Set();
@@ -246,6 +259,21 @@ export function compileCss(source, options = {}) {
   });
   emitComposedRules(root, records.animation, 'animation', diagnostics);
   emitComposedRules(root, records.transition, 'transition', diagnostics);
+  const capabilities = applyCssProfile(root, options, diagnostics);
+  if (options.profile && options.profile !== 'legacy') {
+    for (const item of diagnostics) {
+      if (/-dropped$/.test(item.code) || item.code === 'selector-composition-skipped' || item.code === 'camel-case-selector-broadened') {
+        const permitted = options.mode === 'degrade' && options.allowDegradeCodes?.includes(item.code);
+        item.severity = permitted ? 'warning' : 'error';
+        item.classification = permitted ? 'degraded' : 'rejected';
+        if (!permitted) item.message += ' This semantic change requires an explicit allowDegradeCodes policy.';
+      }
+    }
+  }
+  for (const item of diagnostics) {
+    if (item.line && options.lineOffset) item.line += options.lineOffset;
+    if (options.sourceLabel) item.source = options.sourceLabel;
+  }
   const css = root.toString();
-  return { css, diagnostics, changed: css !== source };
+  return { css, diagnostics, capabilities, changed: css !== input };
 }

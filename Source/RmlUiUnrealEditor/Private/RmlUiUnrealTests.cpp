@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "RmlUiBridge.h"
+#include "RmlUiPerformance.h"
 #include "RmlUiResourceRegistry.h"
 #include "RmlUiUnrealModule.h"
 #include "RmlUiWidget.h"
@@ -10,17 +11,22 @@
 #include "Engine/Texture2D.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "ImageUtils.h"
 #include "Interfaces/IPluginManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "RenderingThread.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
+#include "Widgets/SInvalidationPanel.h"
 #include "Widgets/SWindow.h"
 
 namespace RmlUiTests
@@ -756,19 +762,33 @@ body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
 #mask-fill { display: block; width: 140px; height: 80px; background-color: #f5c542; }
 </style></head><body><div id="warm"></div><div id="cool"></div><div id="alpha"></div><div id="mask"><div id="mask-inner"><div id="mask-fill"></div></div></div></body></rml>
 )RML");
-            Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
+            Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).UsePaintCache(true).InlineDocument(Document)
                 .SourcePath(TEXT("/slate-rhi-direct.rml")).DesiredSize(FVector2D(480, 320));
+            CacheRoot = SNew(SInvalidationPanel)[Widget.ToSharedRef()];
             Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi Slate RHI verification")))
                 .ClientSize(FVector2D(480, 320)).UseOSWindowBorder(false).CreateTitleBar(false)
                 .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
                 .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
-                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[Widget.ToSharedRef()];
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[CacheRoot.ToSharedRef()];
             FSlateApplication::Get().AddWindow(Window.ToSharedRef());
             OwnerId = RmlUE_GetViewResourceId(Widget->GetNativeView());
             Start = FPlatformTime::Seconds();
             return false;
         }
         if (FPlatformTime::Seconds() - Start < 2.0) return false;
+
+        if (Stage == 3)
+        {
+            if (FPlatformTime::Seconds() - Start < 5.0) return false;
+            Widget->ShutdownNative();
+            FlushRenderingCommands();
+            Test->TestTrue(TEXT("Direct fixture releases its complete resource tree"),
+                FRmlUiResourceRegistry::Get().SnapshotOwnedBy(OwnerId, true).IsEmpty());
+            FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+            Widget.Reset();
+            Window.Reset();
+            return true;
+        }
 
         FlushRenderingCommands();
         Test->TestTrue(TEXT("Slate RHI fixture rendered frames"), Widget->GetFrameNumber() > 0);
@@ -792,6 +812,11 @@ body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
         Test->TestTrue(TEXT("Capture direct Slate RHI output"), bCaptured && Pixels.Num() > 0);
         Test->TestTrue(TEXT("Pure CSS fixture submits persistent RHI draws"), Widget->GetSlateRhiDrawCount() > 0);
         Test->TestTrue(TEXT("Nested rounded clipping submits RHI stencil masks"), Widget->GetSlateRhiMaskCount() >= 2);
+        Test->TestTrue(TEXT("complex non-material clipping is eligible for immutable Slate paint caching"),
+            Widget->GetSlatePaintCacheRejectReason() == ERmlUiPaintCacheRejectReason::None &&
+            Widget->IsSlatePaintCacheEligible());
+        Test->TestTrue(TEXT("complex clipping activated the Slate paint cache"),
+            Widget->IsSlatePaintCacheReady());
         Test->TestTrue(TEXT("Pure CSS fixture needs no transient Slate vertex fallback"),
             Widget->GetSlateFallbackDrawCount() == 0);
         if (bCaptured && Pixels.Num() > 0)
@@ -824,6 +849,57 @@ body { width: 100%; height: 100%; margin: 0; background-color: #162231; }
                 *RmlUiTests::ArtifactPath(TEXT("slate-rhi-direct.png"))));
         }
 
+        if (Stage == 0)
+        {
+            Stage = 1;
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+
+        if (Stage == 1)
+        {
+            Stage = 2;
+            bPerformanceWasEnabled = FRmlUiPerformance::IsEnabled();
+            FRmlUiPerformance::SetEnabled(true);
+            FRmlUiPerformance::Reset();
+            Window->Invalidate(EInvalidateWidgetReason::Paint);
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+
+        const FRmlUiPerformanceSnapshot ReplaySnapshot = FRmlUiPerformance::Snapshot();
+        const uint64 ReplayRhiDraws = ReplaySnapshot.WorkCount(
+            ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceWork::RhiDraws);
+        const uint64 ReplayRasterPasses = ReplaySnapshot.WorkCount(
+            ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceWork::RhiRasterPasses);
+        const uint64 ReplayMaskDraws = ReplaySnapshot.WorkCount(
+            ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceWork::RhiMaskDraws);
+        const uint64 ReplayClipBuilds = ReplaySnapshot.WorkCount(
+            ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceWork::RhiClipBuilds);
+        const uint64 ReplayStencilTextures = ReplaySnapshot.WorkCount(
+            ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceWork::StencilTextures);
+        Test->TestEqual(TEXT("outer-window repaint reuses cached RmlUi paint elements"),
+            ReplaySnapshot.CallCount(ERmlUiPerformanceBackend::Slate, ERmlUiPerformanceStage::OnPaint), uint64(0));
+        Test->TestTrue(TEXT("cached immutable submission replays native RHI draws"),
+            ReplayRhiDraws > 0);
+        Test->TestEqual(TEXT("cached replay reuses precompiled RHI draw groups"),
+            ReplaySnapshot.WorkCount(ERmlUiPerformanceBackend::Slate,
+                ERmlUiPerformanceWork::RhiGroupsCompiled), uint64(0));
+        Test->TestTrue(TEXT("consecutive equal clip chains share one RDG raster pass"),
+            ReplayRasterPasses > 0 && ReplayRasterPasses < ReplayRhiDraws);
+        Test->TestTrue(TEXT("each masked group builds its clip chain only once"),
+            ReplayClipBuilds > 0 && ReplayClipBuilds <= ReplayMaskDraws);
+        Test->TestTrue(TEXT("masked groups reuse a submission-local stencil scratch texture"),
+            ReplayStencilTextures > 0 && ReplayStencilTextures <= ReplayClipBuilds);
+        FRmlUiPerformance::SetEnabled(bPerformanceWasEnabled);
+        if (FParse::Param(FCommandLine::Get(), TEXT("RmlUiCaptureGpuProfile")))
+        {
+            Stage = 3;
+            IConsoleManager::Get().ProcessUserConsoleInput(TEXT("ProfileGPU"), *GLog, nullptr);
+            Window->Invalidate(EInvalidateWidgetReason::Paint);
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
         Widget->ShutdownNative();
         FlushRenderingCommands();
         Test->TestTrue(TEXT("Direct fixture releases its complete resource tree"),
@@ -838,8 +914,11 @@ private:
     FAutomationTestBase* Test;
     TSharedPtr<SWindow> Window;
     TSharedPtr<SRmlUiWidget> Widget;
+    TSharedPtr<SInvalidationPanel> CacheRoot;
     uint64 OwnerId = 0;
     double Start = 0;
+    int32 Stage = 0;
+    bool bPerformanceWasEnabled = false;
 };
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateRhiTest, "RmlUiUnreal.Slate.RhiDirectRendering",
@@ -848,6 +927,316 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateRhiTest, "RmlUiUnreal.Slate.RhiDirec
 bool FRmlUiSlateRhiTest::RunTest(const FString&)
 {
     AddCommand(new FRmlUiSlateRhiCapture(this));
+    return true;
+}
+
+class FRmlUiSlateRhiSetInverseCapture final : public IAutomationLatentCommand
+{
+public:
+    explicit FRmlUiSlateRhiSetInverseCapture(FAutomationTestBase* InTest) : Test(InTest) {}
+
+    virtual bool Update() override
+    {
+        if (!Window.IsValid())
+        {
+            const FString Document = TEXT(R"RML(
+<rml><head><style>
+body { width: 440px; height: 120px; margin: 0; background-color: #162231; }
+#inverse { display: block; position: absolute; left: 40px; top: 20px; width: 80px; height: 80px; overflow: hidden; border-radius: 24px; }
+#fill { display: block; width: 80px; height: 80px; background-color: #d94cff; }
+#inverse-chain { display: block; position: absolute; left: 200px; top: 20px; width: 80px; height: 80px; overflow: hidden; border-radius: 36px; }
+#inverse-chain-inner { display: block; width: 80px; height: 80px; overflow: hidden; border-radius: 14px; }
+#inverse-chain-fill { display: block; width: 80px; height: 80px; background-color: #32d9a0; }
+#outer-control { display: block; position: absolute; left: 320px; top: 20px; width: 80px; height: 80px; overflow: hidden; border-radius: 14px; }
+#outer-control-fill { display: block; width: 80px; height: 80px; background-color: #f5c542; }
+</style></head><body><div id="inverse"><div id="fill"></div></div><div id="inverse-chain"><div id="inverse-chain-inner"><div id="inverse-chain-fill"></div></div></div><div id="outer-control"><div id="outer-control-fill"></div></div></body></rml>
+)RML");
+            Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
+                .SourcePath(TEXT("/slate-rhi-set-inverse.rml")).DesiredSize(FVector2D(440, 120));
+            Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi Slate RHI SetInverse verification")))
+                .ClientSize(FVector2D(440, 120)).UseOSWindowBorder(false).CreateTitleBar(false)
+                .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
+                .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[Widget.ToSharedRef()];
+            FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+        if (FPlatformTime::Seconds() - Start < 1.0) return false;
+
+        FlushRenderingCommands();
+        TArray<FColor> Pixels;
+        FIntVector Size = FIntVector::ZeroValue;
+        const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Widget.ToSharedRef(), Pixels, Size);
+        Test->TestTrue(TEXT("Capture Slate RHI SetInverse output"),
+            bCaptured && Size.X == 440 && Size.Y == 120 && Pixels.Num() == Size.X * Size.Y);
+        Test->TestTrue(TEXT("SetInverse fixtures submit single and intersected RHI stencil masks"),
+            Widget->GetSlateRhiMaskCount() >= 4);
+        if (bCaptured && Pixels.Num() == Size.X * Size.Y)
+        {
+            const auto PixelAt = [&](int32 X, int32 Y) { return Pixels[Y * Size.X + X]; };
+            const FColor Center = PixelAt(80, 60);
+            const FColor Corner = PixelAt(42, 22);
+            const FColor ChainCenter = PixelAt(240, 60);
+            const FColor ChainOuterOnly = PixelAt(208, 32);
+            const FColor OuterControl = PixelAt(328, 32);
+            Test->TestTrue(TEXT("Control mask proves the inverse-intersect probe lies inside the first mask"),
+                RmlUiTests::NearRgb(OuterControl, FColor(245, 197, 66), 5));
+            const uint32 ChainFillNode = RmlUE_FindNode(Widget->GetNativeView(), "inverse-chain-fill");
+            TArray<int32> ChainOperations;
+            Test->TestTrue(TEXT("Read the nested clip operation chain"),
+                ChainFillNode != 0 && Widget->GetClipMaskOperationsForTesting(ChainFillNode, ChainOperations));
+            Test->TestEqual(TEXT("Nested clip operation count"), ChainOperations.Num(), 2);
+            if (ChainOperations.Num() == 2)
+            {
+                Test->TestEqual(TEXT("Nested clip first operation"), ChainOperations[0],
+                    Stage == 0 ? RMLUE_CLIP_MASK_SET : RMLUE_CLIP_MASK_SET_INVERSE);
+                Test->TestEqual(TEXT("Nested clip second operation"), ChainOperations[1],
+                    int32(RMLUE_CLIP_MASK_INTERSECT));
+            }
+            if (Stage == 0)
+            {
+                Test->TestTrue(TEXT("Set mask preserves its rounded center"),
+                    RmlUiTests::NearRgb(Center, FColor(217, 76, 255), 5));
+                Test->TestTrue(TEXT("Set mask removes its rounded corner"),
+                    RmlUiTests::NearRgb(Corner, FColor(22, 34, 49), 5));
+                Test->TestTrue(TEXT("Set plus Intersect preserves the nested center"),
+                    RmlUiTests::NearRgb(ChainCenter, FColor(50, 217, 160), 5));
+                Test->TestTrue(TEXT("Set plus Intersect removes pixels outside the inner rounded mask"),
+                    RmlUiTests::NearRgb(ChainOuterOnly, FColor(22, 34, 49), 5));
+            }
+            else
+            {
+                Test->TestTrue(TEXT("SetInverse mask removes its rounded center"),
+                    RmlUiTests::NearRgb(Center, FColor(22, 34, 49), 5));
+                Test->TestTrue(TEXT("SetInverse mask preserves the rectangular corner outside the rounded shape"),
+                    RmlUiTests::NearRgb(Corner, FColor(217, 76, 255), 5));
+                Test->TestTrue(TEXT("SetInverse plus Intersect rejects their shared center"),
+                    RmlUiTests::NearRgb(ChainCenter, FColor(22, 34, 49), 5));
+                Test->TestTrue(TEXT("SetInverse plus Intersect does not leak the inverse rejected region"),
+                    RmlUiTests::NearRgb(ChainOuterOnly, FColor(22, 34, 49), 5));
+                TArray64<uint8> Png;
+                FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
+                    TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+                Test->TestTrue(TEXT("Save Slate RHI SetInverse screenshot"), FFileHelper::SaveArrayToFile(Png,
+                    *RmlUiTests::ArtifactPath(TEXT("slate-rhi-set-inverse.png"))));
+            }
+        }
+
+        if (Stage == 0)
+        {
+            const uint32 InverseOwner = RmlUE_FindNode(Widget->GetNativeView(), "inverse");
+            const uint32 InverseChainOwner = RmlUE_FindNode(Widget->GetNativeView(), "inverse-chain-inner");
+            Test->TestTrue(TEXT("Find inverse clip owner"), InverseOwner != 0);
+            Test->TestTrue(TEXT("Find inverse-intersect clip owner"), InverseChainOwner != 0);
+            Test->TestTrue(TEXT("Override rounded clip operation with SetInverse"),
+                Widget->OverrideClipMaskOperationForTesting(InverseOwner, RMLUE_CLIP_MASK_SET_INVERSE));
+            Test->TestTrue(TEXT("Override the first operation in a nested clip chain with SetInverse"),
+                Widget->OverrideClipMaskOperationForTesting(InverseChainOwner, RMLUE_CLIP_MASK_SET_INVERSE));
+            Stage = 1;
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+
+        Widget->ShutdownNative();
+        FlushRenderingCommands();
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        Widget.Reset();
+        Window.Reset();
+        return true;
+    }
+
+private:
+    FAutomationTestBase* Test = nullptr;
+    TSharedPtr<SWindow> Window;
+    TSharedPtr<SRmlUiWidget> Widget;
+    double Start = 0;
+    int32 Stage = 0;
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateRhiSetInverseTest,
+    "RmlUiUnreal.Slate.RhiSetInversePixels",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiSlateRhiSetInverseTest::RunTest(const FString&)
+{
+    AddCommand(new FRmlUiSlateRhiSetInverseCapture(this));
+    return true;
+}
+
+class FRmlUiSlateRhiClipTopologyCapture final : public IAutomationLatentCommand
+{
+public:
+    explicit FRmlUiSlateRhiClipTopologyCapture(FAutomationTestBase* InTest) : Test(InTest) {}
+
+    virtual bool Update() override
+    {
+        if (!Window.IsValid())
+        {
+            const FString Document = TEXT(R"RML(
+<rml><head><style>
+body { width: 240px; height: 120px; margin: 0; background-color: #162231; }
+#topology-parent { display: block; position: absolute; left: 40px; top: 20px; width: 80px; height: 80px; overflow: hidden; border-radius: 24px; }
+#topology-fill { display: block; width: 120px; height: 80px; background-color: #32d9a0; }
+</style></head><body><div id="topology-parent"><div id="topology-fill"></div></div></body></rml>
+)RML");
+            Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).UsePaintCache(true).InlineDocument(Document)
+                .SourcePath(TEXT("/slate-rhi-clip-topology.rml")).DesiredSize(FVector2D(240, 120));
+            CacheRoot = SNew(SInvalidationPanel)[Widget.ToSharedRef()];
+            Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi Slate RHI clip topology verification")))
+                .ClientSize(FVector2D(240, 120)).UseOSWindowBorder(false).CreateTitleBar(false)
+                .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
+                .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)[CacheRoot.ToSharedRef()];
+            FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+        if (FPlatformTime::Seconds() - Start < 1.5) return false;
+
+        FlushRenderingCommands();
+        TArray<FColor> Pixels;
+        FIntVector Size = FIntVector::ZeroValue;
+        const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Widget.ToSharedRef(), Pixels, Size);
+        Test->TestTrue(TEXT("Capture dynamic clip-topology output"),
+            bCaptured && Size.X == 240 && Size.Y == 120 && Pixels.Num() == Size.X * Size.Y);
+        const uint32 FillNode = RmlUE_FindNode(Widget->GetNativeView(), "topology-fill");
+        TArray<int32> Operations;
+        const bool bHasClipChain = FillNode != 0 &&
+            Widget->GetClipMaskOperationsForTesting(FillNode, Operations);
+        if (Stage == 1)
+        {
+            Test->TestFalse(TEXT("Full record removes the child mask chain"), bHasClipChain);
+            Test->TestEqual(TEXT("Removed child mask chain is empty"), Operations.Num(), 0);
+        }
+        else
+        {
+            Test->TestTrue(TEXT("Full record contains the child mask chain"), bHasClipChain);
+            Test->TestEqual(TEXT("Rounded child mask chain has one operation"), Operations.Num(), 1);
+            if (Operations.Num() == 1)
+                Test->TestEqual(TEXT("Rounded child mask uses Set"), Operations[0], int32(RMLUE_CLIP_MASK_SET));
+        }
+        if (bCaptured && Pixels.Num() == Size.X * Size.Y)
+        {
+            const auto PixelAt = [&](int32 X, int32 Y) { return Pixels[Y * Size.X + X]; };
+            const FColor Background(22, 34, 49);
+            const FColor Fill(50, 217, 160);
+            Test->TestTrue(TEXT("Dynamic topology keeps the center content"),
+                RmlUiTests::NearRgb(PixelAt(80, 60), Fill, 5));
+            if (Stage == 1)
+            {
+                Test->TestTrue(TEXT("Removing overflow clipping exposes the rounded corner"),
+                    RmlUiTests::NearRgb(PixelAt(42, 22), Fill, 5));
+                Test->TestTrue(TEXT("Removing overflow clipping exposes child overflow"),
+                    RmlUiTests::NearRgb(PixelAt(140, 60), Fill, 5));
+            }
+            else
+            {
+                Test->TestTrue(TEXT("Rounded clipping removes the corner"),
+                    RmlUiTests::NearRgb(PixelAt(42, 22), Background, 5));
+                Test->TestTrue(TEXT("Overflow clipping removes child content outside the parent"),
+                    RmlUiTests::NearRgb(PixelAt(140, 60), Background, 5));
+            }
+            TArray64<uint8> Png;
+            FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
+                TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+            const TCHAR* ScreenshotName = Stage == 0 ? TEXT("slate-rhi-clip-topology-hidden.png") :
+                Stage == 1 ? TEXT("slate-rhi-clip-topology-visible.png") :
+                TEXT("slate-rhi-clip-topology-restored.png");
+            Test->TestTrue(TEXT("Save dynamic clip-topology screenshot"),
+                FFileHelper::SaveArrayToFile(Png, *RmlUiTests::ArtifactPath(ScreenshotName)));
+        }
+        Test->TestTrue(TEXT("Dynamic clip topology remains eligible for Slate paint caching"),
+            Widget->GetSlatePaintCacheRejectReason() == ERmlUiPaintCacheRejectReason::None &&
+            Widget->IsSlatePaintCacheEligible());
+        Test->TestTrue(TEXT("Dynamic clip topology reaches a fresh ready paint cache"),
+            Widget->IsSlatePaintCacheReady());
+
+        if (Stage > 0)
+        {
+            const FRmlUiPerformanceSnapshot Snapshot = FRmlUiPerformance::Snapshot();
+            const auto Work = [&](ERmlUiPerformanceWork Counter)
+            {
+                return Snapshot.WorkCount(ERmlUiPerformanceBackend::Slate, Counter);
+            };
+            Test->TestTrue(TEXT("Topology mutation records a complete Slate command frame"),
+                Work(ERmlUiPerformanceWork::SlateFullFrameRecords) >= static_cast<uint64>(Stage));
+            Test->TestEqual(TEXT("Each topology mutation is counted exactly once"),
+                Work(ERmlUiPerformanceWork::SlateClipTopologyChanges), static_cast<uint64>(Stage));
+            Test->TestTrue(TEXT("Topology rebuild accounts decoded draw records"),
+                Work(ERmlUiPerformanceWork::SlateClipTopologyDrawsDecoded) > 0);
+            Test->TestTrue(TEXT("Topology rebuild accounts its decode cycles"),
+                Work(ERmlUiPerformanceWork::SlateClipTopologyDecodeCycles) > 0);
+            Test->TestTrue(TEXT("Removing clipping records the prior mask references"),
+                Work(ERmlUiPerformanceWork::SlateClipTopologyMaskRefsBefore) > 0);
+            if (Stage == 1)
+            {
+                Test->TestEqual(TEXT("Unclipped topology records no resulting mask references"),
+                    Work(ERmlUiPerformanceWork::SlateClipTopologyMaskRefsAfter), uint64(0));
+            }
+            else
+            {
+                Test->TestTrue(TEXT("Restored topology records resulting mask references"),
+                    Work(ERmlUiPerformanceWork::SlateClipTopologyMaskRefsAfter) > 0);
+                Test->AddInfo(FString::Printf(
+                    TEXT("clip topology metrics: full_records=%llu changes=%llu draws=%llu mask_refs_before=%llu mask_refs_after=%llu decode_ms=%.6f"),
+                    Work(ERmlUiPerformanceWork::SlateFullFrameRecords),
+                    Work(ERmlUiPerformanceWork::SlateClipTopologyChanges),
+                    Work(ERmlUiPerformanceWork::SlateClipTopologyDrawsDecoded),
+                    Work(ERmlUiPerformanceWork::SlateClipTopologyMaskRefsBefore),
+                    Work(ERmlUiPerformanceWork::SlateClipTopologyMaskRefsAfter),
+                    FPlatformTime::ToMilliseconds64(
+                        Work(ERmlUiPerformanceWork::SlateClipTopologyDecodeCycles))));
+            }
+        }
+
+        if (Stage == 0)
+        {
+            bPerformanceWasEnabled = FRmlUiPerformance::IsEnabled();
+            FRmlUiPerformance::SetEnabled(true);
+            FRmlUiPerformance::Reset();
+            Test->TestTrue(TEXT("Remove overflow clipping at runtime"),
+                Widget->SetElementProperty(TEXT("topology-parent"), TEXT("overflow"), TEXT("visible")));
+            Stage = 1;
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+        if (Stage == 1)
+        {
+            Test->TestTrue(TEXT("Restore overflow clipping at runtime"),
+                Widget->SetElementProperty(TEXT("topology-parent"), TEXT("overflow"), TEXT("hidden")));
+            Stage = 2;
+            Start = FPlatformTime::Seconds();
+            return false;
+        }
+
+        FRmlUiPerformance::SetEnabled(bPerformanceWasEnabled);
+        Widget->ShutdownNative();
+        FlushRenderingCommands();
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        CacheRoot.Reset();
+        Widget.Reset();
+        Window.Reset();
+        return true;
+    }
+
+private:
+    FAutomationTestBase* Test = nullptr;
+    TSharedPtr<SWindow> Window;
+    TSharedPtr<SRmlUiWidget> Widget;
+    TSharedPtr<SInvalidationPanel> CacheRoot;
+    double Start = 0;
+    int32 Stage = 0;
+    bool bPerformanceWasEnabled = false;
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiSlateRhiClipTopologyTest,
+    "RmlUiUnreal.Slate.RhiClipTopologyPixels",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiSlateRhiClipTopologyTest::RunTest(const FString&)
+{
+    AddCommand(new FRmlUiSlateRhiClipTopologyCapture(this));
     return true;
 }
 
@@ -911,6 +1300,17 @@ img { display: block; position: absolute; top: 24px; width: 256px; height: 128px
             SlateWidget.IsValid() && SlateWidget->GetFrameNumber() > 0 && SlateWidget->GetLastError().IsEmpty());
         Test->TestTrue(TEXT("SDR color fixture resolves the parameterized UE material"),
             SlateWidget.IsValid() && SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) > 0);
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 8
+        Test->TestTrue(TEXT("UE 5.7 rejects colored translucent textures from Slate paint caching"),
+            SlateWidget.IsValid() && SlateWidget->GetSlatePaintCacheRejectReason() ==
+                ERmlUiPaintCacheRejectReason::LegacyColoredTranslucentTexture);
+        Test->TestTrue(TEXT("UE 5.7 keeps the SDR fixture on the custom RHI path"),
+            SlateWidget.IsValid() && !SlateWidget->IsSlatePaintCacheEligible());
+#else
+        Test->TestTrue(TEXT("UE 5.8 accepts the SDR fixture for Slate paint caching"),
+            SlateWidget.IsValid() && SlateWidget->GetSlatePaintCacheRejectReason() ==
+                ERmlUiPaintCacheRejectReason::None && SlateWidget->IsSlatePaintCacheEligible());
+#endif
 
         FlushRenderingCommands();
         UTexture2D* UploadedTexture = Cast<UTexture2D>(
@@ -1035,7 +1435,9 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
 #border { display: block; width: 104px; height: 72px; border: 12px transparent; border-radius: 22px; decorator: ue-material-border(texture.dynamic); }
 #multi-wrap { display: block; position: absolute; left: 400px; top: 176px; width: 84px; opacity: 0.5; }
 #multi { font-family: LatoLatin; font-size: 28px; line-height: 40px; color: transparent; decorator: ue-material(texture.dynamic); }
-</style></head><body><div id="full" class="panel"></div><div id="faded-parent"><div id="faded" class="panel"></div></div><div id="opaque-parent"><div id="opaque"></div></div><div id="transformed"></div><div id="border-parent"><div id="border"></div></div><div id="multi-wrap"><span id="multi">AAAA AAAA</span></div></body></rml>
+#material-clip { display: block; position: absolute; left: 520px; top: 176px; width: 96px; height: 80px; overflow: hidden; border-radius: 18px; }
+#material-clip-panel { display: block; width: 128px; height: 96px; decorator: ue-material(texture.dynamic); }
+</style></head><body><div id="full" class="panel"></div><div id="faded-parent"><div id="faded" class="panel"></div></div><div id="opaque-parent"><div id="opaque"></div></div><div id="transformed"></div><div id="border-parent"><div id="border"></div></div><div id="multi-wrap"><span id="multi">AAAA AAAA</span></div><div id="material-clip"><div id="material-clip-panel"></div></div></body></rml>
 )RML");
 
             Widget.Reset(NewObject<URmlUiWidget>());
@@ -1076,11 +1478,13 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
         Test->TestTrue(TEXT("Material texture fixture rendered without document errors"),
             SlateWidget->GetFrameNumber() > 0 && SlateWidget->GetLastError().IsEmpty());
         Test->TestTrue(TEXT("Material texture fixture resolves background material slots"),
-            SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) >= 5);
+            SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BACKGROUND) >= 6);
         Test->TestTrue(TEXT("Material texture fixture resolves the border material slot"),
             SlateWidget->GetResolvedMaterialDrawCount(RMLUE_MATERIAL_SLOT_BORDER) >= 1);
         Test->TestTrue(TEXT("Complex material opacity is split into native Slate sections"),
             SlateWidget->GetSlateMaterialOpacitySectionDrawCount() >= 4);
+        Test->TestTrue(TEXT("Rounded material fixture submits a clipped Slate material draw"),
+            SlateWidget->GetSlateMaterialClipDrawCount() >= 1);
         Test->TestTrue(TEXT("Opaque material opacity loss is reported through the feature mask"),
             (SlateWidget->GetUnsupportedSlateFeatures() & RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY) != 0);
         Test->TestEqual(TEXT("Fixture raises no unrelated unsupported feature bits"),
@@ -1160,6 +1564,10 @@ html, body { display: block; width: 640px; height: 320px; margin: 0; background-
                 RmlUiTests::NearRgb(PixelAt(410, 190), ExpectedComplexFaded, 12));
             Test->TestTrue(TEXT("Second fragmented inline material box keeps inherited opacity"),
                 RmlUiTests::NearRgb(PixelAt(410, 230), ExpectedComplexFaded, 12));
+            Test->TestTrue(TEXT("Rounded material clip preserves its center"),
+                RmlUiTests::NearRgb(PixelAt(568, 216), ActiveColor, 12));
+            Test->TestTrue(TEXT("Rounded material clip removes its corner"),
+                RmlUiTests::NearRgb(PixelAt(521, 177), BackgroundColor, 6));
 
             TArray64<uint8> Png;
             FImageUtils::PNGCompressImageArray(Size.X, Size.Y,

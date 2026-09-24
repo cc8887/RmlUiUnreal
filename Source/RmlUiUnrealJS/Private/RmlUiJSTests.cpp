@@ -48,10 +48,10 @@ void AppendPackedValue(TArray<uint8>& Bytes, const T& Value)
     FMemory::Memcpy(Bytes.GetData() + Offset, &Value, sizeof(T));
 }
 
-void AppendPackedHeader(TArray<uint8>& Bytes, uint32 Magic, uint32 Count)
+void AppendPackedHeader(TArray<uint8>& Bytes, uint32 Magic, uint32 Count, uint16 Version = 1)
 {
     AppendPackedValue(Bytes, Magic);
-    AppendPackedValue(Bytes, static_cast<uint16>(1));
+    AppendPackedValue(Bytes, Version);
     AppendPackedValue(Bytes, static_cast<uint16>(0));
     AppendPackedValue(Bytes, Count);
 }
@@ -183,8 +183,11 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
     const char* Document =
         "<rml><head><style>body{margin:0;width:320px;height:200px;}"
         "#keyframe-target,.stagger-target{display:block;width:100px;height:50px;"
-        "background-color:#fff;opacity:1;}</style></head>"
-        "<body><div id='keyframe-target'/><div class='stagger-target'/><div class='stagger-target'/></body></rml>";
+        "background-color:#fff;opacity:1;}"
+        "#overshoot-target{display:block;width:100px;height:50px;"
+        "background-color:#fff;opacity:0;}</style></head>"
+        "<body><div id='keyframe-target'/><div class='stagger-target'/><div class='stagger-target'/>"
+        "<div id='overshoot-target'/></body></rml>";
     if (!TestTrue(TEXT("load keyframe bridge document"),
         RmlUE_LoadDocumentFromMemory(View, Document, "keyframe-bridge.rml") != 0))
     {
@@ -229,6 +232,8 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
     TestFalse(TEXT("structured result exposes an opaque string handle"), InitialHandle.IsEmpty());
     const uint32 Node = static_cast<uint32>(Context->FindNode(TEXT("keyframe-target")));
     TestTrue(TEXT("keyframe bridge target exists"), Node != 0);
+    const uint32 OvershootNode = static_cast<uint32>(Context->FindNode(TEXT("overshoot-target")));
+    TestTrue(TEXT("keyframe bridge overshoot target exists"), OvershootNode != 0);
     const TSharedPtr<FJsonObject> Snapshot = ParseAnimationResult(
         Context->ResolveAnimationHostSnapshot(FString::Printf(
             TEXT("{\"targets\":[%u,\"#keyframe-target\"],")
@@ -365,6 +370,30 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
     TestEqual(TEXT("natural completion releases adapter binding"),
         AnimationRuntime.GetBindingCount(), BindingsBefore);
 
+    const FString OvershootFrames =
+        TEXT("[{\"offset\":0,\"value\":0},")
+        TEXT("{\"offset\":1,\"value\":1,\"easing\":\"cubic-bezier(0.16,1.32,0.3,1)\"}]");
+    const TSharedPtr<FJsonObject> OvershootResult = ParseAnimationResult(
+        Context->StartNodeKeyframeAnimation(
+            OvershootNode, TEXT("opacity"), OvershootFrames, TEXT("{\"duration\":1}")));
+    FString OvershootHandle;
+    if (OvershootResult.IsValid()) OvershootResult->TryGetStringField(TEXT("handle"), OvershootHandle);
+    TestTrue(TEXT("overshoot opacity animation starts"),
+        OvershootResult.IsValid() && OvershootResult->GetBoolField(TEXT("accepted")) &&
+        !OvershootHandle.IsEmpty());
+    AnimationRuntime.Advance(0.75f);
+    RmlUE_SlateFrame OvershootFrame{};
+    float OvershootOpacity = 0.0f;
+    TestTrue(TEXT("overshoot opacity is clamped at the visual commit boundary"),
+        RmlUE_RenderSlate(View, &OvershootFrame) != 0 &&
+        FindSlateOpacity(OvershootFrame, OvershootNode, OvershootOpacity) &&
+        FMath::IsFinite(OvershootOpacity) &&
+        FMath::IsNearlyEqual(OvershootOpacity, 1.0f, 0.001f));
+    const TSharedPtr<FJsonObject> OvershootCancel = ParseAnimationResult(
+        Context->ControlAnimation(OvershootHandle, TEXT("cancel"), 0.0));
+    TestTrue(TEXT("overshoot opacity animation cancels cleanly"),
+        OvershootCancel.IsValid() && OvershootCancel->GetBoolField(TEXT("accepted")));
+
     const FString InvalidAnimationBatch = Context->StartNodeKeyframeAnimationBatch(
         FString::Printf(
             TEXT("[{")
@@ -372,7 +401,7 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
             TEXT("\"keyframes\":[{\"offset\":0,\"value\":0},{\"offset\":1,\"value\":1}],")
             TEXT("\"options\":{\"duration\":0.2}")
             TEXT("},{")
-            TEXT("\"node\":%u,\"property\":\"width\",")
+            TEXT("\"node\":%u,\"property\":\"color\",")
             TEXT("\"keyframes\":[{\"offset\":0,\"value\":\"10px\"},{\"offset\":1,\"value\":\"20px\"}],")
             TEXT("\"options\":{\"duration\":0.2}")
             TEXT("}]"), Node, Node));
@@ -382,7 +411,7 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         InvalidAnimationBatchObject.IsValid() &&
         !InvalidAnimationBatchObject->GetBoolField(TEXT("accepted")) &&
         InvalidAnimationBatchObject->GetIntegerField(TEXT("failedIndex")) == 1 &&
-        InvalidAnimationBatchObject->GetStringField(TEXT("error")) == TEXT("unsupported_property"));
+        InvalidAnimationBatchObject->GetStringField(TEXT("error")) == TEXT("invalid_color_value"));
     TestEqual(TEXT("rejected animation batch rolls back prepared definitions"),
         AnimationRuntime.GetDefinitionCount(), DefinitionsBefore);
     TestEqual(TEXT("rejected animation batch rolls back prepared bindings"),
@@ -400,22 +429,28 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
             TEXT("\"node\":%u,\"property\":\"transform\",")
             TEXT("\"keyframes\":[{\"offset\":0,\"value\":\"scale(1)\"},{\"offset\":1,\"value\":\"scale(2)\"}],")
             TEXT("\"options\":{\"duration\":0.2}")
-            TEXT("}]"), Node, Node));
+            TEXT("},{")
+            TEXT("\"node\":%u,\"property\":\"left\",")
+            TEXT("\"keyframes\":[{\"offset\":0,\"value\":\"0px\"},{\"offset\":1,\"value\":\"20px\"}],")
+            TEXT("\"options\":{\"duration\":0.2}")
+            TEXT("}]"), Node, Node, Node));
     const TSharedPtr<FJsonObject> ValidAnimationBatchObject =
         ParseAnimationResult(ValidAnimationBatch);
     TestTrue(TEXT("animation batch starts all prepared tracks"),
         ValidAnimationBatchObject.IsValid() &&
         ValidAnimationBatchObject->GetBoolField(TEXT("accepted")) &&
-        ValidAnimationBatchObject->GetArrayField(TEXT("handles")).Num() == 2);
+        ValidAnimationBatchObject->GetArrayField(TEXT("handles")).Num() == 3);
     TestEqual(TEXT("animation batch retains one definition per track"),
-        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore + 2);
+        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore + 3);
     TestEqual(TEXT("animation batch retains one binding per track"),
-        AnimationRuntime.GetBindingCount(), BindingsBefore + 2);
-    TestEqual(TEXT("animation batch starts both ECS entities together"),
-        AnimationRuntime.GetActiveAnimationCount(), ActiveBefore + 2);
+        AnimationRuntime.GetBindingCount(), BindingsBefore + 3);
+    TestEqual(TEXT("animation batch starts all ECS entities together"),
+        AnimationRuntime.GetActiveAnimationCount(), ActiveBefore + 3);
     AnimationRuntime.Advance(0.1f);
     TestEqual(TEXT("animation batch tracks remain active at the shared midpoint"),
-        AnimationRuntime.GetActiveAnimationCount(), ActiveBefore + 2);
+        AnimationRuntime.GetActiveAnimationCount(), ActiveBefore + 3);
+    TestTrue(TEXT("native px layout track commits through the typed property sink"),
+        Context->GetComputedProperty(Node, TEXT("left")).StartsWith(TEXT("10")));
     AnimationRuntime.Advance(0.1f);
     TestEqual(TEXT("animation batch tracks complete on the same runtime step"),
         AnimationRuntime.GetActiveAnimationCount(), ActiveBefore);
@@ -500,15 +535,32 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         Context->GetComputedProperty(Node, TEXT("width")), FString(TEXT("123px")));
     const TSharedPtr<FJsonObject> InvalidBatch = ParseAnimationResult(
         Context->ApplyNodePropertyBatch(
-            TEXT("[{\"node\":2147483647,\"property\":\"width\",\"value\":\"1px\"}]")));
+            FString::Printf(
+                TEXT("[{\"node\":%u,\"property\":\"width\",\"value\":\"1px\"},")
+                TEXT("{\"node\":2147483647,\"property\":\"width\",\"value\":\"1px\"}]"),
+                Node)));
     TestTrue(TEXT("property batch rejects stale targets before applying"),
         InvalidBatch.IsValid() && !InvalidBatch->GetBoolField(TEXT("accepted")) &&
         InvalidBatch->GetIntegerField(TEXT("applied")) == 0 &&
-        InvalidBatch->GetStringField(TEXT("error")) == TEXT("stale_property_target"));
+        InvalidBatch->GetStringField(TEXT("error")) == TEXT("stale_property_target") &&
+        InvalidBatch->GetArrayField(TEXT("failedIndices")).Num() == 1 &&
+        InvalidBatch->GetArrayField(TEXT("failedIndices"))[0]->AsNumber() == 1.0);
+    TestEqual(TEXT("stale target rejection preserves batch atomicity"),
+        Context->GetComputedProperty(Node, TEXT("width")), FString(TEXT("123px")));
 
     const FString MixedTransform =
         TEXT("[{\"offset\":0,\"value\":\"translate(0px,0px)\"},")
         TEXT("{\"offset\":1,\"value\":\"rotate(90deg)\"}]");
+    const FString CompositeTransform =
+        TEXT("[{\"offset\":0,\"value\":\"translate(0px,0px) scale(3,3) rotate(180deg)\"},")
+        TEXT("{\"offset\":1,\"value\":\"translate(0px,0px) scale(1,1) rotate(0deg)\"}]");
+    const TSharedPtr<FJsonObject> CompositeResult = ParseAnimationResult(
+        Context->StartNodeKeyframeAnimation(
+            Node, TEXT("transform"), CompositeTransform, TEXT("{\"duration\":1}")));
+    TestTrue(TEXT("synchronized transform components start as one native track"),
+        CompositeResult.IsValid() && CompositeResult->GetBoolField(TEXT("accepted")));
+    if (CompositeResult.IsValid())
+        Context->ControlAnimation(CompositeResult->GetStringField(TEXT("handle")), TEXT("cancel"), 0.0);
     const TSharedPtr<FJsonObject> MixedResult = ParseAnimationResult(
         Context->StartNodeKeyframeAnimation(
             Node, TEXT("transform"), MixedTransform, TEXT("{\"duration\":1}")));
@@ -520,12 +572,33 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         Context->StartNodeKeyframeAnimation(
             Node, TEXT("opacity"), ReplacementFrames,
             TEXT("{\"duration\":1,\"fill\":\"none\"}")));
-    TestTrue(TEXT("unsupported fill returns a diagnostic instead of silently changing semantics"),
-        FillResult.IsValid() &&
-        FillResult->GetStringField(TEXT("error")) == TEXT("unsupported_fill"));
+    TestTrue(TEXT("fill none starts through the native lifecycle path"),
+        FillResult.IsValid() && FillResult->GetBoolField(TEXT("accepted")));
+    if (FillResult.IsValid() && FillResult->GetBoolField(TEXT("accepted")))
+        Context->ControlAnimation(FillResult->GetStringField(TEXT("handle")), TEXT("cancel"), 0.0);
+
+    const FString StepsFrames =
+        TEXT("[{\"offset\":0,\"value\":0,\"easing\":\"steps(4, jump-end)\"},")
+        TEXT("{\"offset\":1,\"value\":1}]");
+    const TSharedPtr<FJsonObject> StepsResult = ParseAnimationResult(
+        Context->StartNodeKeyframeAnimation(
+            Node, TEXT("opacity"), StepsFrames, TEXT("{\"duration\":1}")));
+    TestTrue(TEXT("steps easing starts through the native JSON path"),
+        StepsResult.IsValid() && StepsResult->GetBoolField(TEXT("accepted")));
+    if (StepsResult.IsValid() && StepsResult->GetBoolField(TEXT("accepted")))
+        Context->ControlAnimation(StepsResult->GetStringField(TEXT("handle")), TEXT("cancel"), 0.0);
+    const FString InvalidStepsFrames =
+        TEXT("[{\"offset\":0,\"value\":0,\"easing\":\"steps(1, jump-none)\"},")
+        TEXT("{\"offset\":1,\"value\":1}]");
+    const TSharedPtr<FJsonObject> InvalidStepsResult = ParseAnimationResult(
+        Context->StartNodeKeyframeAnimation(
+            Node, TEXT("opacity"), InvalidStepsFrames, TEXT("{\"duration\":1}")));
+    TestTrue(TEXT("steps jump-none requires at least two steps"),
+        InvalidStepsResult.IsValid() && !InvalidStepsResult->GetBoolField(TEXT("accepted")) &&
+        InvalidStepsResult->GetStringField(TEXT("error")) == TEXT("unsupported_easing"));
 
     TArray<uint8> PlanBytes;
-    AppendPackedHeader(PlanBytes, 0x31504152, 1);
+    AppendPackedHeader(PlanBytes, 0x31504152, 1, 3);
     AppendPackedValue(PlanBytes, static_cast<uint8>(ERmlUiAnimatedProperty::Opacity));
     AppendPackedValue(PlanBytes, static_cast<uint8>(ERmlUiAnimationDirection::Normal));
     AppendPackedValue(PlanBytes, static_cast<uint16>(2));
@@ -533,7 +606,10 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
     AppendPackedValue(PlanBytes, 0.1);
     AppendPackedValue(PlanBytes, 0.0);
     AppendPackedValue(PlanBytes, 1.0);
-    const auto AppendLinearOpacityKeyframe = [](TArray<uint8>& Bytes, float Offset, float Value)
+    AppendPackedValue(PlanBytes, static_cast<uint8>(ERmlUiAnimationFillMode::Both));
+    for (int32 Reserved = 0; Reserved < 7; ++Reserved)
+        AppendPackedValue(PlanBytes, static_cast<uint8>(0));
+    const auto AppendLinearFloatKeyframe = [](TArray<uint8>& Bytes, float Offset, float Value)
     {
         AppendPackedValue(Bytes, Offset);
         AppendPackedValue(Bytes, Value);
@@ -546,8 +622,17 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         AppendPackedValue(Bytes, 1.0f);
         AppendPackedValue(Bytes, 1.0f);
     };
-    AppendLinearOpacityKeyframe(PlanBytes, 0.0f, 0.25f);
-    AppendLinearOpacityKeyframe(PlanBytes, 1.0f, 1.0f);
+    AppendPackedValue(PlanBytes, 0.0f);
+    AppendPackedValue(PlanBytes, 0.25f);
+    AppendPackedValue(PlanBytes, static_cast<uint8>(ERmlUiAnimationEasingType::Steps));
+    AppendPackedValue(PlanBytes, static_cast<uint8>(0));
+    AppendPackedValue(PlanBytes, static_cast<uint8>(0));
+    AppendPackedValue(PlanBytes, static_cast<uint8>(0));
+    AppendPackedValue(PlanBytes, 4.0f);
+    AppendPackedValue(PlanBytes, static_cast<float>(ERmlUiAnimationStepPosition::JumpEnd));
+    AppendPackedValue(PlanBytes, 0.0f);
+    AppendPackedValue(PlanBytes, 0.0f);
+    AppendLinearFloatKeyframe(PlanBytes, 1.0f, 1.0f);
     FArrayBuffer PlanPayload;
     PlanPayload.Data = PlanBytes.GetData();
     PlanPayload.Length = PlanBytes.Num();
@@ -568,6 +653,15 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         RegisteredPlanStats.IsValid() &&
         RegisteredPlanStats->GetIntegerField(TEXT("activePlans")) == 1 &&
         RegisteredPlanStats->GetNumberField(TEXT("allocatedBytes")) > 0.0);
+    if (RegisteredPlanStats.IsValid())
+    {
+        const TSharedPtr<FJsonObject> PlansByCost =
+            RegisteredPlanStats->GetObjectField(TEXT("plansByCost"));
+        TestTrue(TEXT("compiled opacity plan is classified as visual"),
+            PlansByCost.IsValid() && PlansByCost->GetIntegerField(TEXT("visual")) == 1 &&
+            PlansByCost->GetIntegerField(TEXT("layoutPosition")) == 0 &&
+            PlansByCost->GetIntegerField(TEXT("layoutSize")) == 0);
+    }
 
     TArray<uint8> StartBytes;
     AppendPackedHeader(StartBytes, 0x31494152, 1);
@@ -588,7 +682,20 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         CompiledStart->GetArrayField(TEXT("handles")).Num() == 1);
     TestEqual(TEXT("compiled start creates one binding"),
         AnimationRuntime.GetBindingCount(), BindingsBefore + 1);
-    AnimationRuntime.Advance(0.11f);
+    AnimationRuntime.Advance(0.024f);
+    RmlUE_SlateFrame PackedStepsBeforeFrame{};
+    float PackedStepsOpacity = 0.0f;
+    TestTrue(TEXT("RAP3 steps remains on the old value before its boundary"),
+        RmlUE_RenderSlate(View, &PackedStepsBeforeFrame) != 0 &&
+        FindSlateOpacity(PackedStepsBeforeFrame, Node, PackedStepsOpacity) &&
+        FMath::IsNearlyEqual(PackedStepsOpacity, 0.25f, 0.001f));
+    AnimationRuntime.Advance(0.002f);
+    RmlUE_SlateFrame PackedStepsBoundaryFrame{};
+    TestTrue(TEXT("RAP3 steps changes after crossing its boundary"),
+        RmlUE_RenderSlate(View, &PackedStepsBoundaryFrame) != 0 &&
+        FindSlateOpacity(PackedStepsBoundaryFrame, Node, PackedStepsOpacity) &&
+        FMath::IsNearlyEqual(PackedStepsOpacity, 0.4375f, 0.001f));
+    AnimationRuntime.Advance(0.075f);
     TestEqual(TEXT("compiled completion releases its binding"),
         AnimationRuntime.GetBindingCount(), BindingsBefore);
     TestEqual(TEXT("compiled completion retains the cached definition"),
@@ -620,6 +727,93 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
         StalePlanStart.IsValid() && !StalePlanStart->GetBoolField(TEXT("accepted")) &&
         StalePlanStart->GetStringField(TEXT("error")) == TEXT("stale_plan_handle"));
 
+    TArray<uint8> LayoutPlanBytes;
+    AppendPackedHeader(LayoutPlanBytes, 0x31504152, 1);
+    AppendPackedValue(LayoutPlanBytes, static_cast<uint8>(ERmlUiAnimatedProperty::LeftPx));
+    AppendPackedValue(LayoutPlanBytes, static_cast<uint8>(ERmlUiAnimationDirection::Normal));
+    AppendPackedValue(LayoutPlanBytes, static_cast<uint16>(2));
+    AppendPackedValue(LayoutPlanBytes, static_cast<uint32>(1));
+    AppendPackedValue(LayoutPlanBytes, 0.1);
+    AppendPackedValue(LayoutPlanBytes, 0.0);
+    AppendPackedValue(LayoutPlanBytes, 1.0);
+    AppendLinearFloatKeyframe(LayoutPlanBytes, 0.0f, -20.0f);
+    AppendLinearFloatKeyframe(LayoutPlanBytes, 1.0f, 20.0f);
+    FArrayBuffer LayoutPlanPayload;
+    LayoutPlanPayload.Data = LayoutPlanBytes.GetData();
+    LayoutPlanPayload.Length = LayoutPlanBytes.Num();
+    const TSharedPtr<FJsonObject> LayoutPlanRegistration = ParseAnimationResult(
+        Context->RegisterAnimationPlansPacked(LayoutPlanPayload));
+    FString LayoutPlanHandleText;
+    if (LayoutPlanRegistration.IsValid() &&
+        LayoutPlanRegistration->GetArrayField(TEXT("handles")).Num() == 1)
+    {
+        LayoutPlanHandleText = LayoutPlanRegistration->GetArrayField(TEXT("handles"))[0]->AsString();
+    }
+    uint64 LayoutPlanHandle = 0;
+    LexTryParseString(LayoutPlanHandle, *LayoutPlanHandleText);
+    TestTrue(TEXT("packed px layout plan registers"),
+        LayoutPlanRegistration.IsValid() &&
+        LayoutPlanRegistration->GetBoolField(TEXT("accepted")) && LayoutPlanHandle != 0);
+    const TSharedPtr<FJsonObject> LayoutPlanStats = ParseAnimationResult(
+        Context->GetAnimationPlanCacheStats());
+    if (LayoutPlanStats.IsValid())
+    {
+        const TSharedPtr<FJsonObject> PlansByCost = LayoutPlanStats->GetObjectField(TEXT("plansByCost"));
+        TestTrue(TEXT("compiled left plan is classified as layout position"),
+            PlansByCost.IsValid() && PlansByCost->GetIntegerField(TEXT("visual")) == 0 &&
+            PlansByCost->GetIntegerField(TEXT("layoutPosition")) == 1 &&
+            PlansByCost->GetIntegerField(TEXT("layoutSize")) == 0);
+    }
+
+    TArray<uint8> LayoutStartBytes;
+    AppendPackedHeader(LayoutStartBytes, 0x31494152, 1);
+    AppendPackedValue(LayoutStartBytes, static_cast<uint32>(LayoutPlanHandle));
+    AppendPackedValue(LayoutStartBytes, static_cast<uint32>(LayoutPlanHandle >> 32));
+    AppendPackedValue(LayoutStartBytes, Node);
+    AppendPackedValue(LayoutStartBytes, static_cast<int32>(0));
+    AppendPackedValue(LayoutStartBytes, static_cast<uint8>(0));
+    for (int32 Reserved = 0; Reserved < 7; ++Reserved)
+        AppendPackedValue(LayoutStartBytes, static_cast<uint8>(0));
+    FArrayBuffer LayoutStartPayload;
+    LayoutStartPayload.Data = LayoutStartBytes.GetData();
+    LayoutStartPayload.Length = LayoutStartBytes.Num();
+    const TSharedPtr<FJsonObject> LayoutCompiledStart = ParseAnimationResult(
+        Context->StartCompiledAnimationBatchPacked(LayoutStartPayload));
+    TestTrue(TEXT("packed px layout plan starts on the native path"),
+        LayoutCompiledStart.IsValid() && LayoutCompiledStart->GetBoolField(TEXT("accepted")));
+    const TSharedPtr<FJsonObject> ActiveLayoutStats = ParseAnimationResult(
+        Context->GetAnimationRuntimeStats());
+    TestTrue(TEXT("active packed left track is visible in per-view cost statistics"),
+        ActiveLayoutStats.IsValid() &&
+        ActiveLayoutStats->GetIntegerField(TEXT("activeTracks")) == 1 &&
+        ActiveLayoutStats->GetIntegerField(TEXT("visual")) == 0 &&
+        ActiveLayoutStats->GetIntegerField(TEXT("layoutPosition")) == 1 &&
+        ActiveLayoutStats->GetIntegerField(TEXT("layoutSize")) == 0);
+    AnimationRuntime.Advance(0.05f);
+    TestTrue(TEXT("packed px layout plan commits its midpoint"),
+        Context->GetComputedProperty(Node, TEXT("left")).StartsWith(TEXT("0")));
+    AnimationRuntime.Advance(0.06f);
+    const TSharedPtr<FJsonObject> CompletedLayoutStats = ParseAnimationResult(
+        Context->GetAnimationRuntimeStats());
+    TestTrue(TEXT("completed packed layout track leaves no active cost statistics"),
+        CompletedLayoutStats.IsValid() &&
+        CompletedLayoutStats->GetIntegerField(TEXT("activeTracks")) == 0);
+
+    TArray<uint8> LayoutReleaseBytes;
+    AppendPackedHeader(LayoutReleaseBytes, 0x31524152, 1);
+    AppendPackedValue(LayoutReleaseBytes, static_cast<uint32>(LayoutPlanHandle));
+    AppendPackedValue(LayoutReleaseBytes, static_cast<uint32>(LayoutPlanHandle >> 32));
+    FArrayBuffer LayoutReleasePayload;
+    LayoutReleasePayload.Data = LayoutReleaseBytes.GetData();
+    LayoutReleasePayload.Length = LayoutReleaseBytes.Num();
+    const TSharedPtr<FJsonObject> LayoutPlanRelease = ParseAnimationResult(
+        Context->ReleaseAnimationPlansPacked(LayoutReleasePayload));
+    TestTrue(TEXT("packed px layout plan releases"),
+        LayoutPlanRelease.IsValid() && LayoutPlanRelease->GetBoolField(TEXT("accepted")) &&
+        LayoutPlanRelease->GetIntegerField(TEXT("released")) == 1);
+    TestEqual(TEXT("packed px layout plan leaves no retained definition"),
+        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore);
+
     Context->CompiledAnimationPlanResidentLimitBytes = 1024;
     TArray<uint8> OversizedPlanBytes;
     AppendPackedHeader(OversizedPlanBytes, 0x31504152, 1);
@@ -631,7 +825,7 @@ bool FRmlKeyframeAnimationBridgeTest::RunTest(const FString&)
     AppendPackedValue(OversizedPlanBytes, 0.0);
     AppendPackedValue(OversizedPlanBytes, 1.0);
     for (int32 Index = 0; Index < 8; ++Index)
-        AppendLinearOpacityKeyframe(OversizedPlanBytes, Index / 7.0f, Index / 7.0f);
+        AppendLinearFloatKeyframe(OversizedPlanBytes, Index / 7.0f, Index / 7.0f);
     FArrayBuffer OversizedPlanPayload;
     OversizedPlanPayload.Data = OversizedPlanBytes.GetData();
     OversizedPlanPayload.Length = OversizedPlanBytes.Num();
@@ -668,15 +862,22 @@ bool FRmlAnimationAdapterBundleTest::RunTest(const FString&)
     if (!TestTrue(TEXT("generated animation adapter bundle exists"),
         FPaths::FileExists(FPaths::Combine(FixtureDirectory, EntryName)))) return false;
 
-    RmlUE_View* View = RmlUE_CreateSlateView(320, 200, 1.0f);
+    RmlUE_View* View = RmlUE_CreateSlateView(640, 360, 1.0f);
     if (!TestNotNull(TEXT("create animation adapter Slate view"), View)) return false;
     const char* Document =
-        "<rml><head><style>body{margin:0;width:320px;height:200px;}"
+        "<rml><head><style>body{margin:0;width:640px;height:360px;}"
         "#keyframe-target{display:block;width:100px;height:100px;"
         "background-color:#fff;opacity:1;}"
-        ".stagger-target{display:block;width:40px;height:40px;opacity:0.8;}</style></head>"
+        ".stagger-target{display:block;width:40px;height:40px;opacity:0.8;}"
+        "#official-field{display:block;position:relative;width:180px;height:120px;}"
+        "#official-ball{display:block;position:absolute;left:0;top:0;width:40px;height:40px;"
+        "background-color:#f00;opacity:1;transform-origin:0 0;}"
+        "#official-fade,#official-slide,#official-zoom,#official-effect{display:block;position:relative;left:0;width:100px;height:40px;"
+        "background-color:#0f0;opacity:1;transform-origin:0 0;}</style></head>"
         "<body><div id='keyframe-target'/><div class='stagger-target'/>"
-        "<div class='stagger-target'/></body></rml>";
+        "<div class='stagger-target'/><div id='official-field'><div id='official-ball'/></div>"
+        "<div id='official-fade'/><div id='official-slide'/><div id='official-zoom'/>"
+        "<div id='official-effect'/></body></rml>";
     if (!TestTrue(TEXT("load animation adapter document"),
         RmlUE_LoadDocumentFromMemory(View, Document, "animation-adapter-bundle.rml") != 0))
     {
@@ -710,6 +911,7 @@ bool FRmlAnimationAdapterBundleTest::RunTest(const FString&)
             TJsonReaderFactory<>::Create(Context->DebugStateJson), DebugState) &&
         DebugState.IsValid());
     TArray<FString> Handles;
+    TArray<FString> NativeHandlesToCancel;
     if (DebugState.IsValid())
     {
         const TSharedPtr<FJsonObject>* Versions = nullptr;
@@ -729,22 +931,63 @@ bool FRmlAnimationAdapterBundleTest::RunTest(const FString&)
         for (int32 Index = 0; Index < HandleValues.Num(); ++Index)
         {
             Handles.Add(HandleValues[Index]->AsString());
+            NativeHandlesToCancel.Add(HandleValues[Index]->AsString());
             TestEqual(TEXT("animation adapter bundle chooses the native route"),
                 RouteValues[Index]->AsString(), FString(TEXT("native")));
             TestEqual(TEXT("animation adapter bundle starts in running state"),
                 StateValues[Index]->AsString(), FString(TEXT("running")));
         }
+        const TSharedPtr<FJsonObject>* Official = nullptr;
+        TestTrue(TEXT("official Animation.js fixture reports its compatibility matrix"),
+            DebugState->TryGetObjectField(TEXT("official"), Official) && Official && Official->IsValid());
+        if (Official && Official->IsValid())
+        {
+            const TSharedPtr<FJsonObject>* Travel = nullptr;
+            TestTrue(TEXT("official README geometry is resolved through HostSnapshot"),
+                (*Official)->TryGetObjectField(TEXT("travel"), Travel) && Travel && Travel->IsValid() &&
+                FMath::IsNearlyEqual((*Travel)->GetNumberField(TEXT("x")), 140.0) &&
+                FMath::IsNearlyEqual((*Travel)->GetNumberField(TEXT("y")), 80.0));
+            TestEqual(TEXT("official bounded examples start nine property tracks"),
+                (*Official)->GetIntegerField(TEXT("animationCount")), 9);
+            const TArray<TSharedPtr<FJsonValue>>& OfficialRoutes = (*Official)->GetArrayField(TEXT("routes"));
+            int32 NativeRouteCount = 0;
+            int32 FallbackRouteCount = 0;
+            for (const TSharedPtr<FJsonValue>& Route : OfficialRoutes)
+            {
+                if (Route->AsString() == TEXT("native")) ++NativeRouteCount;
+                if (Route->AsString() == TEXT("js_batched")) ++FallbackRouteCount;
+            }
+            TestEqual(TEXT("official bounded examples use nine native tracks"), NativeRouteCount, 9);
+            TestEqual(TEXT("official bounded examples avoid the JS fallback"), FallbackRouteCount, 0);
+            const TArray<TSharedPtr<FJsonValue>>& OfficialNativeHandles =
+                (*Official)->GetArrayField(TEXT("nativeHandles"));
+            TestEqual(TEXT("official fixture exposes nine native handles"), OfficialNativeHandles.Num(), 9);
+            for (const TSharedPtr<FJsonValue>& Handle : OfficialNativeHandles)
+                NativeHandlesToCancel.Add(Handle->AsString());
+
+            const TArray<TSharedPtr<FJsonValue>>& Gaps = (*Official)->GetArrayField(TEXT("gaps"));
+            TestEqual(TEXT("official fixture records two explicit compatibility gaps"), Gaps.Num(), 2);
+            const TArray<FString> ExpectedGapCodes = {
+                TEXT("unsupported_infinite_loop"), TEXT("unsupported_easing")
+            };
+            for (int32 Index = 0; Index < FMath::Min(Gaps.Num(), ExpectedGapCodes.Num()); ++Index)
+            {
+                const TSharedPtr<FJsonObject> Gap = Gaps[Index]->AsObject();
+                TestTrue(TEXT("official compatibility gap is structured"),
+                    Gap.IsValid() && Gap->GetStringField(TEXT("code")) == ExpectedGapCodes[Index]);
+            }
+        }
     }
     TestTrue(TEXT("animation adapter bundle exposes only opaque handles"),
         Handles.Num() == 6 && !Handles.ContainsByPredicate([](const FString& Handle) { return Handle.IsEmpty(); }));
-    TestEqual(TEXT("animation adapter bundle creates six immutable definitions"),
-        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore + 6);
-    TestEqual(TEXT("animation adapter bundle creates six target bindings"),
-        AnimationRuntime.GetBindingCount(), BindingsBefore + 6);
-    TestEqual(TEXT("animation adapter bundle creates six ECS entities"),
-        AnimationRuntime.GetActiveAnimationCount(), ActiveBefore + 6);
+    TestEqual(TEXT("adapter and official fixtures create twelve shared immutable definitions"),
+        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore + 12);
+    TestEqual(TEXT("adapter and official fixtures create fifteen target bindings"),
+        AnimationRuntime.GetBindingCount(), BindingsBefore + 15);
+    TestEqual(TEXT("adapter and official fixtures create fifteen ECS entities"),
+        AnimationRuntime.GetActiveAnimationCount(), ActiveBefore + 15);
 
-    for (const FString& Handle : Handles)
+    for (const FString& Handle : NativeHandlesToCancel)
     {
         const TSharedPtr<FJsonObject> CancelResult = ParseAnimationResult(
             Context->ControlAnimation(Handle, TEXT("cancel"), 0.0));
@@ -752,7 +995,7 @@ bool FRmlAnimationAdapterBundleTest::RunTest(const FString&)
             CancelResult.IsValid() && CancelResult->GetBoolField(TEXT("accepted")));
     }
     TestEqual(TEXT("adapter cancellation retains compiled plan definitions"),
-        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore + 6);
+        AnimationRuntime.GetDefinitionCount(), DefinitionsBefore + 12);
     TestEqual(TEXT("adapter cancellation releases all bindings"),
         AnimationRuntime.GetBindingCount(), BindingsBefore);
     TestEqual(TEXT("adapter cancellation removes all ECS entities"),

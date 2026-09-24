@@ -37,6 +37,12 @@ public:
 
     virtual bool Compile(const FString& Markup, const FString& SourcePath, FString& OutMarkup, FString& OutDiagnostics) override
     {
+        return CompileWithOptions(Markup, SourcePath, FRmlUiCssCompileOptions(), OutMarkup, OutDiagnostics);
+    }
+
+    virtual bool CompileWithOptions(const FString& Markup, const FString& SourcePath,
+        const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics) override
+    {
         OutMarkup.Reset();
         OutDiagnostics.Reset();
         const FString NodeExecutable = FindNodeExecutable();
@@ -56,6 +62,11 @@ public:
         TSharedRef<FJsonObject> Request = MakeShared<FJsonObject>();
         Request->SetStringField(TEXT("markup"), Markup);
         Request->SetStringField(TEXT("sourcePath"), SourcePath);
+        Request->SetStringField(TEXT("profile"), Options.CapabilityProfile);
+        Request->SetStringField(TEXT("mode"), Options.CapabilityMode);
+        TArray<TSharedPtr<FJsonValue>> Degradations;
+        for (const FString& Feature : Options.AllowedDegradations) Degradations.Add(MakeShared<FJsonValueString>(Feature));
+        Request->SetArrayField(TEXT("allowDegrade"), Degradations);
         FString RequestJson;
         FJsonSerializer::Serialize(Request, TJsonWriterFactory<>::Create(&RequestJson));
         if (!FFileHelper::SaveStringToFile(RequestJson, *RequestPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
@@ -198,7 +209,7 @@ void FRmlUiWebCompatModule::ClearCompiledDocumentCache()
 }
 
 bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const FString& SourcePath, FString& OutMarkup,
-    FString& OutDiagnostics, bool& bOutCacheHit)
+    FString& OutDiagnostics, bool& bOutCacheHit, const FRmlUiCssCompileOptions& Options)
 {
     bOutCacheHit = false;
     OutMarkup.Reset();
@@ -211,7 +222,19 @@ bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const 
     }
 
     const TSharedRef<IRmlUiWebDocumentCompiler>& DocumentCompiler = DocumentCompilers.Last();
-    const FString CacheKey = FMD5::HashAnsiString(*(DocumentCompiler->GetCompilerId().ToString() + TEXT("\n") + SourcePath + TEXT("\n") + Markup));
+    // A legacy compile must never satisfy a strict profile request from the cache.
+    TSharedRef<FJsonObject> CacheInput = MakeShared<FJsonObject>();
+    CacheInput->SetStringField(TEXT("compiler"), DocumentCompiler->GetCompilerId().ToString() + TEXT("/rmlui-css-2.0.0"));
+    CacheInput->SetStringField(TEXT("source"), SourcePath);
+    CacheInput->SetStringField(TEXT("markup"), Markup);
+    CacheInput->SetStringField(TEXT("profile"), Options.CapabilityProfile);
+    CacheInput->SetStringField(TEXT("mode"), Options.CapabilityMode);
+    TArray<TSharedPtr<FJsonValue>> Degradations;
+    for (const FString& Feature : Options.AllowedDegradations) Degradations.Add(MakeShared<FJsonValueString>(Feature));
+    CacheInput->SetArrayField(TEXT("allowDegrade"), Degradations);
+    FString CacheJson;
+    FJsonSerializer::Serialize(CacheInput, TJsonWriterFactory<>::Create(&CacheJson));
+    const FString CacheKey = FMD5::HashAnsiString(*CacheJson);
     if (const FCompiledDocument* Cached = CompiledDocumentCache.Find(CacheKey))
     {
         OutMarkup = Cached->Markup;
@@ -222,7 +245,7 @@ bool FRmlUiWebCompatModule::CompileDynamicDocument(const FString& Markup, const 
     }
 
     ++DynamicCompileCount;
-    if (!DocumentCompiler->Compile(Markup, SourcePath, OutMarkup, OutDiagnostics))
+    if (!DocumentCompiler->CompileWithOptions(Markup, SourcePath, Options, OutMarkup, OutDiagnostics))
     {
         LastError = OutDiagnostics;
         UE_LOG(LogRmlUiWebCompat, Error, TEXT("Dynamic document compilation failed: %s"), *OutDiagnostics);

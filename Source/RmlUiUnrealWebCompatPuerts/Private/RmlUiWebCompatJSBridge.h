@@ -16,6 +16,15 @@ public:
     UPROPERTY(BlueprintAssignable, Category="RmlUi|WebCompat")
     FRmlUiWebCompatCompileRequest OnCompileRequest;
 
+    UPROPERTY(BlueprintReadOnly, Category="RmlUi|WebCompat")
+    FString CapabilityProfile = TEXT("legacy");
+
+    UPROPERTY(BlueprintReadOnly, Category="RmlUi|WebCompat")
+    FString CapabilityMode = TEXT("strict");
+
+    UPROPERTY(BlueprintReadOnly, Category="RmlUi|WebCompat")
+    FString AllowedDegradationsJson = TEXT("[]");
+
     UFUNCTION(BlueprintCallable, Category="RmlUi|WebCompat")
     void Complete(bool bSuccess, const FString& Markup, const FString& Diagnostics);
 

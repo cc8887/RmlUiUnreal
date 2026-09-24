@@ -14,7 +14,7 @@ RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 
 
 ## 效果展示
 
-内置 Actor Observer 展示了一条完整的编辑器工作流：通过类型化 Puerts 服务读取当前 Editor World 中的 Actor，稳定保持选择，并可按需展示反射属性和 Transform。其 UI Lab 用于展示图标、Grid 和 Flex 布局、圆角、阴影、动画、图片、多色配色和响应式组合。
+内置 Actor Observer 展示了一条完整的编辑器工作流：通过类型化 Puerts 服务读取当前 Editor World 中的 Actor，稳定保持选择，并可按需展示反射属性和 Transform。其 UI Lab 用于展示图标、Grid 和 Flex 布局、圆角、阴影、动画、图片、多色配色和响应式组合，并集成 Apache ECharts 无 DOM SVG SSR 图表。图表旁的数据表提供原生 range 滑块，调整数值时会同步更新表格并重新生成 SVG。UI Lab 还由宿主动态创建一个真实的 Unreal User Interface Domain 材质，以 `showcase.energy` 别名注册，并让原生 range 滑块通过类型化 Puerts 服务修改 MID 的颜色参数，完整经过 `UMaterial -> MID -> FSlateMaterialBrush`；这是 Editor 示例，不是已 Cook 的 `.uasset` 样例。独立的 Tree Canvas Tab 只使用 d3-hierarchy 计算 tidy-tree 坐标，节点和正交连线仍由原生 RmlUi 元素绘制，并支持选择、分支折叠、画布平移和缩放。Dialogs Tab 则把 Headless UI Dialog 约定以及 shadcn/ui 常用的 Dialog、Alert Dialog、Sheet 模式适配为 RmlUi 原生节点，覆盖遮罩关闭、Escape、初始焦点和关闭后的焦点恢复。Mask Frame Tab 复用现有 LunaSVG，以真实 SVG `<mask>`、多层渐变和内射光束镂空中心，四条沿边能量带在布局完成后以像素端点调用原生 `AnimateNode`，尺寸变化时重新启动；十个向内漂移的火花继续由 RCSS `@keyframes` 驱动，形成高亮核心与暖金溢光；覆盖层使用 `pointer-events:none`，不会拦截底层输入。该效果不依赖 UE Material 或逐帧 C++ 更新。若边框来自固定纹理图集，可改用 RmlUi 内置 `ninepatch` 或 `tiled-box`。新增 Scene Overlay Tab 在真实 Unreal 相机之上叠加原生半透明 HUD，场景包含高对比青/橙/蓝 Cube、金色球体、地面、背景墙、方向光和三盏彩色点光；中央区域保留透明像素，原生 range 可实时调整面板 Alpha。该链路不会把场景复制为 UI 纹理，也不模拟浏览器 `backdrop-filter`。
 
 ### 实时 Actor 检查器
 
@@ -74,6 +74,7 @@ RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 
 - XML 兼容 HTML/RML、RCSS、图片、字体、响应式 Media Rule、Flexbox，以及基于 Taffy 的原生 CSS Grid。
 - 圆角、阴影、渐变、Transform、Transition、关键帧动画、裁剪、滚动，以及宽版/窄版响应式布局等常见视觉能力。
 - Vue 3 自定义渲染器，支持 SFC 编译、Composition API、props/emits、keyed reconciliation、Fragment、scoped style、响应式表单，以及随 Frame 生命周期管理的事件和计时器。
+- Host ABI 2 提供节点查询、批量布局测量、主题变量、独立默认行为取消、指针捕获、Teleport 和嵌套弹窗焦点域。新增 Interaction Lab 展示 radio/集合表单与滚动 Popover；严格 profile 与显式降级方式见[共用 CSS 编译契约](Tools/CSS_COMPILER.md)。
 - 通过 Puerts 调用类型化 Unreal 服务，同时为动态或遗留协议保留明确的 JSON 兼容通道。
 - 使用 PostCSS 和 htmlparser2 的构建期/运行时编译，将已知浏览器惯例归一化，并对无法支持的转换进行原子拒绝。
 - 原生 Markdown 与语法高亮、UE HTTP/SSE 流式传输、版本化热更新、保留状态的重新挂载和回滚。
@@ -86,6 +87,11 @@ RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 
 | Tailwind CSS 3 | Actor Observer 和 UI Lab 使用的 utility 被编译为受支持的 RCSS 子集 |
 | markdown-it / highlight.js | 原生 Markdown Chat 覆盖表格、列表、代码块、CJK、流式更新和错误状态 |
 | Lucide | 构建期栅格化图标，实际用于 UI Lab 和 Chat |
+| Apache ECharts | 在 V8 中使用无 DOM SVG SSR 生成图表，经 RmlUi SVG 插件和 LunaSVG 栅格化；原生 range 输入可动态修改数据并触发重绘 |
+| d3-hierarchy 3.1 | 无 DOM tidy-tree 布局输出原生 RmlUi 节点和连线；选择、折叠、画布平移和缩放由 Vue/RmlUi 处理 |
+| Floating UI core 1.8.0 | 实际原包使用原生测量 custom platform；Popover 跟随滚动、窗口及 DPI 变化，并执行 flip/shift/hide |
+| TanStack Table / Virtual core | Table Core 8.21.3 对 2,000 条记录排序和筛选；Virtual Core 3.17.10 接收原生 rect/offset 观察，只挂载当前 RmlUi 行窗口 |
+| Headless UI / shadcn/ui 模式 | 以 RmlUi 原生兼容组件验证 Dialog、Alert Dialog 和 Sheet 交互；不打包上游 DOM/Portal 运行时，也不声明其可原样兼容 |
 | Magic.css / Hover.css | WebCompat 转换和 packaged runtime 测试覆盖其上游动画、过渡写法 |
 | Bulma | 通过 WebModernV1 Profile 和原生像素夹具验证 Card 结构子集 |
 
@@ -222,6 +228,7 @@ npm run build
 - Vue packaged smoke 在 DX11 下通过 108 项、DX12 下通过 109 项，两边均为 84 个不同检查标签。
 - Chat packaged smoke 使用确定性本地 SSE fixture，在两个 RHI 下各通过 117 项检查。
 - 动态 WebCompat packaged smoke 在两个 RHI 下各通过 15 项，包括 Puerts 运行时编译和缓存复用。
+- Actor Observer standalone smoke 在两个 RHI 下各通过 530 项并保存 29 张截图，覆盖 SVG mask 金边、UE UI Material、原生弹层模式、TanStack headless 表格/虚拟列表交互，以及经过类型和 StaticMesh 验证的 World `AStaticMeshActor` 上方半透明合成；编辑器 Nomad Tab 自动化以 0 warning 通过。
 - 8 组 packaged 报告生成 42 张非空截图，运行日志未发现 fatal、assert 或未处理异常信号。
 
 这些结果不代表 Shipping runtime、非 Windows 平台、生产性能、操作系统物理输入/IME、任意网页兼容性或真实模型服务质量已经通过验证。
@@ -252,7 +259,7 @@ RmlUiUnreal/
 
 - RmlUi 标记需要兼容 XML，不提供浏览器错误恢复和 DOM API。
 - Puerts 是可信代码集成，不是 JavaScript 安全沙箱；远程 Manifest 必须来自可信发布方。
-- 原生 IME Composition、复杂文字 shaping、SVG/Lottie、Lua 扩展和浏览器 Accessibility API 尚未实现。
+- Windows IME 已通过 UE 文本输入上下文接入并完成原生/UE 接口测试；真实系统候选窗测试受桌面访问权限阻塞，仍待补验。复杂文字 shaping、Lottie、Lua 扩展和浏览器 Accessibility API 尚未实现；可信 SVG 已通过 LunaSVG 栅格化，但不提供浏览器 SVG DOM。
 - Vue 更新会重新挂载应用并恢复显式序列化状态，不等同于浏览器 Vue HMR。
 - 性能预算、长时间内存稳定性、多实例持久化、HDR 和设备恢复需要单独的生产验证。
 

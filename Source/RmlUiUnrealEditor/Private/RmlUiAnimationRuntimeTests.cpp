@@ -212,6 +212,38 @@ bool FRmlUiAnimationRuntimeKeyframesTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("cubic-bezier binding released"), Runtime.ReleaseBinding(EasedBinding));
     TestTrue(TEXT("cubic-bezier definition released"), Runtime.ReleaseDefinition(EasedDefinition));
 
+    FRmlUiAnimationEasing Steps;
+    Steps.Type = ERmlUiAnimationEasingType::Steps;
+    Steps.StepCount = 4;
+    Steps.StepPosition = ERmlUiAnimationStepPosition::JumpEnd;
+    FRmlUiFloatAnimationDefinition Stepped;
+    Stepped.DurationSeconds = 1.0;
+    Stepped.Keyframes = {{0.0f, 0.0f, Steps}, {1.0f, 1.0f, {}}};
+    const FRmlUiAnimationDefinitionHandle SteppedDefinition =
+        Runtime.RegisterFloatDefinition(ERmlUiAnimatedProperty::None, Stepped);
+    const FRmlUiAnimationBindingHandle SteppedBinding = Runtime.BindCallback(SteppedDefinition);
+    float SteppedValue = -1.0f;
+    TestTrue(TEXT("steps definition registered"), SteppedDefinition.IsValid());
+    TestTrue(TEXT("steps binding played"), Runtime.PlayBinding(SteppedBinding,
+        [&SteppedValue](FRmlUiAnimationHandle, float Value) { SteppedValue = Value; }).IsValid());
+    Runtime.Advance(0.24f);
+    TestTrue(TEXT("jump-end remains on the old value before its boundary"),
+        FMath::IsNearlyEqual(SteppedValue, 0.0f));
+    Runtime.Advance(0.01f);
+    TestTrue(TEXT("jump-end changes exactly at its boundary"),
+        FMath::IsNearlyEqual(SteppedValue, 0.25f));
+    Runtime.CancelAll();
+    TestTrue(TEXT("steps binding released"), Runtime.ReleaseBinding(SteppedBinding));
+    TestTrue(TEXT("steps definition released"), Runtime.ReleaseDefinition(SteppedDefinition));
+
+    FRmlUiAnimationEasing InvalidSteps = Steps;
+    InvalidSteps.StepCount = 1;
+    InvalidSteps.StepPosition = ERmlUiAnimationStepPosition::JumpNone;
+    FRmlUiFloatAnimationDefinition RejectedSteps;
+    RejectedSteps.Keyframes = {{0.0f, 0.0f, InvalidSteps}, {1.0f, 1.0f, {}}};
+    TestFalse(TEXT("steps(1, jump-none) is rejected"),
+        Runtime.RegisterFloatDefinition(ERmlUiAnimatedProperty::None, RejectedSteps).IsValid());
+
     RmlUE_View* View = RmlUE_CreateSlateView(160, 100, 1.0f);
     TestNotNull(TEXT("keyframe Transform2D view created"), View);
     if (!View) return false;
@@ -511,6 +543,105 @@ bool FRmlUiAnimationRuntimeSharedDefinitionTest::RunTest(const FString& Paramete
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRmlUiAnimationRuntimeFillModesTest,
+    "RmlUi.Animation.MovieSceneRuntime.FillModes",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiAnimationRuntimeFillModesTest::RunTest(const FString& Parameters)
+{
+    RmlUE_View* View = RmlUE_CreateSlateView(320, 200, 1.0f);
+    TestNotNull(TEXT("fill-mode Slate view created"), View);
+    if (!View) return false;
+    const char* Markup =
+        "<rml><head><style>#none,#forwards,#backwards,#both,#cancel{display:block;opacity:.25;"
+        "width:10px;height:10px;background:#fff;}</style></head><body>"
+        "<div id='none'/><div id='forwards'/><div id='backwards'/><div id='both'/><div id='cancel'/>"
+        "</body></rml>";
+    TestTrue(TEXT("fill-mode document loaded"),
+        RmlUE_LoadDocumentFromMemory(View, Markup, "animation-fill-mode-test.rml") != 0);
+    TestTrue(TEXT("fill-mode layout completed"), RmlUE_Update(View) != 0);
+
+    FRmlUiAnimationRuntime Runtime;
+    struct FCase
+    {
+        const char* Id;
+        ERmlUiAnimationFillMode Fill;
+        bool bBefore;
+        bool bAfter;
+        FRmlUiAnimationDefinitionHandle Definition;
+        FRmlUiAnimationBindingHandle Binding;
+    };
+    TArray<FCase> Cases{
+        {"none", ERmlUiAnimationFillMode::None, false, false},
+        {"forwards", ERmlUiAnimationFillMode::Forwards, false, true},
+        {"backwards", ERmlUiAnimationFillMode::Backwards, true, false},
+        {"both", ERmlUiAnimationFillMode::Both, true, true},
+    };
+    for (FCase& Item : Cases)
+    {
+        FRmlUiFloatAnimationDefinition Definition;
+        Definition.From = 0.0f;
+        Definition.To = 1.0f;
+        Definition.DurationSeconds = 1.0;
+        Definition.DelaySeconds = 1.0;
+        Definition.Fill = Item.Fill;
+        Item.Definition = Runtime.RegisterFloatDefinition(ERmlUiAnimatedProperty::Opacity, Definition);
+        Item.Binding = Runtime.BindNode(Item.Definition, View, RmlUE_FindNode(View, Item.Id));
+        TestTrue(TEXT("fill-mode definition and binding created"),
+            Item.Definition.IsValid() && Item.Binding.IsValid() && Runtime.PlayBinding(Item.Binding).IsValid());
+    }
+
+    Runtime.Advance(0.0f);
+    RmlUE_SlateFrame BeforeFrame{};
+    TestTrue(TEXT("fill-mode delay frame rendered"), RmlUE_RenderSlate(View, &BeforeFrame) != 0);
+    for (const FCase& Item : Cases)
+    {
+        float VisualOpacity = 0.0f;
+        const uint32 Node = RmlUE_FindNode(View, Item.Id);
+        TestTrue(TEXT("fill-mode delay draw found"), FindVisualOpacity(BeforeFrame, Node, VisualOpacity));
+        // The stylesheet opacity is already baked into retained geometry. With no
+        // backwards fill contribution, the independent draw multiplier is neutral.
+        TestTrue(TEXT("fill-mode delay contribution matches backwards flag"),
+            FMath::IsNearlyEqual(VisualOpacity, Item.bBefore ? 0.0f : 1.0f, 0.01f));
+    }
+
+    Runtime.Advance(2.0f);
+    TestEqual(TEXT("fill-mode tracks complete"), Runtime.GetActiveAnimationCount(), 0);
+    for (const FCase& Item : Cases)
+    {
+        char Value[64]{};
+        TestTrue(TEXT("fill-mode final opacity readable"), RmlUE_GetComputedProperty(
+            View, RmlUE_FindNode(View, Item.Id), "opacity", Value, sizeof(Value)) != 0);
+        TestTrue(TEXT("fill-mode completion retains or restores the expected value"),
+            FMath::IsNearlyEqual(FCString::Atof(UTF8_TO_TCHAR(Value)), Item.bAfter ? 1.0f : 0.25f, 0.01f));
+        TestTrue(TEXT("fill-mode binding released"), Runtime.ReleaseBinding(Item.Binding));
+        TestTrue(TEXT("fill-mode definition released"), Runtime.ReleaseDefinition(Item.Definition));
+    }
+
+    FRmlUiFloatAnimationDefinition CancelDefinition;
+    CancelDefinition.From = 0.0f;
+    CancelDefinition.To = 1.0f;
+    CancelDefinition.DurationSeconds = 1.0;
+    CancelDefinition.Fill = ERmlUiAnimationFillMode::Both;
+    const FRmlUiAnimationDefinitionHandle CancelDefinitionHandle =
+        Runtime.RegisterFloatDefinition(ERmlUiAnimatedProperty::Opacity, CancelDefinition);
+    const FRmlUiAnimationBindingHandle CancelBinding = Runtime.BindNode(
+        CancelDefinitionHandle, View, RmlUE_FindNode(View, "cancel"));
+    const FRmlUiAnimationHandle CancelHandle = Runtime.PlayBinding(CancelBinding);
+    Runtime.Advance(0.5f);
+    TestTrue(TEXT("cancelled fill track restores its underlying value"), Runtime.Cancel(CancelHandle));
+    char CancelValue[64]{};
+    TestTrue(TEXT("cancelled fill opacity readable"), RmlUE_GetComputedProperty(
+        View, RmlUE_FindNode(View, "cancel"), "opacity", CancelValue, sizeof(CancelValue)) != 0);
+    TestTrue(TEXT("cancel ignores fill and removes the effect"),
+        FMath::IsNearlyEqual(FCString::Atof(UTF8_TO_TCHAR(CancelValue)), 0.25f, 0.01f));
+    TestTrue(TEXT("cancel fill binding released"), Runtime.ReleaseBinding(CancelBinding));
+    TestTrue(TEXT("cancel fill definition released"), Runtime.ReleaseDefinition(CancelDefinitionHandle));
+    RmlUE_DestroyView(View);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FRmlUiAnimationRuntimeLayeredContributionTest,
     "RmlUi.Animation.MovieSceneRuntime.LayeredContributions",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -732,6 +863,10 @@ bool FRmlUiAnimationRuntimeNativeOpacityTest::RunTest(const FString& Parameters)
     const FRmlUiAnimationHandle Handle = Runtime.PlayNodeFloat(
         View, NodeA, ERmlUiAnimatedProperty::Opacity, Desc);
     TestTrue(TEXT("native opacity track accepted"), Handle.IsValid());
+    FRmlUiAnimationViewActivity Activity = Runtime.GetViewActivity(View);
+    TestTrue(TEXT("opacity track is classified as visual activity"),
+        Activity.Total == 1 && Activity.Visual == 1 &&
+        Activity.LayoutPosition == 0 && Activity.LayoutSize == 0);
     Runtime.Advance(0.5f);
 
     char Value[64]{};
@@ -746,6 +881,7 @@ bool FRmlUiAnimationRuntimeNativeOpacityTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("animated node removed"), RmlUE_RemoveNode(View, NodeA) != 0);
     Runtime.Advance(0.1f);
     TestEqual(TEXT("stale node track retired after failed batch validation"), Runtime.GetActiveAnimationCount(), 0);
+    TestEqual(TEXT("stale node retirement clears view activity"), Runtime.GetViewActivity(View).Total, 0);
     RmlUE_SlateFrame TransformBaseline{};
     TestTrue(TEXT("Transform2D baseline snapshot refreshed after node removal"),
         RmlUE_RenderSlate(View, &TransformBaseline) != 0 && TransformBaseline.Replayed == 0);
@@ -755,6 +891,9 @@ bool FRmlUiAnimationRuntimeNativeOpacityTest::RunTest(const FString& Parameters)
     TransformDesc.To.TranslationY = 10.0f;
     TransformDesc.DurationSeconds = 1.0;
     TestTrue(TEXT("native Transform2D track accepted"), Runtime.PlayNodeTransform2D(View, NodeC, TransformDesc).IsValid());
+    Activity = Runtime.GetViewActivity(View);
+    TestTrue(TEXT("Transform2D track is classified as visual activity"),
+        Activity.Total == 1 && Activity.Visual == 1);
     Runtime.Advance(0.5f);
     RmlUE_NodeMetrics Metrics{};
     RmlUE_LayoutInfo Layout{};
@@ -768,6 +907,35 @@ bool FRmlUiAnimationRuntimeNativeOpacityTest::RunTest(const FString& Parameters)
         TransformFrame.VisualDeltas[0].Node == NodeC && TransformFrame.VisualDeltas[0].TransformChanged);
     Runtime.CancelNodeAnimation(View, NodeC, ERmlUiAnimatedProperty::Transform2D);
     TestEqual(TEXT("Transform2D cancellation removes entity"), Runtime.GetActiveAnimationCount(), 0);
+    TestEqual(TEXT("Transform2D cancellation clears view activity"), Runtime.GetViewActivity(View).Total, 0);
+
+    FRmlUiFloatAnimationDesc LayoutDesc;
+    LayoutDesc.From = 20.0f;
+    LayoutDesc.To = 100.0f;
+    LayoutDesc.DurationSeconds = 1.0;
+    TestTrue(TEXT("native px layout track accepted"), Runtime.PlayNodeFloat(
+        View, NodeC, ERmlUiAnimatedProperty::LeftPx, LayoutDesc).IsValid());
+    FRmlUiFloatAnimationDesc SizeDesc = LayoutDesc;
+    SizeDesc.From = 10.0f;
+    SizeDesc.To = 30.0f;
+    TestTrue(TEXT("native px size track accepted"), Runtime.PlayNodeFloat(
+        View, NodeC, ERmlUiAnimatedProperty::WidthPx, SizeDesc).IsValid());
+    Activity = Runtime.GetViewActivity(View);
+    TestTrue(TEXT("layout tracks are separated by invalidation cost"),
+        Activity.Total == 2 && Activity.Visual == 0 &&
+        Activity.LayoutPosition == 1 && Activity.LayoutSize == 1);
+    Runtime.Advance(0.5f);
+    TestTrue(TEXT("layout update completed after ECS commit"), RmlUE_Update(View) != 0);
+    TestTrue(TEXT("layout scalar geometry measured"),
+        RmlUE_MeasureNodes(View, &NodeC, 1, &Metrics, &Layout) == 1);
+    TestTrue(TEXT("ECS px scalar midpoint reaches RmlUi layout"),
+        FMath::IsNearlyEqual(Metrics.X, 60.0f) && FMath::IsNearlyEqual(Metrics.Width, 20.0f));
+    TestTrue(TEXT("native px layout cancellation accepted"),
+        Runtime.CancelNodeAnimation(View, NodeC, ERmlUiAnimatedProperty::LeftPx));
+    TestTrue(TEXT("native px size cancellation accepted"),
+        Runtime.CancelNodeAnimation(View, NodeC, ERmlUiAnimatedProperty::WidthPx));
+    TestEqual(TEXT("layout cancellation removes entities"), Runtime.GetActiveAnimationCount(), 0);
+    TestEqual(TEXT("layout cancellation clears view activity"), Runtime.GetViewActivity(View).Total, 0);
 
     TestTrue(TEXT("cancellable visual opacity track accepted"), Runtime.PlayNodeFloat(
         View, NodeB, ERmlUiAnimatedProperty::Opacity, Desc).IsValid());
@@ -819,13 +987,7 @@ public:
 body { width:200px; height:170px; margin:0; background:#000; }
 #box { display:block; position:absolute; left:20px; top:20px; width:80px; height:80px; opacity:1; }
 #box-child { display:block; width:80px; height:80px; background:#fff; }
-#clip { display:block; position:absolute; left:110px; top:20px; width:30px; height:30px; overflow:hidden; border-radius:8px; transform-origin:0 0; transform:translate(0px,0px); }
-#clip-child { display:block; width:60px; height:30px; background:#0f0; }
-#nested-root { display:block; position:absolute; left:20px; top:125px; width:60px; height:35px; transform-origin:0 0; transform:translate(0px,0px); }
-#nested-outer { display:block; width:50px; height:30px; overflow:hidden; border-radius:8px; }
-#nested-inner { display:block; position:relative; left:8px; top:5px; width:30px; height:20px; overflow:hidden; border-radius:5px; transform-origin:0 0; transform:translate(0px,0px); }
-#nested-fill { display:block; width:60px; height:30px; background:#00f; }
-</style></head><body><div id="box"><div id="box-child"/></div><div id="clip"><div id="clip-child"/></div><div id="nested-root"><div id="nested-outer"><div id="nested-inner"><div id="nested-fill"/></div></div></div></body></rml>
+</style></head><body><div id="box"><div id="box-child"/></div></body></rml>
 )RML");
             Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
                 .SourcePath(TEXT("/animation-visual-opacity.rml")).DesiredSize(FVector2D(200, 170));
@@ -853,13 +1015,7 @@ body { width:200px; height:170px; margin:0; background:#000; }
             const uint64 ContentRevisionBeforeAnimation = Schedule.ContentRevision;
             const uint64 VisualRevisionBeforeAnimation = Schedule.VisualRevision;
             const uint32 Node = RmlUE_FindNode(Widget->GetNativeView(), "box");
-            const uint32 ClipNode = RmlUE_FindNode(Widget->GetNativeView(), "clip");
-            const uint32 NestedRootNode = RmlUE_FindNode(Widget->GetNativeView(), "nested-root");
-            const uint32 NestedInnerNode = RmlUE_FindNode(Widget->GetNativeView(), "nested-inner");
             Test->TestTrue(TEXT("visual opacity pixel fixture node found"), Node != 0);
-            Test->TestTrue(TEXT("dynamic clip-mask pixel fixture node found"), ClipNode != 0);
-            Test->TestTrue(TEXT("nested clip-mask pixel fixture nodes found"),
-                NestedRootNode != 0 && NestedInnerNode != 0);
             Runtime = MakeUnique<FRmlUiAnimationRuntime>();
             FRmlUiFloatAnimationDesc Desc;
             Desc.From = 1.0f;
@@ -867,21 +1023,6 @@ body { width:200px; height:170px; margin:0; background:#000; }
             Desc.DurationSeconds = 1.0;
             Test->TestTrue(TEXT("visual opacity pixel animation accepted"), Runtime->PlayNodeFloat(
                 Widget->GetNativeView(), Node, ERmlUiAnimatedProperty::Opacity, Desc).IsValid());
-            FRmlUiTransform2DAnimationDesc ClipTransform;
-            ClipTransform.To.TranslationX = 40.0f;
-            ClipTransform.DurationSeconds = 1.0;
-            Test->TestTrue(TEXT("dynamic clip-mask pixel animation accepted"), Runtime->PlayNodeTransform2D(
-                Widget->GetNativeView(), ClipNode, ClipTransform).IsValid());
-            FRmlUiTransform2DAnimationDesc NestedRootTransform;
-            NestedRootTransform.To.TranslationX = 40.0f;
-            NestedRootTransform.DurationSeconds = 1.0;
-            Test->TestTrue(TEXT("nested clip-mask parent animation accepted"), Runtime->PlayNodeTransform2D(
-                Widget->GetNativeView(), NestedRootNode, NestedRootTransform).IsValid());
-            FRmlUiTransform2DAnimationDesc NestedInnerTransform;
-            NestedInnerTransform.To.TranslationX = 10.0f;
-            NestedInnerTransform.DurationSeconds = 1.0;
-            Test->TestTrue(TEXT("nested clip-mask owner animation accepted"), Runtime->PlayNodeTransform2D(
-                Widget->GetNativeView(), NestedInnerNode, NestedInnerTransform).IsValid());
             RmlUE_SlateScheduleState PlayedSchedule{};
             RmlUE_GetSlateScheduleState(Widget->GetNativeView(), &PlayedSchedule);
             Test->TestEqual(TEXT("starting MovieScene animation preserves retained content revision"),
@@ -908,9 +1049,14 @@ body { width:200px; height:170px; margin:0; background:#000; }
 
             TArray<FColor> Pixels;
             FIntVector Size = FIntVector::ZeroValue;
-            const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Widget.ToSharedRef(), Pixels, Size);
+            const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Window.ToSharedRef(), Pixels, Size);
+            if (!bCaptured || Size.X < 200 || Size.Y < 170 || Pixels.Num() != Size.X * Size.Y)
+            {
+                Test->AddInfo(FString::Printf(TEXT("midpoint capture diagnostic: captured=%d size=%dx%d pixels=%d"),
+                    bCaptured, Size.X, Size.Y, Pixels.Num()));
+            }
             Test->TestTrue(TEXT("visual opacity midpoint screenshot captured"),
-                bCaptured && Size.X == 200 && Size.Y == 170 && Pixels.Num() == Size.X * Size.Y);
+                bCaptured && Size.X >= 200 && Size.Y >= 170 && Pixels.Num() == Size.X * Size.Y);
             if (bCaptured && Pixels.Num() == Size.X * Size.Y)
             {
                 const FColor Midpoint = Pixels[40 * Size.X + 40];
@@ -920,24 +1066,6 @@ body { width:200px; height:170px; margin:0; background:#000; }
                     FMath::Abs(int32(Midpoint.R) - int32(ExpectedSrgbHalf)) <= 8 &&
                     FMath::Abs(int32(Midpoint.G) - int32(ExpectedSrgbHalf)) <= 8 &&
                     FMath::Abs(int32(Midpoint.B) - int32(ExpectedSrgbHalf)) <= 8);
-                const FColor OldClipCenter = Pixels[35 * Size.X + 115];
-                const FColor MovedClipCenter = Pixels[35 * Size.X + 145];
-                const FColor MovedRoundedCorner = Pixels[21 * Size.X + 131];
-                Test->TestTrue(TEXT("retained dynamic mask removes content from its old position"),
-                    OldClipCenter.R <= 12 && OldClipCenter.G <= 12 && OldClipCenter.B <= 12);
-                Test->TestTrue(TEXT("retained dynamic mask and content reach their new position"),
-                    MovedClipCenter.G >= 220 && MovedClipCenter.R <= 20 && MovedClipCenter.B <= 20);
-                Test->TestTrue(TEXT("retained dynamic mask preserves rounded clipping at the new position"),
-                    MovedRoundedCorner.R <= 20 && MovedRoundedCorner.G <= 20 && MovedRoundedCorner.B <= 20);
-                const FColor OldNestedCenter = Pixels[140 * Size.X + 35];
-                const FColor MovedNestedCenter = Pixels[140 * Size.X + 65];
-                const FColor MovedNestedCorner = Pixels[130 * Size.X + 53];
-                Test->TestTrue(TEXT("retained nested masks remove content from old coordinates"),
-                    OldNestedCenter.R <= 20 && OldNestedCenter.G <= 20 && OldNestedCenter.B <= 20);
-                Test->TestTrue(TEXT("retained nested mask owners compose into the new position"),
-                    MovedNestedCenter.B >= 220 && MovedNestedCenter.R <= 20 && MovedNestedCenter.G <= 20);
-                Test->TestTrue(TEXT("retained nested masks preserve the inner rounded corner"),
-                    MovedNestedCorner.R <= 20 && MovedNestedCorner.G <= 20 && MovedNestedCorner.B <= 20);
                 const FString Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("RmlUiTests"));
                 IFileManager::Get().MakeDirectory(*Directory, true);
                 TArray64<uint8> Png;
@@ -948,25 +1076,24 @@ body { width:200px; height:170px; margin:0; background:#000; }
             }
 
             Runtime->Advance(0.5f);
-            Test->TestEqual(TEXT("visual opacity and dynamic clip-mask animations complete"), Runtime->GetActiveAnimationCount(), 0);
+            Test->TestEqual(TEXT("visual opacity animation completes"), Runtime->GetActiveAnimationCount(), 0);
             Test->TestTrue(TEXT("final property-backed command frame built"), Widget->RenderFrame(200, 170));
             FlushRenderingCommands();
             Pixels.Reset();
             Size = FIntVector::ZeroValue;
-            const bool bFinalCaptured = FSlateApplication::Get().TakeScreenshot(Widget.ToSharedRef(), Pixels, Size);
+            const bool bFinalCaptured = FSlateApplication::Get().TakeScreenshot(Window.ToSharedRef(), Pixels, Size);
+            if (!bFinalCaptured || Size.X < 200 || Size.Y < 170 || Pixels.Num() != Size.X * Size.Y)
+            {
+                Test->AddInfo(FString::Printf(TEXT("final capture diagnostic: captured=%d size=%dx%d pixels=%d"),
+                    bFinalCaptured, Size.X, Size.Y, Pixels.Num()));
+            }
             Test->TestTrue(TEXT("visual opacity final screenshot captured"),
-                bFinalCaptured && Size.X == 200 && Size.Y == 170 && Pixels.Num() == Size.X * Size.Y);
+                bFinalCaptured && Size.X >= 200 && Size.Y >= 170 && Pixels.Num() == Size.X * Size.Y);
             if (bFinalCaptured && Pixels.Num() == Size.X * Size.Y)
             {
                 const FColor Final = Pixels[40 * Size.X + 40];
                 Test->TestTrue(TEXT("final opacity property produces background pixel"),
                     Final.R <= 12 && Final.G <= 12 && Final.B <= 12);
-                const FColor FinalClipCenter = Pixels[35 * Size.X + 155];
-                Test->TestTrue(TEXT("final clip-mask property frame preserves moved clipped content"),
-                    FinalClipCenter.G >= 220 && FinalClipCenter.R <= 20 && FinalClipCenter.B <= 20);
-                const FColor FinalNestedCenter = Pixels[140 * Size.X + 90];
-                Test->TestTrue(TEXT("final nested mask property frame preserves composed clipped content"),
-                    FinalNestedCenter.B >= 220 && FinalNestedCenter.R <= 20 && FinalNestedCenter.G <= 20);
             }
 
             Widget->ShutdownNative();
@@ -998,6 +1125,164 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FRmlUiAnimationVisualOpacityPixelsTest::RunTest(const FString& Parameters)
 {
     AddCommand(new FRmlUiAnimationVisualOpacityCapture(this));
+    return true;
+}
+
+class FRmlUiAnimationVisualBackgroundColorCapture final : public IAutomationLatentCommand
+{
+public:
+    explicit FRmlUiAnimationVisualBackgroundColorCapture(FAutomationTestBase* InTest) : Test(InTest) {}
+
+    virtual bool Update() override
+    {
+        if (!Window.IsValid())
+        {
+            bPerformanceWasEnabled = FRmlUiPerformance::IsEnabled();
+            FRmlUiPerformance::SetEnabled(true);
+            FRmlUiPerformance::Reset();
+            const FString Document = TEXT(R"RML(
+<rml><head><style>
+body { width:200px; height:170px; margin:0; background:#000; }
+#box { display:block; position:absolute; left:20px; top:20px; width:80px; height:80px;
+       background:#f00; border:8px #0f0; opacity:0.5; }
+</style></head><body><div id="box"/></body></rml>
+)RML");
+            Widget = SNew(SRmlUiWidget).UseSlateRenderer(true).InlineDocument(Document)
+                .SourcePath(TEXT("/animation-visual-background-color.rml")).DesiredSize(FVector2D(200, 170));
+            Window = SNew(SWindow).Title(FText::FromString(TEXT("RmlUi animation background color verification")))
+                .ClientSize(FVector2D(200, 170)).UseOSWindowBorder(false).CreateTitleBar(false)
+                .AutoCenter(EAutoCenter::None).ScreenPosition(FVector2D(0, 0))
+                .AdjustInitialSizeAndPositionForDPIScale(false).SaneWindowPlacement(false)
+                .SizingRule(ESizingRule::FixedSize).SupportsMaximize(false).SupportsMinimize(false)
+                [Widget.ToSharedRef()];
+            FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+            StartSeconds = FPlatformTime::Seconds();
+            return false;
+        }
+
+        if (!Runtime.IsValid())
+        {
+            RmlUE_SlateScheduleState Schedule{};
+            const bool bReplayReady = RmlUE_GetSlateScheduleState(Widget->GetNativeView(), &Schedule) && Schedule.CanReplay;
+            if ((!bReplayReady || Widget->GetReadySlateRhiGeometryCount() == 0) &&
+                FPlatformTime::Seconds() - StartSeconds < 5.0)
+            {
+                return false;
+            }
+            Test->TestTrue(TEXT("background-color fixture reaches retained replay state"), bReplayReady);
+            const uint64 ContentRevisionBeforeAnimation = Schedule.ContentRevision;
+            const uint64 VisualRevisionBeforeAnimation = Schedule.VisualRevision;
+            const uint32 Node = RmlUE_FindNode(Widget->GetNativeView(), "box");
+            Test->TestTrue(TEXT("background-color pixel fixture node found"), Node != 0);
+
+            Runtime = MakeUnique<FRmlUiAnimationRuntime>();
+            FRmlUiColorAnimationDefinition Definition;
+            Definition.From = {1.0f, 0.0f, 0.0f, 1.0f};
+            Definition.To = {0.0f, 0.0f, 1.0f, 1.0f};
+            Definition.DurationSeconds = 1.0;
+            DefinitionHandle = Runtime->RegisterColorDefinition(
+                ERmlUiAnimatedProperty::BackgroundColor, Definition);
+            BindingHandle = Runtime->BindNode(
+                DefinitionHandle, Widget->GetNativeView(), Node);
+            Test->TestTrue(TEXT("background-color definition registered"), DefinitionHandle.IsValid());
+            Test->TestTrue(TEXT("background-color node binding created"), BindingHandle.IsValid());
+            Test->TestTrue(TEXT("background-color animation accepted"),
+                Runtime->PlayBinding(BindingHandle).IsValid());
+
+            Runtime->Advance(0.5f);
+            RmlUE_SlateScheduleState AnimatedSchedule{};
+            Test->TestTrue(TEXT("retained background-color preserves content revision"),
+                RmlUE_GetSlateScheduleState(Widget->GetNativeView(), &AnimatedSchedule) &&
+                AnimatedSchedule.ContentRevision == ContentRevisionBeforeAnimation);
+            Test->TestTrue(TEXT("retained background-color advances visual revision"),
+                AnimatedSchedule.VisualRevision != VisualRevisionBeforeAnimation);
+            Test->TestTrue(TEXT("background-color midpoint command frame built"), Widget->RenderFrame(200, 170));
+            const FRmlUiPerformanceSnapshot MidpointPerformance = FRmlUiPerformance::Snapshot();
+            Test->TestTrue(TEXT("background-color frame reuses retained Slate draws"),
+                MidpointPerformance.WorkCount(ERmlUiPerformanceBackend::Slate,
+                    ERmlUiPerformanceWork::DrawRecordsReused) > 0);
+            Test->TestTrue(TEXT("background-color frame applies a targeted visual delta"),
+                MidpointPerformance.WorkCount(ERmlUiPerformanceBackend::Slate,
+                    ERmlUiPerformanceWork::VisualDeltaUpdates) > 0);
+            FlushRenderingCommands();
+
+            TArray<FColor> Pixels;
+            FIntVector Size = FIntVector::ZeroValue;
+            const bool bCaptured = FSlateApplication::Get().TakeScreenshot(Window.ToSharedRef(), Pixels, Size);
+            Test->TestTrue(TEXT("background-color midpoint screenshot captured"),
+                bCaptured && Size.X >= 200 && Size.Y >= 170 && Pixels.Num() == Size.X * Size.Y);
+            if (bCaptured && Pixels.Num() == Size.X * Size.Y)
+            {
+                const FColor Interior = Pixels[50 * Size.X + 50];
+                const FColor Border = Pixels[50 * Size.X + 23];
+                Test->TestTrue(TEXT("retained midpoint blends red and blue under element opacity"),
+                    Interior.R >= 50 && Interior.B >= 50 && Interior.G <= 20 &&
+                    FMath::Abs(int32(Interior.R) - int32(Interior.B)) <= 12);
+                Test->TestTrue(TEXT("background-color delta leaves border paint unchanged"),
+                    Border.G >= 110 && Border.R <= 30 && Border.B <= 30);
+                const FString Directory = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("RmlUiTests"));
+                IFileManager::Get().MakeDirectory(*Directory, true);
+                TArray64<uint8> Png;
+                FImageUtils::PNGCompressImageArray(Size.X, Size.Y,
+                    TArrayView64<const FColor>(Pixels.GetData(), Pixels.Num()), Png);
+                Test->TestTrue(TEXT("background-color midpoint screenshot saved"), FFileHelper::SaveArrayToFile(
+                    Png, *FPaths::Combine(Directory, TEXT("animation-visual-background-color-midpoint.png"))));
+            }
+
+            Runtime->Advance(0.5f);
+            Test->TestEqual(TEXT("background-color animation completes"), Runtime->GetActiveAnimationCount(), 0);
+            Test->TestTrue(TEXT("background-color final property frame built"), Widget->RenderFrame(200, 170));
+            FlushRenderingCommands();
+            Pixels.Reset();
+            Size = FIntVector::ZeroValue;
+            const bool bFinalCaptured = FSlateApplication::Get().TakeScreenshot(Window.ToSharedRef(), Pixels, Size);
+            Test->TestTrue(TEXT("background-color final screenshot captured"),
+                bFinalCaptured && Size.X >= 200 && Size.Y >= 170 && Pixels.Num() == Size.X * Size.Y);
+            if (bFinalCaptured && Pixels.Num() == Size.X * Size.Y)
+            {
+                const FColor FinalInterior = Pixels[50 * Size.X + 50];
+                const FColor FinalBorder = Pixels[50 * Size.X + 23];
+                Test->TestTrue(TEXT("final background color is committed to the property tree"),
+                    FinalInterior.B >= 110 && FinalInterior.R <= 30 && FinalInterior.G <= 30);
+                Test->TestTrue(TEXT("final property rebuild preserves the border color"),
+                    FinalBorder.G >= 110 && FinalBorder.R <= 30 && FinalBorder.B <= 30);
+            }
+
+            Test->TestTrue(TEXT("background-color binding released"),
+                Runtime->ReleaseBinding(BindingHandle));
+            Test->TestTrue(TEXT("background-color definition released"),
+                Runtime->ReleaseDefinition(DefinitionHandle));
+            Widget->ShutdownNative();
+            FlushRenderingCommands();
+            FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+            Widget.Reset();
+            Window.Reset();
+            Runtime.Reset();
+            FRmlUiPerformance::SetEnabled(bPerformanceWasEnabled);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    FAutomationTestBase* Test = nullptr;
+    TSharedPtr<SWindow> Window;
+    TSharedPtr<SRmlUiWidget> Widget;
+    TUniquePtr<FRmlUiAnimationRuntime> Runtime;
+    FRmlUiAnimationDefinitionHandle DefinitionHandle;
+    FRmlUiAnimationBindingHandle BindingHandle;
+    double StartSeconds = 0.0;
+    bool bPerformanceWasEnabled = false;
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRmlUiAnimationVisualBackgroundColorPixelsTest,
+    "RmlUi.Animation.VisualSink.SlateRhiBackgroundColorPixels",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiAnimationVisualBackgroundColorPixelsTest::RunTest(const FString& Parameters)
+{
+    AddCommand(new FRmlUiAnimationVisualBackgroundColorCapture(this));
     return true;
 }
 

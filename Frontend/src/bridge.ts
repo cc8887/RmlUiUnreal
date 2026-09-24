@@ -30,6 +30,7 @@ export interface NativeBridge {
   StartCompiledAnimationBatchPacked?(payload: ArrayBuffer): string;
   ReleaseAnimationPlansPacked?(payload: ArrayBuffer): string;
   GetAnimationPlanCacheStats?(): string;
+  GetAnimationRuntimeStats?(): string;
   ControlAnimation(handle: string, command: string, value: number): string;
   ApplyNodePropertyBatch(updatesJson: string): string;
   CancelAnimation(node: number, property: string): boolean;

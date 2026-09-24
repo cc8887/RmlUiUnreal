@@ -37,8 +37,10 @@ public:
         RmlWidget = TStrongObjectPtr<URmlUiWidget>(NewObject<URmlUiWidget>());
         Runtime = TStrongObjectPtr<URmlUiJSRuntime>(NewObject<URmlUiJSRuntime>());
         Observer = TStrongObjectPtr<URmlUiActorObserverService>(NewObject<URmlUiActorObserverService>());
+        RmlWidget->bUseSlateRenderer = true;
         ObservedWorld = CurrentEditorWorld();
         Observer->Initialize(ObservedWorld.Get());
+        Observer->AttachMaterialShowcase(RmlWidget.Get());
         Runtime->RegisterService(TEXT("actorObserver"), Observer.Get());
 
         const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("RmlUiUnreal"));
@@ -99,6 +101,8 @@ public:
     {
         return Observer.IsValid() ? Observer->GetActorSnapshot() : FString();
     }
+
+    bool IsMaterialShowcaseReady() const { return Observer.IsValid() && Observer->IsUiMaterialReady(); }
 #endif
 
 private:
@@ -152,6 +156,7 @@ bool FRmlUiActorObserverEditorTabTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("Panel observes the active editor world"), Panel->GetObservedWorld(), CurrentEditorWorld());
     const FString Snapshot = Panel->CaptureActorSnapshot();
     TestTrue(TEXT("Editor-world snapshot contains the actor collection"), Snapshot.Contains(TEXT("\"actors\":[")));
+    TestTrue(TEXT("Actor Observer registers its UE UI material showcase"), Panel->IsMaterialShowcaseReady());
     Tab->RequestCloseTab();
     return true;
 }

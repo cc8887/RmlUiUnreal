@@ -74,28 +74,45 @@ async function fixture() {
   let nextFrame = 0, nextHandle = 100;
   const computed = new Map([
     ['1:opacity', '0'], ['2:opacity', '0.25'],
+    ['1:visibility', 'visible'], ['2:visibility', 'visible'],
+    ['1:background-color', '#000000ff'], ['2:background-color', '#000000ff'],
     ['1:width', '10px'], ['2:width', '20px'],
+    ['1:margin-left', '0px'], ['2:margin-left', '0px'],
     ['1:transform', 'none'], ['2:transform', 'none'],
+    ['3:transform', 'none'], ['4:transform', 'none'], ['5:transform', 'none'],
+    ['4:opacity', '1'], ['5:opacity', '1'],
   ]);
   const native = {
     OnAnimationEvent: new Delegate(),
     RootNode: () => 99,
     QueryNodes: (_root, selector) => JSON.stringify(selector === '.items' ? [1, 2] : selector === '.one' ? [1] : []),
-    IsNodeValid: node => node === 1 || node === 2,
+    IsNodeValid: node => node >= 1 && node <= 5,
     GetComputedProperty: (node, property) => computed.get(`${node}:${property}`) || '',
     ResolveAnimationHostSnapshot: json => {
       const request = JSON.parse(json); snapshotCalls.push(request);
       const nodes = [];
       const targetGroups = [];
       for (const target of request.targets) {
-        const handles = typeof target === 'number' ? [target] : target === '.items' ? [1, 2] : target === '.one' ? [1] : [];
+        const handles = typeof target === 'number' ? [target]
+          : target === '.items' ? [1, 2]
+            : target === '.one' ? [1]
+              : target === '#official-field' ? [3]
+                : target === '#official-ball' ? [4]
+                  : target === '#official-effect' ? [5]
+                    : [];
         targetGroups.push(handles);
         for (const node of handles) {
           if (nodes.some(entry => entry.node === node)) continue;
           nodes.push({
             node,
             properties: Object.fromEntries(request.properties.map(property => [property, computed.get(`${node}:${property}`) || ''])),
-            ...(request.includeMetrics ? { metrics: { visible: true, x: 0, y: 0, width: 100, height: 20 } } : {}),
+            ...(request.includeMetrics ? { metrics: {
+              visible: true, x: 0, y: 0,
+              width: node === 3 ? 500 : node === 4 ? 64 : 100,
+              height: node === 3 ? 500 : node === 4 ? 64 : 20,
+              clientWidth: node === 3 ? 500 : node === 4 ? 64 : 100,
+              clientHeight: node === 3 ? 500 : node === 4 ? 64 : 20,
+            } } : {}),
           });
         }
       }
@@ -108,7 +125,7 @@ async function fixture() {
       starts.push({ node, property, keyframes, options });
       const unsupportedEasing = keyframes.some(frame => String(frame.easing || '').startsWith('rml-power('));
       if (unsupportedEasing) return JSON.stringify({ accepted: false, route: 'rejected', handle: '', state: 'rejected', error: 'unsupported_easing' });
-      if (!['opacity', 'transform'].includes(property)) return JSON.stringify({ accepted: false, route: 'rejected', handle: '', state: 'rejected', error: 'unsupported_property' });
+      if (!['opacity', 'transform', 'left', 'top', 'right', 'bottom', 'width', 'height', 'visibility', 'color', 'background-color', 'border-color', 'image-color'].includes(property)) return JSON.stringify({ accepted: false, route: 'rejected', handle: '', state: 'rejected', error: 'unsupported_property' });
       return JSON.stringify({ accepted: true, route: 'native', handle: String(++nextHandle), state: 'running' });
     },
     StartNodeKeyframeAnimationBatch: json => {
@@ -116,11 +133,11 @@ async function fixture() {
       batchStarts.push(requests);
       starts.push(...requests.map(({ node, property, keyframes, options }) => ({ node, property, keyframes, options })));
       const failedIndex = requests.findIndex(request =>
-        !['opacity', 'transform'].includes(request.property) ||
+        !['opacity', 'transform', 'left', 'top', 'right', 'bottom', 'width', 'height', 'visibility', 'color', 'background-color', 'border-color', 'image-color'].includes(request.property) ||
         request.keyframes.some(frame => String(frame.easing || '').startsWith('rml-power(')));
       if (failedIndex >= 0) {
         const request = requests[failedIndex];
-        const error = !['opacity', 'transform'].includes(request.property) ? 'unsupported_property' : 'unsupported_easing';
+        const error = !['opacity', 'transform', 'left', 'top', 'right', 'bottom', 'width', 'height', 'visibility', 'color', 'background-color', 'border-color', 'image-color'].includes(request.property) ? 'unsupported_property' : 'unsupported_easing';
         return JSON.stringify({ accepted: false, route: 'rejected', handles: [], state: 'rejected', error, failedIndex });
       }
       return JSON.stringify({
@@ -364,7 +381,7 @@ test('Animation.js mapping preserves milliseconds, total loops, alternate direct
   const f = await fixture();
   let done = 0;
   const group = f.module.adaptAnimationJs({
-    el: '.items', draw: { opacity: [0, 1], width: [10, 30] },
+    el: '.items', draw: { opacity: [0, 1], marginLeft: [10, 30] },
     dur: 500, ease: 'easeInQuad', loop: 2, dir: 'alternate', onDone: () => { ++done; },
   });
   assert.equal(group.animations.length, 4);
@@ -386,6 +403,106 @@ test('Animation.js mapping preserves milliseconds, total loops, alternate direct
   assert.equal(f.context.__errors.length, 0);
 });
 
+test('Animation.js official README and Effects cases expose the current compatibility boundary', async () => {
+  const f = await fixture();
+  const snapshot = f.module.captureAnimationHostSnapshot(
+    ['#official-field', '#official-ball'], [], true,
+  );
+  const field = snapshot.nodes.find(node => node.node === snapshot.targetGroups[0][0]).metrics;
+  const ball = snapshot.nodes.find(node => node.node === snapshot.targetGroups[1][0]).metrics;
+  const travelX = field.clientWidth - ball.clientWidth;
+  const travelY = field.clientHeight - ball.clientHeight;
+  assert.equal(travelX, 436, 'README clientWidth calculation is represented by one HostSnapshot');
+  assert.equal(travelY, 436, 'README clientHeight calculation is represented by one HostSnapshot');
+  assert.deepEqual(f.snapshotCalls[0].targets, ['#official-field', '#official-ball']);
+  assert.equal(f.snapshotCalls[0].includeMetrics, true);
+
+  assert.throws(
+    () => f.module.adaptAnimationJs({
+      el: '#official-ball', draw: { left: [0, travelX] }, dur: 2000,
+      ease: 'easeOutQuad', loop: true,
+    }),
+    error => error.code === 'unsupported_infinite_loop' && error.library === 'animationjs@0.5.0',
+    'the exact README infinite loop is rejected instead of silently bounded',
+  );
+  assert.throws(
+    () => f.module.adaptAnimationJs({
+      el: '#official-ball', draw: { top: [0, travelY] }, dur: 2000,
+      ease: 'easeOutBounce', loop: 1,
+    }),
+    error => error.code === 'unsupported_easing' && error.library === 'animationjs@0.5.0',
+    'the exact README bounce easing is rejected instead of approximated',
+  );
+
+  const horizontal = f.module.adaptAnimationJs({
+    el: '#official-ball', draw: { left: [0, travelX] }, dur: 2000,
+    ease: 'easeOutQuad', loop: 2, dir: 'alternate',
+  });
+  const rotation = f.module.adaptAnimationJs({
+    el: '#official-ball', draw: { rotate: [0, 360] }, dur: 1200, loop: 2,
+  });
+  const fade = f.module.adaptAnimationJs({
+    el: '#official-effect', draw: { opacity: [0, 1] }, dur: 300, ease: 'linear',
+  });
+  const slide = f.module.adaptAnimationJs({
+    el: '#official-effect', draw: { left: [-100, 0], opacity: [0, 1] }, dur: 300, ease: 'linear',
+  });
+  const zoom = f.module.adaptAnimationJs({
+    el: '#official-effect', draw: { scale: [3, 1], opacity: [0, 1] }, dur: 300, ease: 'linear',
+  });
+
+  assert.equal(horizontal.animations[0].route, 'native', 'README horizontal movement uses the native px scalar track');
+  assert.equal(rotation.animations[0].route, 'native', 'README rotation uses the native transform track');
+  assert.equal(fade.animations[0].route, 'native', 'official fade uses native visual opacity');
+  assert.ok(slide.animations.every(animation => animation.route === 'native'), 'official slide uses native opacity and px scalar tracks');
+  assert.ok(zoom.animations.every(animation => animation.route === 'native'), 'official zoom uses native opacity and transform tracks');
+  assert.equal(f.starts.find(start => start.property === 'left')?.options.duration, 2);
+  assert.equal(f.starts.find(start => start.property === 'transform')?.keyframes.at(-1).value, 'rotate(360deg)');
+
+  const swirl = f.module.adaptAnimationJs({
+    el: '#official-effect',
+    draw: { scale: [3, 1], rotate: [180, 0], opacity: [0, 1] },
+    dur: 300, ease: 'linear',
+  });
+  assert.equal(swirl.animations.length, 2, 'official swirl merges scale and rotate into one transform plus opacity');
+  assert.ok(swirl.animations.every(animation => animation.route === 'native'));
+  const swirlTransform = f.starts.find(start =>
+    start.property === 'transform' && String(start.keyframes[0].value).includes('scale(3,3)'));
+  assert.equal(swirlTransform?.keyframes[0].value, 'translate(0px,0px) scale(3,3) rotate(180deg)');
+  assert.equal(swirlTransform?.keyframes[1].value, 'translate(0px,0px) scale(1,1) rotate(0deg)');
+
+  for (const group of [horizontal, rotation, fade, slide, zoom, swirl]) group.cancel();
+});
+
+test('Animation.js stagger expands targets into one native batch with second-based delays', async () => {
+  const f = await fixture();
+  f.module.adaptAnimationJs({
+    el: '.items', draw: { opacity: [0, 1], translateY: [34, -2] },
+    dur: 780, ease: 'cubic-bezier(0.16,1.32,0.3,1)', stagger: { each: 0.082 },
+  });
+  assert.equal(f.snapshotCalls.length, 1);
+  assert.equal(f.batchStarts.length, 1);
+  assert.equal(f.starts.length, 4);
+  assert.deepEqual(f.starts.filter(start => start.property === 'opacity').map(start => start.options.delay), [0, 0.082]);
+  assert.deepEqual(f.starts.filter(start => start.property === 'transform').map(start => start.options.delay), [0, 0.082]);
+  assert.ok(f.starts.every(start => start.keyframes[0].easing === 'cubic-bezier(0.16,1.32,0.3,1)'));
+});
+
+test('AnimationGroup cancellation is safe after native completion', async () => {
+  const f = await fixture();
+  const group = f.module.adaptAnimationJs({
+    el: '.items', draw: { opacity: [0, 1] }, dur: 780,
+  });
+  for (const animation of group.animations) {
+    f.native.OnAnimationEvent.emit(JSON.stringify({
+      handle: animation.handle, reason: 'completed', state: 'finished',
+    }));
+  }
+  await group.finished;
+  assert.doesNotThrow(() => group.cancel());
+  assert.deepEqual(f.context.__errors, []);
+});
+
 test('Anime.js mapping uses repeat plus one and settles its completion from native events', async () => {
   const f = await fixture();
   let completed = 0;
@@ -404,6 +521,20 @@ test('Anime.js mapping uses repeat plus one and settles its completion from nati
   f.native.OnAnimationEvent.emit(JSON.stringify({ handle, reason: 'completed', state: 'finished' }));
   await group.finished;
   assert.equal(completed, 1);
+});
+
+test('Anime.js and GSAP preserve CSS step easing for native execution', async () => {
+  const f = await fixture();
+  f.module.adaptAnimeJs(1, {
+    opacity: 1, duration: 100, ease: 'step-start',
+  });
+  f.module.adaptGsapTo(1, {
+    opacity: 1, duration: 0.1, ease: 'steps(4, jump-end)',
+  });
+
+  assert.equal(f.starts.length, 2);
+  assert.equal(f.starts[0].keyframes[0].easing, 'step-start');
+  assert.equal(f.starts[1].keyframes[0].easing, 'steps(4, jump-end)');
 });
 
 test('SourceRequest resolves relative values independently from one HostSnapshot', async () => {
@@ -776,7 +907,7 @@ test('GSAP timeline set stays zero-duration and rejects a JS fallback route', as
   const unsupported = await fixture();
   assert.throws(
     () => unsupported.module.adaptGsapTimeline([
-      { targets: 1, set: { width: 20 }, position: 0 },
+      { targets: 1, set: { marginLeft: 20 }, position: 0 },
     ]),
     /unsupported_property/,
   );
@@ -898,7 +1029,28 @@ test('GSAP fromTo maps seconds, repeat/yoyo and a single transform primitive', a
   assert.ok(results.every(result => result.reason === 'completed'));
 });
 
-test('adapters reject callback and composition semantics that the IR cannot preserve', async () => {
+test('GSAP affine aliases, autoAlpha and colors compile to native tracks', async () => {
+  const f = await fixture();
+  const affine = f.module.adaptGsapTo(1, {
+    xPercent: 50, skewX: 12, skewY: -4, duration: 0.2, ease: 'none',
+  });
+  assert.equal(affine.animations.length, 1);
+  assert.equal(f.starts.at(-1).property, 'transform');
+  assert.equal(f.starts.at(-1).keyframes.at(-1).value,
+    'translate(50px,0px) scale(1,1) rotate(0deg) skew(12deg,-4deg)');
+
+  const alpha = f.module.adaptGsapTo(1, { autoAlpha: 0, duration: 0.2, ease: 'none' });
+  assert.equal(alpha.animations.length, 2);
+  assert.deepEqual(f.starts.slice(-2).map(entry => entry.property), ['opacity', 'visibility']);
+  assert.equal(f.starts.at(-1).keyframes.at(-1).value, 'hidden');
+
+  const color = f.module.adaptGsapTo(1, { backgroundColor: '#33669980', duration: 0.2, ease: 'none' });
+  assert.equal(color.animations.length, 1);
+  assert.equal(f.starts.at(-1).property, 'background-color');
+  assert.equal(f.starts.at(-1).keyframes.at(-1).value, '#33669980');
+});
+
+test('adapters compose synchronized transforms and reject callback or mismatched timing semantics', async () => {
   const f = await fixture();
   assert.throws(
     () => f.module.adaptAnimationJs({ el: 1, draw: () => {}, dur: 100 }),
@@ -912,10 +1064,20 @@ test('adapters reject callback and composition semantics that the IR cannot pres
     () => f.module.adaptAnimeJs(1, { opacity: 1, priority: 10 }),
     error => error.code === 'unsupported_priority' && error.library === 'animejs@4.5.0',
   );
-  assert.throws(
-    () => f.module.adaptGsapTo(1, { x: 10, y: 20 }),
-    error => error.code === 'unsupported_transform_composition' && error.library === 'gsap@3.15.0',
-  );
+  const composed = f.module.adaptGsapTo(1, { x: 10, y: 20, duration: 0.1, ease: 'none' });
+  assert.equal(composed.animations.length, 1);
+  assert.equal(f.starts.at(-1).keyframes.at(-1).value,
+    'translate(10px,20px) scale(1,1) rotate(0deg)');
+  composed.cancel();
+  assert.throws(() => f.module.compileAnimationSourceRequest({
+    library: 'composition-test', targets: 1, defaultEasing: 'linear', options: { duration: 1 },
+    tracks: [
+      { sourceName: 'scale', frames: [{ offset: 0, value: 1 }, { offset: 1, value: 2 }] },
+      { sourceName: 'rotate', frames: [
+        { offset: 0, value: 0 }, { offset: 0.5, value: 45 }, { offset: 1, value: 90 },
+      ] },
+    ],
+  }), error => error.code === 'unsupported_transform_timing_composition');
   assert.throws(
     () => f.module.adaptAnimeJs(1, { keyframes: [{ opacity: 1, duration: 0 }] }),
     error => error.code === 'invalid_timing' && error.library === 'animejs@4.5.0',

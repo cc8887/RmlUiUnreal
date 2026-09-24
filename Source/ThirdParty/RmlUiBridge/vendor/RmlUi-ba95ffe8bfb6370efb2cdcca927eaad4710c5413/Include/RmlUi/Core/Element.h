@@ -577,7 +577,8 @@ public:
 	/// Returns the element's transform state.
 	const TransformState* GetTransformState() const noexcept;
 	/// Unreal host extension: replace the computed 2D transform for animation sampling without mutating style.
-	void SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y, float rotation_degrees);
+	void SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y,
+		float rotation_degrees, float skew_x_degrees, float skew_y_degrees);
 	/// Unreal host extension: restore the computed transform after a visual animation override.
 	void ClearAnimationTransform2D();
 	bool HasAnimationTransform2D() const noexcept;
@@ -739,7 +740,7 @@ private:
 	bool dirty_transform : 1;
 	bool dirty_perspective : 1;
 	bool animation_transform_2d_active = false;
-	float animation_transform_2d[5] = {0.f, 0.f, 1.f, 1.f, 0.f};
+	float animation_transform_2d[7] = {0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 0.f};
 
 	OwnedElementList children;
 	int num_non_dom_children;

@@ -13,32 +13,46 @@ class Delegate {
 
 async function fixture({ packed = false, cacheMaxEntries, cacheMaxBytes, allocationBytesPerPlan,
   replaceDuringSecondCompiledStart = false } = {}) {
-  const frames = new Map(), starts = [], batches = [], controls = [], planRegistrations = [], compiledStarts = [], releases = [];
+  const frames = new Map(), starts = [], batches = [], controls = [], staleHandles = new Set(), staleNodes = new Set(),
+    planRegistrations = [], compiledStarts = [], releases = [];
   let nextFrame = 0, nextHandle = 100;
   let nextPlanHandle = 500;
   const native = {
     OnAnimationEvent: new Delegate(),
     IsNodeValid: node => node > 0,
-    StartNodeKeyframeAnimation: (_node, property) => JSON.stringify(property === 'opacity'
+    GetComputedProperty: (_node, property) => property === 'transform' ? 'none' :
+      /(?:left|right|top|bottom|width|height)$/.test(property) ? '0px' : '0',
+    StartNodeKeyframeAnimation: (_node, property) => JSON.stringify(
+      ['opacity', 'left', 'top', 'right', 'bottom', 'width', 'height'].includes(property)
       ? { accepted: true, route: 'native', handle: '101', state: 'running' }
       : { accepted: false, route: 'rejected', handle: '', state: 'rejected', error: 'unsupported_property' }),
     StartNodeKeyframeAnimationBatch: json => {
       const requests = JSON.parse(json); starts.push(requests);
-      const failedIndex = requests.findIndex(request => request.property !== 'opacity');
+      const failedIndex = requests.findIndex(request =>
+        !['opacity', 'left', 'top', 'right', 'bottom', 'width', 'height'].includes(request.property));
       return failedIndex >= 0
         ? JSON.stringify({ accepted: false, route: 'rejected', handles: [], state: 'rejected', error: 'unsupported_property', failedIndex })
         : JSON.stringify({ accepted: true, route: 'native', handles: requests.map(() => String(++nextHandle)), state: 'running' });
     },
     ControlAnimation: (handle, command, value) => {
       controls.push({ handle, command, value });
+      if (command === 'cancel' && staleHandles.has(handle)) {
+        return JSON.stringify({ accepted: false, route: 'rejected', handle, state: 'rejected', error: 'stale_handle' });
+      }
       if (command === 'cancel') native.OnAnimationEvent.emit(JSON.stringify({ handle, reason: 'cancelled', state: 'cancelled' }));
       return JSON.stringify({ accepted: true, route: 'native', handle,
         state: command === 'pause' ? 'paused' : command === 'cancel' ? 'cancelled' : 'running' });
     },
     ApplyNodePropertyBatch: json => {
       const updates = JSON.parse(json); batches.push(updates);
+      const failedIndices = updates.flatMap((update, index) => staleNodes.has(update.node) ? [index] : []);
+      if (failedIndices.length)
+        return JSON.stringify({ accepted: false, applied: 0, error: 'stale_property_target', failedIndices });
       return JSON.stringify({ accepted: true, applied: updates.length });
     },
+    GetAnimationRuntimeStats: () => JSON.stringify({
+      activeTracks: 3, visual: 1, layoutPosition: 1, layoutSize: 1,
+    }),
   };
   if (packed) {
     native.bUseCompiledAnimationPlans = true;
@@ -98,7 +112,7 @@ async function fixture({ packed = false, cacheMaxEntries, cacheMaxBytes, allocat
     const callbacks = [...frames.values()]; frames.clear();
     for (const callback of callbacks) callback(time);
   };
-  return { module: context.animationModule, native, frames, starts, batches, controls,
+  return { module: context.animationModule, native, frames, starts, batches, controls, staleHandles, staleNodes,
     planRegistrations, compiledStarts, releases, context, runFrame };
 }
 
@@ -117,6 +131,26 @@ test('native completion events settle the animation promise with the opaque hand
   assert.equal(animation.state, 'finished');
   f.module.disposeAnimations();
   assert.equal(f.native.OnAnimationEvent.callbacks.size, 0);
+});
+
+test('native cancellation is idempotent after completion and stale native retirement', async () => {
+  const f = await fixture();
+  const completed = f.module.startAnimation(1, 'opacity', [
+    { offset: 0, value: 0 }, { offset: 1, value: 1 },
+  ], { duration: 1 });
+  f.native.OnAnimationEvent.emit(JSON.stringify({ handle: completed.handle, reason: 'completed', state: 'finished' }));
+  await completed.finished;
+  assert.doesNotThrow(() => completed.cancel());
+
+  const retired = f.module.startAnimation(1, 'opacity', [
+    { offset: 0, value: 0 }, { offset: 1, value: 1 },
+  ], { duration: 1 });
+  f.staleHandles.add(retired.handle);
+  assert.doesNotThrow(() => retired.cancel());
+  assert.equal(retired.state, 'cancelled');
+  assert.equal((await retired.finished).reason, 'cancelled');
+  assert.deepEqual(f.context.__errors, []);
+  f.module.disposeAnimations();
 });
 
 test('native batch starts every track in one host call and rejects duplicate targets before crossing', async () => {
@@ -158,6 +192,11 @@ test('compiled packed plans register once, reuse across batches and release afte
   assert.equal(debug.cacheBytes, 512);
   assert.equal(debug.activeBindings, 2);
   assert.equal(debug.evictions, 0);
+  assert.deepEqual({ ...debug.cachedPlansByCost }, { visual: 1, visualDiscrete: 0, paint: 0, layoutPosition: 0, layoutSize: 0 });
+  assert.deepEqual({ ...debug.activeTracksByCost }, {
+    activeTracks: 3, visual: 1, layoutPosition: 1, layoutSize: 1,
+  });
+  assert.equal(first[0].costClass, 'visual');
   for (const animation of first) animation.cancel();
 
   const second = f.module.startAnimations([request(3)])[0];
@@ -168,6 +207,30 @@ test('compiled packed plans register once, reuse across batches and release afte
   assert.equal(second.state, 'cancelled');
   assert.equal(f.releases.length, 1);
   assert.equal(f.releases[0].count, 1);
+});
+
+test('compiled packed px layout plans stay on the native MovieScene path', async () => {
+  const f = await fixture({ packed: true });
+  const animation = f.module.startAnimation(7, 'left', [
+    { offset: 0, value: '-32px', easing: 'ease-out' },
+    { offset: 1, value: '48px' },
+  ], { duration: 0.4, fallback: 'reject' });
+  assert.equal(animation.route, 'native');
+  assert.equal(animation.costClass, 'layout-position');
+  assert.equal(f.module.getAnimationPropertyCostClass('WIDTH'), 'layout-size');
+  assert.equal(f.module.getAnimationPropertyCostClass('unknown'), undefined);
+  assert.equal(f.planRegistrations.length, 1);
+  const planView = new DataView(f.planRegistrations[0].buffer);
+  assert.equal(planView.getUint16(4, true), 3, 'steps-capable packed plans use protocol version 3');
+  assert.equal(planView.getUint8(12), 3, 'left uses the stable ABI property id');
+  assert.equal(planView.getUint8(44), 3, 'the default fill mode is both');
+  assert.equal(f.planRegistrations[0].buffer.byteLength, 108, 'layout scalar keyframes use the compact float encoding');
+  assert.equal(f.compiledStarts.length, 1);
+  assert.equal(f.batches.length, 0, 'native layout animation does not enqueue JS property commits');
+  assert.deepEqual({ ...f.module.getAnimationStartDebugState().cachedPlansByCost },
+    { visual: 0, visualDiscrete: 0, paint: 0, layoutPosition: 1, layoutSize: 0 });
+  animation.cancel();
+  f.module.disposeAnimations();
 });
 
 test('compiled plan cache evicts least-recently-used inactive plans before registration', async () => {
@@ -271,10 +334,10 @@ test('zero-duration native tracks preserve exact timing and never enter fallback
 
 test('scalar fallback batches all tracks into one bridge call and schedules only active work', async () => {
   const f = await fixture();
-  const width = f.module.startAnimation(1, 'width', [
+  const width = f.module.startAnimation(1, 'margin-left', [
     { offset: 0, value: '0px' }, { offset: 1, value: '100px', easing: 'ease-in-out' },
   ], { duration: 1 });
-  const height = f.module.startAnimation(2, 'height', [
+  const height = f.module.startAnimation(2, 'padding-left', [
     { offset: 0, value: '10px' }, { offset: 1, value: '30px' },
   ], { duration: 1 });
   assert.equal(width.route, 'js_batched');
@@ -287,7 +350,7 @@ test('scalar fallback batches all tracks into one bridge call and schedules only
   f.runFrame(500);
   assert.equal(f.batches.length, 2);
   assert.equal(f.batches[1].length, 2);
-  assert.equal(f.batches[1].find(update => update.property === 'height').value, '20px');
+  assert.equal(f.batches[1].find(update => update.property === 'padding-left').value, '20px');
 
   width.pause(); height.pause();
   f.runFrame(600);
@@ -306,4 +369,95 @@ test('scalar fallback batches all tracks into one bridge call and schedules only
   assert.equal((await height.finished).reason, 'cancelled');
   f.module.disposeAnimations();
   assert.deepEqual(f.context.__errors, []);
+});
+
+test('fallback fill modes control delay contribution and completion restoration', async () => {
+  const cases = [
+    { fill: 'none', before: 0, final: '0px' },
+    { fill: 'forwards', before: 0, final: '20px' },
+    { fill: 'backwards', before: 1, final: '0px' },
+    { fill: 'both', before: 1, final: '20px' },
+  ];
+  for (const item of cases) {
+    const f = await fixture();
+    const animation = f.module.startAnimation(1, 'margin-left', [
+      { offset: 0, value: '10px' }, { offset: 1, value: '20px' },
+    ], { duration: 1, delay: 0.5, fill: item.fill });
+    f.runFrame(0);
+    assert.equal(f.batches.length, item.before, `${item.fill} delay contribution`);
+    f.runFrame(500);
+    assert.equal(f.batches.at(-1)[0].value, '10px');
+    f.runFrame(1500);
+    assert.equal(f.batches.at(-1)[0].value, item.final, `${item.fill} completion value`);
+    assert.equal((await animation.finished).reason, 'completed');
+    f.module.disposeAnimations();
+    assert.deepEqual(f.context.__errors, []);
+  }
+});
+
+test('steps easing preserves discontinuities in fallback and RAP3 plans', async () => {
+  const fallback = await fixture();
+  fallback.module.startAnimation(1, 'margin-left', [
+    { offset: 0, value: '0px', easing: 'steps(4, jump-end)' },
+    { offset: 1, value: '100px' },
+  ], { duration: 1 });
+  fallback.runFrame(0);
+  fallback.runFrame(240);
+  assert.equal(fallback.batches.at(-1)[0].value, '0px');
+  fallback.runFrame(250);
+  assert.equal(fallback.batches.at(-1)[0].value, '25px');
+  fallback.module.disposeAnimations();
+
+  const packed = await fixture({ packed: true });
+  packed.module.startAnimation(1, 'opacity', [
+    { offset: 0, value: 0, easing: 'step-start' }, { offset: 1, value: 1 },
+  ], { duration: 1, fallback: 'reject' });
+  const view = new DataView(packed.planRegistrations[0].buffer);
+  assert.equal(view.getUint16(4, true), 3);
+  assert.equal(view.getUint8(60), 2, 'steps uses the stable easing type id');
+  assert.equal(view.getFloat32(64, true), 1, 'step-start encodes one step');
+  assert.equal(view.getFloat32(68, true), 1, 'step-start encodes jump-start');
+  packed.module.disposeAnimations();
+});
+
+test('packed plan cache separates fill modes and encodes them in RAP v3', async () => {
+  const f = await fixture({ packed: true });
+  const start = fill => f.module.startAnimation(1, 'opacity', [
+    { offset: 0, value: 0 }, { offset: 1, value: 1 },
+  ], { duration: 1, fill, fallback: 'reject' });
+  const none = start('none');
+  none.cancel();
+  const both = start('both');
+  assert.equal(f.planRegistrations.length, 2);
+  assert.deepEqual(f.planRegistrations.map(entry => new DataView(entry.buffer).getUint8(44)), [0, 3]);
+  both.cancel();
+  f.module.disposeAnimations();
+});
+
+test('scalar fallback cancels removed targets and retries live tracks without reporting an error', async () => {
+  const f = await fixture();
+  const staleWidth = f.module.startAnimation(1, 'margin-left', [
+    { offset: 0, value: '0px' }, { offset: 1, value: '100px' },
+  ], { duration: 1 });
+  const staleHeight = f.module.startAnimation(1, 'padding-left', [
+    { offset: 0, value: '10px' }, { offset: 1, value: '30px' },
+  ], { duration: 1 });
+  const liveWidth = f.module.startAnimation(2, 'margin-left', [
+    { offset: 0, value: '20px' }, { offset: 1, value: '60px' },
+  ], { duration: 1 });
+  f.staleNodes.add(1);
+
+  f.runFrame(0);
+  assert.equal(f.batches.length, 2, 'one rejected batch is followed by one live-only retry');
+  assert.equal(f.batches[0].length, 3);
+  assert.deepEqual(f.batches[1].map(update => update.node), [2]);
+  assert.equal((await staleWidth.finished).reason, 'cancelled');
+  assert.equal((await staleHeight.finished).reason, 'cancelled');
+  assert.equal(liveWidth.state, 'running');
+  assert.equal(f.frames.size, 1);
+  assert.deepEqual(f.context.__errors, []);
+
+  f.runFrame(1000);
+  assert.equal((await liveWidth.finished).reason, 'completed');
+  f.module.disposeAnimations();
 });

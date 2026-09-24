@@ -12,9 +12,11 @@ The `RmlUiUnrealWebCompat` module in the unified plugin supplies versioned brows
 
 Use `URmlUiWebWidget` instead of `URmlUiWidget`. Its default profile is `WebModernV1`.
 
+These base-style profiles are separate from compiler capability profiles (`slate-rhi` and `dx11-compat`). Dynamic widgets default to `bEnforceRendererCapabilities = false`; enabling it selects the capability profile from `bUseSlateRenderer`. Calls without an explicit capability profile retain legacy conversion, including the build command below. Raw RML remains unchanged. See [the shared compiler contract](Tools/CSS_COMPILER.md) for strict compilation and explicit downgrade options.
+
 ## Build-stage HTML/CSS compiler
 
-`Tools` contains an independent Node.js compiler for browser CSS syntax that RmlUi 6.3 does not parse directly. It uses PostCSS and htmlparser2, rewrites inline `<style>` blocks and local linked stylesheets, writes only changed outputs, and emits a SHA-256 manifest next to the generated document. For static packaged content, Node is a development/build dependency only and the game consumes the generated files.
+`Tools` contains the CSS compiler shared by Vue SFC builds and WebCompat. It uses PostCSS and htmlparser2, rewrites inline `<style>` blocks and local linked stylesheets, writes only changed outputs, and emits a SHA-256 manifest next to the generated document. Explicit capability profiles additionally validate a bounded set of property values, selectors and renderer effects, with source/line/column and exact/approximate/degraded/rejected classifications. For static packaged content, Node is a development/build dependency only and the game consumes the generated files.
 
 From the host project:
 
@@ -53,13 +55,16 @@ Material bindings require the experimental Slate renderer and a host registratio
 
 ```cpp
 Widget->bUseSlateRenderer = true;
+Widget->bEnforceRendererCapabilities = true; // URmlUiWebWidget: reject unsupported dynamic CSS.
 Widget->RegisterMaterial(TEXT("panel.energy"), PanelMaterial); // MD_UI only.
 Widget->SetMaterialScalar(TEXT("panel.energy"), TEXT("GlowIntensity"), 1.25f);
 ```
 
-The generic registration and MID parameter API is intentionally defined once; projects do not expose a C++ function per material. Background materials fill the element paint area. Border materials use the CSS border widths and radii to generate a textured ring, so they do not cover element content. The current Slate prototype also supports ordinary geometry, textures, text, strict 2D affine transforms, nested rectangular scissor state, interleaved material draws, and verified filled-convex `Set`/`Intersect` masks on material draws. Rounded CSS boxes use this path. Perspective/3D transforms, inverse or concave material masks, layers, filters and RmlUi shaders still require the legacy renderer, so the native path is opt-in rather than the default. Ordinary geometry `SetInverse` has an ABI/runtime path but still needs a dedicated pixel fixture; material inverse/concave clipping and ABI v6 Layer/composite are explicit roadmap work. The runtime feature mask reports these boundaries today, and a later development/build lint pass can attach them to source CSS while Shipping keeps only low-cost diagnostics.
+The generic registration and MID parameter API is intentionally defined once; projects do not expose a C++ function per material. Background materials fill the element paint area. Border materials use the CSS border widths and radii to generate a textured ring, so they do not cover element content. The current Slate prototype also supports ordinary geometry, textures, text, strict 2D affine transforms, nested rectangular scissor state, interleaved material draws, and verified filled-convex `Set`/`Intersect` masks on material draws. Rounded CSS boxes use this path. Perspective/3D transforms, layers, filters and RmlUi shaders remain available through the legacy DX11 renderer, which does not support Unreal material aliases. Inverse or concave Unreal material masks remain unsupported. The Slate path is opt-in rather than the default. Ordinary geometry `SetInverse` has an ABI/runtime path but still needs a dedicated pixel fixture; material inverse/concave clipping and ABI v6 Layer/composite are explicit roadmap work. The shared compiler now attaches renderer capability failures or explicitly allowed downgrades to source CSS. Its schema/catalog is shared with new Vue manifest validation. Strict Slate runtime property writes also reject unsupported effects, depth transforms, shader tokens and unresolved transform/decorator `var()` values; style attributes cannot bypass the property guard. The runtime rendering feature mask remains the final backstop. These checks are a controlled subset, not a complete CSS validator or a sandbox.
 
-Compilation fails atomically for unsupported multiple-animation lists, mixed shorthand/longhand rules, `cubic-bezier()` / `steps()`, and directions without an RmlUi equivalent. Non-equivalent but runnable adaptations are recorded as warnings in the generated manifest. In particular, RmlUi 6.3 has no `animation-fill-mode`; `both` is dropped, and camel-case effect selectors may be broadened when RmlUi cannot reliably combine them with a base class selector.
+Compilation fails atomically for unsupported multiple-animation lists, mixed shorthand/longhand rules, `cubic-bezier()` / `steps()`, and directions without an RmlUi equivalent. Legacy conversion records runnable adaptations as warnings: for example, unsupported `animation-fill-mode:both` is dropped and some camel-case effect selectors may be broadened. Under an explicit strict capability profile, those semantic changes reject compilation. Dropping an unsupported renderer declaration requires `mode:'degrade'` plus its feature in `allowDegrade`; legacy motion/selector changes additionally require their diagnostic code in `allowDegradeCodes`. Dynamic widget `AllowedCssDegradations` exposes the feature policy. No Tailwind variable or unsupported effect is silently removed.
+
+Custom properties, inherited values and `var(--name,fallback)` use native RmlUi substitution. Prefer complete color tokens; the common `hsl(var(--channels))` channel-list pattern is rejected. Constant CSS RGB alpha becomes a native percentage, while constant RGB with a live scalar alpha token is converted to HSLA and may differ by native 8-bit rounding. Dynamic RGB channels combined with dynamic alpha, `color-mix`, `calc`, `env`, arbitrary Tailwind plugin output and full browser CSSOM remain unsupported. New Vue manifests include compiler-derived CSS requirements and explicitly declared host `requiredFeatures`; this is not static analysis of arbitrary JavaScript API usage.
 
 Run the compiler and real native renderer regression together with:
 
@@ -75,7 +80,7 @@ The Unreal automation suite includes three deterministic visual fixtures:
 - `BulmaCardE2E` adapts the structure of the open-source Bulma Card component and exercises the default `WebModernV1` profile without the experimental material renderer. It checks block flow, footer flex layout, and captured pixels. The fixture is intentionally a local CSS subset rather than a claim that the complete Bulma distribution is supported. Its attribution is stored beside the fixture in `Content/RmlUi/Tests/bulma-card.LICENSE.txt`.
 - `MultiWidgetMaterialLifecycleE2E` renders two widgets side by side with the same material alias but independent red/green MID instances, replaces only the first with blue, and verifies separate View owner trees. Forced GC confirms the replaced and explicitly unregistered MIDs are collectable, while shutting down one widget leaves the peer rendering and its resource tree intact.
 
-Both tests run without network access and write their latest screenshots under `Saved/RmlUiTests`.
+These fixtures run without network access and write their latest screenshots under `Saved/RmlUiTests`.
 
 ## Web / legacy / Slate visual parity
 
@@ -108,7 +113,7 @@ dependencies and launches the installed Microsoft Edge channel.
 
 ## Dynamic and LLM-generated documents
 
-`URmlUiWebWidget::LoadDocumentFromString` passes inline markup through the same conversion rules before RmlUi parses it. The compiler runs once for each unique combination of compiler version, source path, and markup, then reuses a bounded 32-entry in-memory cache. Parsing a cached HTML string does not run the compiler again.
+`URmlUiWebWidget::LoadDocumentFromString` passes inline markup through the same conversion rules before RmlUi parses it. The compiler runs once for each unique combination of compiler version, source path, markup, capability profile, mode and downgrade policy, then reuses a bounded 32-entry in-memory cache. A legacy result cannot satisfy a strict request. Parsing a cached HTML string does not run the compiler again. Strict dynamic HTML must inline its CSS: an unvalidated linked stylesheet is rejected. Disk compilation can validate local linked stylesheets, and versioned bundles can carry their precompiled outputs.
 
 Dynamic compilers implement the `IRmlUiWebDocumentCompiler` interface. Providers form a last-registered-wins stack; unregistering one clears the cache and automatically restores the previous provider. The base `URmlUiWidget` only exposes a pass-through preparation hook, so compatibility rules do not change raw RmlUi behavior. Set `bCompileDynamicBrowserCss` to false or select `RawRml` to bypass them per widget.
 

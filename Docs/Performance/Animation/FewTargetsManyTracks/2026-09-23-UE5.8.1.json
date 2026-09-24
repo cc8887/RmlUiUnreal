@@ -1,0 +1,276 @@
+{
+	"schema_version": 1,
+	"workload_id": "few-targets-many-tracks-v1",
+	"engine": "5.8.1-56057345+++UE5+Release-5.8",
+	"cpu": "AMD Ryzen 9 9950X 16-Core Processor            ",
+	"fixed_logical_tracks": 10000,
+	"warmup_frames": 5,
+	"sample_frames": 60,
+	"frame_delta_seconds": 0.01666666753590107,
+	"rmlui_ordered_replace": [
+		{
+			"target_elements": 1,
+			"tracks_per_target": 10000,
+			"logical_tracks": 10000,
+			"shared_definitions": 1,
+			"active_movie_scene_entities": 10000,
+			"physical_movie_scene_tracks": 0,
+			"composition": "ordered-replace-winner",
+			"bind_total_ms": 1.7564,
+			"batch_play_total_ms": 6.7425999999999995,
+			"process_memory_setup_delta_bytes": 868352,
+			"advance_frame_samples": 60,
+			"advance_frame_p50_ms": 0.065099999999999991,
+			"advance_frame_p95_ms": 0.093600000000000003,
+			"advance_frame_p99_ms": 0.1046,
+			"advance":
+			{
+				"calls": 60,
+				"total_ms": 3.7115999999999998,
+				"mean_ms": 0.061859999999999998
+			},
+			"evaluate":
+			{
+				"calls": 60,
+				"total_ms": 2.4304000000000001,
+				"mean_ms": 0.04050666666666667
+			},
+			"collect":
+			{
+				"calls": 60,
+				"total_ms": 1.1163000000000001,
+				"mean_ms": 0.018605
+			},
+			"commit":
+			{
+				"calls": 60,
+				"total_ms": 0.090999999999999984,
+				"mean_ms": 0.0015166666666666664
+			},
+			"evaluated_tracks": 60,
+			"committed_properties": 60,
+			"scope": "One immutable opacity definition is shared by every binding. Each logical track owns a MovieScene ECS entity and an ordered replace contribution. Stable arbitration evaluates and commits only the winning contribution per target. RmlUi update, Slate replay, render thread, GPU and present are excluded."
+		},
+		{
+			"target_elements": 10,
+			"tracks_per_target": 1000,
+			"logical_tracks": 10000,
+			"shared_definitions": 1,
+			"active_movie_scene_entities": 10000,
+			"physical_movie_scene_tracks": 0,
+			"composition": "ordered-replace-winner",
+			"bind_total_ms": 0.92549999999999999,
+			"batch_play_total_ms": 7.9320999999999993,
+			"process_memory_setup_delta_bytes": 0,
+			"advance_frame_samples": 60,
+			"advance_frame_p50_ms": 0.046199999999999998,
+			"advance_frame_p95_ms": 0.0499,
+			"advance_frame_p99_ms": 0.067900000000000002,
+			"advance":
+			{
+				"calls": 60,
+				"total_ms": 2.8169,
+				"mean_ms": 0.046948333333333335
+			},
+			"evaluate":
+			{
+				"calls": 60,
+				"total_ms": 1.7297999999999998,
+				"mean_ms": 0.028829999999999998
+			},
+			"collect":
+			{
+				"calls": 60,
+				"total_ms": 0.98609999999999998,
+				"mean_ms": 0.016434999999999998
+			},
+			"commit":
+			{
+				"calls": 60,
+				"total_ms": 0.059400000000000001,
+				"mean_ms": 0.00098999999999999999
+			},
+			"evaluated_tracks": 600,
+			"committed_properties": 600,
+			"scope": "One immutable opacity definition is shared by every binding. Each logical track owns a MovieScene ECS entity and an ordered replace contribution. Stable arbitration evaluates and commits only the winning contribution per target. RmlUi update, Slate replay, render thread, GPU and present are excluded."
+		},
+		{
+			"target_elements": 100,
+			"tracks_per_target": 100,
+			"logical_tracks": 10000,
+			"shared_definitions": 1,
+			"active_movie_scene_entities": 10000,
+			"physical_movie_scene_tracks": 0,
+			"composition": "ordered-replace-winner",
+			"bind_total_ms": 1.5907999999999998,
+			"batch_play_total_ms": 9.5234999999999985,
+			"process_memory_setup_delta_bytes": 8404992,
+			"advance_frame_samples": 60,
+			"advance_frame_p50_ms": 0.049599999999999998,
+			"advance_frame_p95_ms": 0.072000000000000008,
+			"advance_frame_p99_ms": 0.082500000000000004,
+			"advance":
+			{
+				"calls": 60,
+				"total_ms": 2.9725999999999999,
+				"mean_ms": 0.049543333333333335
+			},
+			"evaluate":
+			{
+				"calls": 60,
+				"total_ms": 1.7219,
+				"mean_ms": 0.028698333333333333
+			},
+			"collect":
+			{
+				"calls": 60,
+				"total_ms": 0.91669999999999996,
+				"mean_ms": 0.015278333333333333
+			},
+			"commit":
+			{
+				"calls": 60,
+				"total_ms": 0.27719999999999995,
+				"mean_ms": 0.0046199999999999991
+			},
+			"evaluated_tracks": 6000,
+			"committed_properties": 6000,
+			"scope": "One immutable opacity definition is shared by every binding. Each logical track owns a MovieScene ECS entity and an ordered replace contribution. Stable arbitration evaluates and commits only the winning contribution per target. RmlUi update, Slate replay, render thread, GPU and present are excluded."
+		},
+		{
+			"target_elements": 10000,
+			"tracks_per_target": 1,
+			"logical_tracks": 10000,
+			"shared_definitions": 1,
+			"active_movie_scene_entities": 10000,
+			"physical_movie_scene_tracks": 0,
+			"composition": "ordered-replace-winner",
+			"bind_total_ms": 190.30529999999999,
+			"batch_play_total_ms": 17.047499999999999,
+			"process_memory_setup_delta_bytes": 31768576,
+			"advance_frame_samples": 60,
+			"advance_frame_p50_ms": 0.89180000000000004,
+			"advance_frame_p95_ms": 2.0544000000000002,
+			"advance_frame_p99_ms": 3.0099,
+			"advance":
+			{
+				"calls": 60,
+				"total_ms": 62.760100000000001,
+				"mean_ms": 1.0460016666666667
+			},
+			"evaluate":
+			{
+				"calls": 60,
+				"total_ms": 13.2776,
+				"mean_ms": 0.22129333333333331
+			},
+			"collect":
+			{
+				"calls": 60,
+				"total_ms": 14.4185,
+				"mean_ms": 0.24030833333333332
+			},
+			"commit":
+			{
+				"calls": 60,
+				"total_ms": 32.159799999999997,
+				"mean_ms": 0.53599666666666657
+			},
+			"evaluated_tracks": 600000,
+			"committed_properties": 600000,
+			"scope": "One immutable opacity definition is shared by every binding. Each logical track owns a MovieScene ECS entity and an ordered replace contribution. Stable arbitration evaluates and commits only the winning contribution per target. RmlUi update, Slate replay, render thread, GPU and present are excluded."
+		}
+	],
+	"umg_additive": [
+		{
+			"target_widgets": 1,
+			"tracks_per_target": 10000,
+			"logical_tracks": 10000,
+			"physical_movie_scene_tracks": 10000,
+			"active_sections": 10000,
+			"composition": "additive",
+			"movie_scene_setup_total_ms": 175.69219999999999,
+			"play_total_ms": 37.457299999999996,
+			"final_translation_x": 0.10666666924953461,
+			"expected_translation_x": 0.10833334177732468,
+			"process_memory_setup_delta_bytes": 6303744,
+			"umg_moviescene_frame_samples": 60,
+			"umg_moviescene_frame_p50_ms": 0.14849999999999999,
+			"umg_moviescene_frame_p95_ms": 0.21870000000000001,
+			"umg_moviescene_frame_p99_ms": 0.24390000000000001,
+			"umg_slate_prepass_frame_samples": 60,
+			"umg_slate_prepass_frame_p50_ms": 0.0041999999999999997,
+			"umg_slate_prepass_frame_p95_ms": 0.0065999999999999991,
+			"umg_slate_prepass_frame_p99_ms": 0.0072999999999999992,
+			"scope": "One UWidgetAnimation and one possessable per target widget. Every logical track is a distinct physical UMovieScene2DTransformTrack with one overlapping additive TranslationX section. Frame time includes FWidgetAnimationState::Tick and shared UMG MovieScene ECS ForceFlush; Slate prepass is separate and window paint is excluded."
+		},
+		{
+			"target_widgets": 10,
+			"tracks_per_target": 1000,
+			"logical_tracks": 10000,
+			"physical_movie_scene_tracks": 10000,
+			"active_sections": 10000,
+			"composition": "additive",
+			"movie_scene_setup_total_ms": 186.85389999999998,
+			"play_total_ms": 41.946399999999997,
+			"final_translation_x": 0.10666666179895401,
+			"expected_translation_x": 0.10833334177732468,
+			"process_memory_setup_delta_bytes": 29417472,
+			"umg_moviescene_frame_samples": 60,
+			"umg_moviescene_frame_p50_ms": 0.18109999999999998,
+			"umg_moviescene_frame_p95_ms": 0.2581,
+			"umg_moviescene_frame_p99_ms": 0.29580000000000001,
+			"umg_slate_prepass_frame_samples": 60,
+			"umg_slate_prepass_frame_p50_ms": 0.0030999999999999999,
+			"umg_slate_prepass_frame_p95_ms": 0.0076999999999999994,
+			"umg_slate_prepass_frame_p99_ms": 0.015099999999999999,
+			"scope": "One UWidgetAnimation and one possessable per target widget. Every logical track is a distinct physical UMovieScene2DTransformTrack with one overlapping additive TranslationX section. Frame time includes FWidgetAnimationState::Tick and shared UMG MovieScene ECS ForceFlush; Slate prepass is separate and window paint is excluded."
+		},
+		{
+			"target_widgets": 100,
+			"tracks_per_target": 100,
+			"logical_tracks": 10000,
+			"physical_movie_scene_tracks": 10000,
+			"active_sections": 10000,
+			"composition": "additive",
+			"movie_scene_setup_total_ms": 196.33229999999998,
+			"play_total_ms": 39.650999999999996,
+			"final_translation_x": 0.10666666924953461,
+			"expected_translation_x": 0.10833334177732468,
+			"process_memory_setup_delta_bytes": 42029056,
+			"umg_moviescene_frame_samples": 60,
+			"umg_moviescene_frame_p50_ms": 0.15720000000000001,
+			"umg_moviescene_frame_p95_ms": 0.25499999999999995,
+			"umg_moviescene_frame_p99_ms": 0.39589999999999997,
+			"umg_slate_prepass_frame_samples": 60,
+			"umg_slate_prepass_frame_p50_ms": 0.0241,
+			"umg_slate_prepass_frame_p95_ms": 0.041200000000000001,
+			"umg_slate_prepass_frame_p99_ms": 0.0596,
+			"scope": "One UWidgetAnimation and one possessable per target widget. Every logical track is a distinct physical UMovieScene2DTransformTrack with one overlapping additive TranslationX section. Frame time includes FWidgetAnimationState::Tick and shared UMG MovieScene ECS ForceFlush; Slate prepass is separate and window paint is excluded."
+		},
+		{
+			"target_widgets": 10000,
+			"tracks_per_target": 1,
+			"logical_tracks": 10000,
+			"physical_movie_scene_tracks": 10000,
+			"active_sections": 10000,
+			"composition": "additive",
+			"movie_scene_setup_total_ms": 332.42299999999994,
+			"play_total_ms": 53.273099999999999,
+			"final_translation_x": 0.10666666924953461,
+			"expected_translation_x": 0.10833334177732468,
+			"process_memory_setup_delta_bytes": 79589376,
+			"umg_moviescene_frame_samples": 60,
+			"umg_moviescene_frame_p50_ms": 9.5523999999999987,
+			"umg_moviescene_frame_p95_ms": 10.856299999999999,
+			"umg_moviescene_frame_p99_ms": 11.207099999999999,
+			"umg_slate_prepass_frame_samples": 60,
+			"umg_slate_prepass_frame_p50_ms": 3.7787999999999995,
+			"umg_slate_prepass_frame_p95_ms": 4.5075000000000003,
+			"umg_slate_prepass_frame_p99_ms": 4.8343999999999996,
+			"scope": "One UWidgetAnimation and one possessable per target widget. Every logical track is a distinct physical UMovieScene2DTransformTrack with one overlapping additive TranslationX section. Frame time includes FWidgetAnimationState::Tick and shared UMG MovieScene ECS ForceFlush; Slate prepass is separate and window paint is excluded."
+		}
+	],
+	"comparison_contract": "Both paths keep 10000 active logical tracks while redistributing them across 1, 10, 100 and 10000 visual targets. RmlUi uses ordered replace contributions and evaluates only the active winner per target after stable arbitration. UMG uses one physical additive 2D Transform track and overlapping section per logical track, so it evaluates and blends every active contribution. The composition semantics differ intentionally; compare topology scaling within each path, not absolute parity between paths.",
+	"limitations": "Editor NullRHI CPU microbenchmark. One UUserWidget owns all UMG target widgets, so the UMG results exclude many-UUserWidget tick-manager map traversal. RmlUi includes its visual commit sink but excludes RmlUi update and Slate replay; UMG MovieScene and Slate prepass are separate and window paint is excluded. Render thread, GPU and present are excluded. Process memory deltas are order-sensitive. Preserve workload_id and run independent processes before using small differences as optimization evidence."
+}

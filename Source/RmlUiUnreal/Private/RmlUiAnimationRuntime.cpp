@@ -20,6 +20,41 @@ namespace RmlUiAnimation
 {
 using namespace UE::MovieScene;
 
+static bool IsFloatAnimatedProperty(ERmlUiAnimatedProperty Property)
+{
+    return Property == ERmlUiAnimatedProperty::None ||
+        Property == ERmlUiAnimatedProperty::Opacity ||
+        Property == ERmlUiAnimatedProperty::Visibility ||
+        (Property >= ERmlUiAnimatedProperty::LeftPx &&
+            Property <= ERmlUiAnimatedProperty::HeightPx);
+}
+
+static bool IsNonNegativeLayoutProperty(ERmlUiAnimatedProperty Property)
+{
+    return Property == ERmlUiAnimatedProperty::WidthPx ||
+        Property == ERmlUiAnimatedProperty::HeightPx;
+}
+
+static const char* AnimatedPropertyName(ERmlUiAnimatedProperty Property)
+{
+    switch (Property)
+    {
+    case ERmlUiAnimatedProperty::Opacity: return "opacity";
+    case ERmlUiAnimatedProperty::LeftPx: return "left";
+    case ERmlUiAnimatedProperty::TopPx: return "top";
+    case ERmlUiAnimatedProperty::RightPx: return "right";
+    case ERmlUiAnimatedProperty::BottomPx: return "bottom";
+    case ERmlUiAnimatedProperty::WidthPx: return "width";
+    case ERmlUiAnimatedProperty::HeightPx: return "height";
+    case ERmlUiAnimatedProperty::Visibility: return "visibility";
+    case ERmlUiAnimatedProperty::Color: return "color";
+    case ERmlUiAnimatedProperty::BackgroundColor: return "background-color";
+    case ERmlUiAnimatedProperty::BorderColor: return "border-color";
+    case ERmlUiAnimatedProperty::ImageColor: return "image-color";
+    default: return nullptr;
+    }
+}
+
 struct FComponentTypes
 {
     TComponentTypeID<uint32> RecordIndex;
@@ -103,6 +138,8 @@ static FTrackProgress EvaluateProgress(const TrackType& Track, double TimeSecond
     return {Normalized, bComplete};
 }
 
+static float EvaluateEasing(const FEasingLut& Easing, float Alpha);
+
 struct FEvaluateTrack
 {
     explicit FEvaluateTrack(double InTimeSeconds)
@@ -118,7 +155,9 @@ struct FEvaluateTrack
         const float Normalized = Progress.Normalized;
         if (Track.KeyframeCount < 2)
         {
-            Sample.Value = FMath::Lerp(Track.From, Track.To, Normalized);
+            Sample.Value = Track.bDiscrete
+                ? (Track.To > 0.0f ? Track.To : (Normalized >= 1.0f ? Track.To : Track.From))
+                : FMath::Lerp(Track.From, Track.To, Normalized);
             return;
         }
         if (Normalized >= Track.Keyframes[Track.KeyframeCount - 1].Offset)
@@ -145,12 +184,10 @@ struct FEvaluateTrack
         const FFloatKeyframe& B = Track.Keyframes[Sample.SegmentIndex + 1];
         const float SegmentAlpha = FMath::Clamp(
             (Normalized - A.Offset) / (B.Offset - A.Offset), 0.0f, 1.0f);
-        const float LutPosition = SegmentAlpha * EasingLutIntervals;
-        const int32 LutIndex = FMath::Min(FMath::FloorToInt(LutPosition), EasingLutIntervals - 1);
-        const float EasedAlpha = FMath::Lerp(
-            A.EasingToNext.Values[LutIndex], A.EasingToNext.Values[LutIndex + 1],
-            LutPosition - LutIndex);
-        Sample.Value = FMath::Lerp(A.Value, B.Value, EasedAlpha);
+        const float EasedAlpha = EvaluateEasing(A.EasingToNext, SegmentAlpha);
+        Sample.Value = Track.bDiscrete
+            ? (B.Value > 0.0f ? B.Value : (SegmentAlpha >= 1.0f ? B.Value : A.Value))
+            : FMath::Lerp(A.Value, B.Value, EasedAlpha);
         Sample.LastNormalized = Normalized;
     }
 
@@ -178,7 +215,9 @@ static FTransform2DValue LerpTransform(const FTransform2DValue& A, const FTransf
         FMath::Lerp(A.TranslationY, B.TranslationY, Alpha),
         FMath::Lerp(A.ScaleX, B.ScaleX, Alpha),
         FMath::Lerp(A.ScaleY, B.ScaleY, Alpha),
-        FMath::Lerp(A.RotationDegrees, B.RotationDegrees, Alpha)};
+        FMath::Lerp(A.RotationDegrees, B.RotationDegrees, Alpha),
+        FMath::Lerp(A.SkewXDegrees, B.SkewXDegrees, Alpha),
+        FMath::Lerp(A.SkewYDegrees, B.SkewYDegrees, Alpha)};
 }
 
 static bool NearlyEqual(const FTransform2DValue& A, const FTransform2DValue& B)
@@ -186,20 +225,23 @@ static bool NearlyEqual(const FTransform2DValue& A, const FTransform2DValue& B)
     return FMath::IsNearlyEqual(A.TranslationX, B.TranslationX) &&
         FMath::IsNearlyEqual(A.TranslationY, B.TranslationY) &&
         FMath::IsNearlyEqual(A.ScaleX, B.ScaleX) && FMath::IsNearlyEqual(A.ScaleY, B.ScaleY) &&
-        FMath::IsNearlyEqual(A.RotationDegrees, B.RotationDegrees);
+        FMath::IsNearlyEqual(A.RotationDegrees, B.RotationDegrees) &&
+        FMath::IsNearlyEqual(A.SkewXDegrees, B.SkewXDegrees) &&
+        FMath::IsNearlyEqual(A.SkewYDegrees, B.SkewYDegrees);
 }
 
 static bool IsFiniteTransformValue(const FRmlUiTransform2D& Value)
 {
     return FMath::IsFinite(Value.TranslationX) && FMath::IsFinite(Value.TranslationY) &&
         FMath::IsFinite(Value.ScaleX) && FMath::IsFinite(Value.ScaleY) &&
-        FMath::IsFinite(Value.RotationDegrees);
+        FMath::IsFinite(Value.RotationDegrees) && FMath::IsFinite(Value.SkewXDegrees) &&
+        FMath::IsFinite(Value.SkewYDegrees);
 }
 
 static FTransform2DValue ToInternalTransform(const FRmlUiTransform2D& Value)
 {
     return {Value.TranslationX, Value.TranslationY, Value.ScaleX, Value.ScaleY,
-        Value.RotationDegrees};
+        Value.RotationDegrees, Value.SkewXDegrees, Value.SkewYDegrees};
 }
 
 static bool IsValidEasing(const FRmlUiAnimationEasing& Easing)
@@ -208,8 +250,15 @@ static bool IsValidEasing(const FRmlUiAnimationEasing& Easing)
     {
         return true;
     }
-    return Easing.Type == ERmlUiAnimationEasingType::CubicBezier &&
-        FMath::IsFinite(Easing.X1) && FMath::IsFinite(Easing.Y1) &&
+    if (Easing.Type == ERmlUiAnimationEasingType::Steps)
+    {
+        return Easing.StepCount >= 1 && Easing.StepCount <= MAX_uint16 &&
+            Easing.StepPosition >= ERmlUiAnimationStepPosition::JumpEnd &&
+            Easing.StepPosition <= ERmlUiAnimationStepPosition::JumpBoth &&
+            (Easing.StepPosition != ERmlUiAnimationStepPosition::JumpNone || Easing.StepCount >= 2);
+    }
+    if (Easing.Type != ERmlUiAnimationEasingType::CubicBezier) return false;
+    return FMath::IsFinite(Easing.X1) && FMath::IsFinite(Easing.Y1) &&
         FMath::IsFinite(Easing.X2) && FMath::IsFinite(Easing.Y2) &&
         Easing.X1 >= 0.0f && Easing.X1 <= 1.0f &&
         Easing.X2 >= 0.0f && Easing.X2 <= 1.0f;
@@ -219,6 +268,21 @@ static bool IsValidDirection(ERmlUiAnimationDirection Direction)
 {
     return Direction >= ERmlUiAnimationDirection::Normal &&
         Direction <= ERmlUiAnimationDirection::AlternateReverse;
+}
+
+static bool IsValidFill(ERmlUiAnimationFillMode Fill)
+{
+    return Fill >= ERmlUiAnimationFillMode::None && Fill <= ERmlUiAnimationFillMode::Both;
+}
+
+static bool FillsBackwards(ERmlUiAnimationFillMode Fill)
+{
+    return Fill == ERmlUiAnimationFillMode::Backwards || Fill == ERmlUiAnimationFillMode::Both;
+}
+
+static bool FillsForwards(ERmlUiAnimationFillMode Fill)
+{
+    return Fill == ERmlUiAnimationFillMode::Forwards || Fill == ERmlUiAnimationFillMode::Both;
 }
 
 static float CubicBezierCoordinate(float T, float P1, float P2)
@@ -231,6 +295,10 @@ static float CubicBezierCoordinate(float T, float P1, float P2)
 static FEasingLut BuildEasingLut(const FRmlUiAnimationEasing& Easing)
 {
     FEasingLut Result;
+    Result.Type = static_cast<uint8>(Easing.Type);
+    Result.StepCount = static_cast<uint16>(Easing.StepCount);
+    Result.StepPosition = static_cast<uint8>(Easing.StepPosition);
+    if (Easing.Type == ERmlUiAnimationEasingType::Steps) return Result;
     for (int32 Index = 0; Index <= EasingLutIntervals; ++Index)
     {
         const float X = static_cast<float>(Index) / EasingLutIntervals;
@@ -260,6 +328,32 @@ static FEasingLut BuildEasingLut(const FRmlUiAnimationEasing& Easing)
     return Result;
 }
 
+static float EvaluateEasing(const FEasingLut& Easing, float Alpha)
+{
+    Alpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+    if (Easing.Type == static_cast<uint8>(ERmlUiAnimationEasingType::Steps))
+    {
+        int32 CurrentStep = FMath::FloorToInt(Alpha * Easing.StepCount);
+        int32 JumpCount = Easing.StepCount;
+        const ERmlUiAnimationStepPosition Position =
+            static_cast<ERmlUiAnimationStepPosition>(Easing.StepPosition);
+        if (Position == ERmlUiAnimationStepPosition::JumpStart ||
+            Position == ERmlUiAnimationStepPosition::JumpBoth)
+        {
+            ++CurrentStep;
+        }
+        if (Position == ERmlUiAnimationStepPosition::JumpNone)
+            --JumpCount;
+        else if (Position == ERmlUiAnimationStepPosition::JumpBoth)
+            ++JumpCount;
+        return static_cast<float>(FMath::Clamp(CurrentStep, 0, JumpCount)) / JumpCount;
+    }
+    const float LutPosition = Alpha * EasingLutIntervals;
+    const int32 LutIndex = FMath::Min(FMath::FloorToInt(LutPosition), EasingLutIntervals - 1);
+    return FMath::Lerp(Easing.Values[LutIndex], Easing.Values[LutIndex + 1],
+        LutPosition - LutIndex);
+}
+
 static bool BuildFloatKeyframes(
     const TArray<FRmlUiFloatAnimationKeyframe>& Source,
     ERmlUiAnimatedProperty Property,
@@ -282,6 +376,9 @@ static bool BuildFloatKeyframes(
             Keyframe.Offset < PreviousOffset ||
             (Property == ERmlUiAnimatedProperty::Opacity &&
                 (Keyframe.Value < 0.0f || Keyframe.Value > 1.0f)) ||
+            (Property == ERmlUiAnimatedProperty::Visibility &&
+                Keyframe.Value != 0.0f && Keyframe.Value != 1.0f) ||
+            (IsNonNegativeLayoutProperty(Property) && Keyframe.Value < 0.0f) ||
             (Index + 1 < Source.Num() && !IsValidEasing(Keyframe.EasingToNext)))
         {
             OutKeyframes.Reset();
@@ -366,11 +463,7 @@ struct FEvaluateTransform2DTrack
         const FTransform2DKeyframe& B = Track.Keyframes[Sample.SegmentIndex + 1];
         const float SegmentAlpha = FMath::Clamp(
             (Normalized - A.Offset) / (B.Offset - A.Offset), 0.0f, 1.0f);
-        const float LutPosition = SegmentAlpha * EasingLutIntervals;
-        const int32 LutIndex = FMath::Min(FMath::FloorToInt(LutPosition), EasingLutIntervals - 1);
-        const float EasedAlpha = FMath::Lerp(
-            A.EasingToNext.Values[LutIndex], A.EasingToNext.Values[LutIndex + 1],
-            LutPosition - LutIndex);
+        const float EasedAlpha = EvaluateEasing(A.EasingToNext, SegmentAlpha);
         Sample.Value = LerpTransform(A.Value, B.Value, EasedAlpha);
         Sample.LastNormalized = Normalized;
     }
@@ -450,8 +543,15 @@ namespace
 {
 RmlUE_AnimatedPropertyUpdate ToBridgeUpdate(const FRmlUiAnimationCommitUpdate& Update)
 {
+    float Values[7] = {Update.Values[0], Update.Values[1], Update.Values[2], Update.Values[3],
+        Update.Values[4], Update.Values[5], Update.Values[6]};
+    // Timing curves may overshoot, but CSS opacity's used value is bounded before it crosses the ABI.
+    if (Update.Property == ERmlUiAnimatedProperty::Opacity && FMath::IsFinite(Values[0]))
+    {
+        Values[0] = FMath::Clamp(Values[0], 0.0f, 1.0f);
+    }
     return {Update.View, Update.Node, static_cast<uint32>(Update.Property),
-        {Update.Values[0], Update.Values[1], Update.Values[2], Update.Values[3], Update.Values[4]}, Update.Target};
+        {Values[0], Values[1], Values[2], Values[3], Values[4], Values[5], Values[6]}, Update.Target};
 }
 
 uint64 BridgeNanosecondsToCycles(uint64 Nanoseconds)
@@ -474,7 +574,8 @@ public:
         {
             const FRmlUiAnimationCommitUpdate& Update = Updates[Index];
             if (!Update.bFinal && (Update.Property == ERmlUiAnimatedProperty::Opacity ||
-                Update.Property == ERmlUiAnimatedProperty::Transform2D))
+                Update.Property == ERmlUiAnimatedProperty::Transform2D ||
+                Update.Property == ERmlUiAnimatedProperty::BackgroundColor))
             {
                 Candidates.Add(ToBridgeUpdate(Update));
                 CandidateIndices.Add(Index);
@@ -583,6 +684,33 @@ public:
 };
 }
 
+ERmlUiAnimationCostClass GetRmlUiAnimationCostClass(ERmlUiAnimatedProperty Property)
+{
+    switch (Property)
+    {
+    case ERmlUiAnimatedProperty::Opacity:
+    case ERmlUiAnimatedProperty::Transform2D:
+        return ERmlUiAnimationCostClass::Visual;
+    case ERmlUiAnimatedProperty::Visibility:
+        return ERmlUiAnimationCostClass::VisualDiscrete;
+    case ERmlUiAnimatedProperty::Color:
+    case ERmlUiAnimatedProperty::BackgroundColor:
+    case ERmlUiAnimatedProperty::BorderColor:
+    case ERmlUiAnimatedProperty::ImageColor:
+        return ERmlUiAnimationCostClass::Paint;
+    case ERmlUiAnimatedProperty::LeftPx:
+    case ERmlUiAnimatedProperty::TopPx:
+    case ERmlUiAnimatedProperty::RightPx:
+    case ERmlUiAnimatedProperty::BottomPx:
+        return ERmlUiAnimationCostClass::LayoutPosition;
+    case ERmlUiAnimatedProperty::WidthPx:
+    case ERmlUiAnimatedProperty::HeightPx:
+        return ERmlUiAnimationCostClass::LayoutSize;
+    default:
+        return ERmlUiAnimationCostClass::Unknown;
+    }
+}
+
 class FRmlUiAnimationRuntime::FImpl
 {
 public:
@@ -663,7 +791,7 @@ public:
         uint64 BindingId = 0;
         FNativeTargetKey NativeTarget;
         bool bHasNativeTarget = false;
-        float LastValues[5] = {};
+        float LastValues[7] = {};
         bool bHasLastValue = false;
         FRmlUiAnimationValueCallback OnValue;
         FRmlUiAnimationCompletionCallback OnComplete;
@@ -675,6 +803,7 @@ public:
         bool bPaused = false;
         bool bScheduledPausedSample = false;
         bool bSuppressBeforeStart = false;
+        bool bRetainAfterFinish = true;
         bool bOccluded = false;
         bool bLayeredContribution = false;
         int32 LayeredGroupIndex = INDEX_NONE;
@@ -816,7 +945,7 @@ public:
     {
         check(IsInGameThread());
         TArray<RmlUiAnimation::FFloatKeyframe> BuiltKeyframes;
-        if ((Property != ERmlUiAnimatedProperty::None && Property != ERmlUiAnimatedProperty::Opacity) ||
+        if (!RmlUiAnimation::IsFloatAnimatedProperty(Property) ||
             (!InDefinition.Keyframes.IsEmpty() &&
                 !RmlUiAnimation::BuildFloatKeyframes(InDefinition.Keyframes, Property, BuiltKeyframes)) ||
             (InDefinition.Keyframes.IsEmpty() &&
@@ -824,9 +953,16 @@ public:
             InDefinition.DurationSeconds < 0.0 || InDefinition.Iterations <= 0 ||
             !FMath::IsFinite(InDefinition.PlaybackRate) || InDefinition.PlaybackRate <= 0.0 ||
             !RmlUiAnimation::IsValidDirection(InDefinition.Direction) ||
+            !RmlUiAnimation::IsValidFill(InDefinition.Fill) ||
             (InDefinition.Keyframes.IsEmpty() && Property == ERmlUiAnimatedProperty::Opacity &&
                 (InDefinition.From < 0.0f || InDefinition.From > 1.0f ||
-                    InDefinition.To < 0.0f || InDefinition.To > 1.0f)))
+                    InDefinition.To < 0.0f || InDefinition.To > 1.0f)) ||
+            (InDefinition.Keyframes.IsEmpty() && Property == ERmlUiAnimatedProperty::Visibility &&
+                ((InDefinition.From != 0.0f && InDefinition.From != 1.0f) ||
+                    (InDefinition.To != 0.0f && InDefinition.To != 1.0f))) ||
+            (InDefinition.Keyframes.IsEmpty() &&
+                RmlUiAnimation::IsNonNegativeLayoutProperty(Property) &&
+                (InDefinition.From < 0.0f || InDefinition.To < 0.0f)))
         {
             return {};
         }
@@ -847,7 +983,8 @@ public:
     }
 
     FRmlUiAnimationDefinitionHandle RegisterTransform2DDefinition(
-        const FRmlUiTransform2DAnimationDefinition& InDefinition)
+        const FRmlUiTransform2DAnimationDefinition& InDefinition,
+        ERmlUiAnimatedProperty Property = ERmlUiAnimatedProperty::Transform2D)
     {
         check(IsInGameThread());
         TArray<RmlUiAnimation::FTransform2DKeyframe> BuiltKeyframes;
@@ -858,7 +995,8 @@ public:
                     !RmlUiAnimation::IsFiniteTransformValue(InDefinition.To))) ||
             InDefinition.DurationSeconds < 0.0 || InDefinition.Iterations <= 0 ||
             !FMath::IsFinite(InDefinition.PlaybackRate) || InDefinition.PlaybackRate <= 0.0 ||
-            !RmlUiAnimation::IsValidDirection(InDefinition.Direction))
+            !RmlUiAnimation::IsValidDirection(InDefinition.Direction) ||
+            !RmlUiAnimation::IsValidFill(InDefinition.Fill))
         {
             return {};
         }
@@ -867,7 +1005,7 @@ public:
         FDefinitionRecord& Record = Definitions[Index];
         Record.BindingCount = 0;
         Record.Type = EDefinitionType::Transform2D;
-        Record.Property = ERmlUiAnimatedProperty::Transform2D;
+        Record.Property = Property;
         Record.Transform2D = InDefinition;
         Record.Transform2D.Keyframes.Reset();
         Record.TransformKeyframes = MoveTemp(BuiltKeyframes);
@@ -1084,6 +1222,7 @@ public:
             Desc.BindingId = BindingRecord->ReplacementId;
             Desc.PlaybackRate = Source.PlaybackRate;
             Desc.Direction = Source.Direction;
+            Desc.Fill = Source.Fill;
             const RmlUiAnimation::FFloatKeyframe* Keyframes =
                 Definition->FloatKeyframes.IsEmpty() ? nullptr : Definition->FloatKeyframes.GetData();
             const int32 KeyframeCount = Definition->FloatKeyframes.Num();
@@ -1105,6 +1244,7 @@ public:
         Desc.BindingId = BindingRecord->ReplacementId;
         Desc.PlaybackRate = Source.PlaybackRate;
         Desc.Direction = Source.Direction;
+        Desc.Fill = Source.Fill;
         return PlayNodeTransform2D(
             BindingRecord->NativeTarget.View, BindingRecord->NativeTarget.Node,
             Desc, MoveTemp(OnComplete), Binding, &BindingRecord->NativeTarget,
@@ -1241,7 +1381,8 @@ public:
         Desc.DelaySeconds = FMath::Max(Desc.DelaySeconds, 0.0);
         Desc.Iterations = FMath::Max(Desc.Iterations, 1);
         if (!FMath::IsFinite(Desc.PlaybackRate) || Desc.PlaybackRate <= 0.0 ||
-            !RmlUiAnimation::IsValidDirection(Desc.Direction)) return {};
+            !RmlUiAnimation::IsValidDirection(Desc.Direction) ||
+            !RmlUiAnimation::IsValidFill(Desc.Fill)) return {};
 
         if (Desc.BindingId != 0 && !Contribution)
         {
@@ -1275,7 +1416,8 @@ public:
             static_cast<uint8>(Desc.Direction),
             Keyframes,
             KeyframeCount,
-            Contribution && Contribution->bSuppressBeforeStart};
+            Contribution ? Contribution->bSuppressBeforeStart : !RmlUiAnimation::FillsBackwards(Desc.Fill),
+            NativeTarget && NativeTarget->Property == ERmlUiAnimatedProperty::Visibility};
         const UE::MovieScene::FMovieSceneEntityID Entity = UE::MovieScene::FEntityBuilder()
             .Add(Components.RecordIndex, RecordIndex)
             .Add(Components.Track, Track)
@@ -1297,7 +1439,9 @@ public:
         Record.DurationSeconds = Desc.DurationSeconds;
         Record.Iterations = Desc.Iterations;
         Record.bPaused = false;
-        Record.bSuppressBeforeStart = Contribution && Contribution->bSuppressBeforeStart;
+        Record.bSuppressBeforeStart = Contribution
+            ? Contribution->bSuppressBeforeStart : !RmlUiAnimation::FillsBackwards(Desc.Fill);
+        Record.bRetainAfterFinish = RmlUiAnimation::FillsForwards(Desc.Fill);
         Record.bLayeredContribution = Contribution != nullptr;
         Record.LayeredGroupIndex = Contribution && NativeTarget
             ? AddLayeredRecord(*NativeTarget, RecordIndex) : INDEX_NONE;
@@ -1311,6 +1455,7 @@ public:
             {
                 NativeTargetToHandle.Add(*NativeTarget, Handle.Value);
             }
+            AdjustViewActivity(Record, 1);
         }
         HandleToRecord.Add(Handle.Value, RecordIndex);
         ++ActiveRecordCount;
@@ -1344,16 +1489,20 @@ public:
         const FRmlUiAnimationContributionSpec* Contribution = nullptr)
     {
         check(IsInGameThread());
-        if (!View || !Node || Property != ERmlUiAnimatedProperty::Opacity ||
+        const char* PropertyName = RmlUiAnimation::AnimatedPropertyName(Property);
+        if (!View || !Node || !PropertyName ||
             CancellingViews.Contains(View) ||
             !FMath::IsFinite(Desc.From) || !FMath::IsFinite(Desc.To) ||
-            Desc.From < 0.0f || Desc.From > 1.0f || Desc.To < 0.0f || Desc.To > 1.0f ||
+            (Property == ERmlUiAnimatedProperty::Opacity &&
+                (Desc.From < 0.0f || Desc.From > 1.0f || Desc.To < 0.0f || Desc.To > 1.0f)) ||
+            (RmlUiAnimation::IsNonNegativeLayoutProperty(Property) &&
+                (Desc.From < 0.0f || Desc.To < 0.0f)) ||
             Desc.DurationSeconds < 0.0 || Desc.Iterations <= 0 ||
             !(ResolvedTarget ? RmlUE_IsAnimationTargetValid(View, ResolvedTarget->Target) : RmlUE_IsNodeValid(View, Node)))
         {
             return {};
         }
-        RmlUE_CancelAnimation(View, Node, "opacity");
+        RmlUE_CancelAnimation(View, Node, PropertyName);
         const FNativeTargetKey Target = ResolvedTarget
             ? *ResolvedTarget : FNativeTargetKey{View, Node, Property, 0};
         return Play(Desc, {}, MoveTemp(OnComplete), &Target, ResolvedBinding,
@@ -1376,12 +1525,14 @@ public:
         {
             return FMath::IsFinite(Value.TranslationX) && FMath::IsFinite(Value.TranslationY) &&
                 FMath::IsFinite(Value.ScaleX) && FMath::IsFinite(Value.ScaleY) &&
-                FMath::IsFinite(Value.RotationDegrees);
+                FMath::IsFinite(Value.RotationDegrees) && FMath::IsFinite(Value.SkewXDegrees) &&
+                FMath::IsFinite(Value.SkewYDegrees);
         };
         if (!View || !Node || CancellingViews.Contains(View) || !IsFinite(InDesc.From) || !IsFinite(InDesc.To) ||
             InDesc.DurationSeconds < 0.0 || InDesc.Iterations <= 0 ||
             !FMath::IsFinite(InDesc.PlaybackRate) || InDesc.PlaybackRate <= 0.0 ||
             !RmlUiAnimation::IsValidDirection(InDesc.Direction) ||
+            !RmlUiAnimation::IsValidFill(InDesc.Fill) ||
             !(ResolvedTarget ? RmlUE_IsAnimationTargetValid(View, ResolvedTarget->Target) : RmlUE_IsNodeValid(View, Node)))
         {
             return {};
@@ -1395,7 +1546,8 @@ public:
             CancelBinding(Desc.BindingId, ERmlUiAnimationCompletionReason::Replaced);
         if (!Contribution) CancelNativeTarget(Target, ERmlUiAnimationCompletionReason::Replaced);
         if (ResolvedBinding.IsValid() && !FindBinding(ResolvedBinding)) return {};
-        RmlUE_CancelAnimation(View, Node, "transform");
+        if (const char* PropertyName = RmlUiAnimation::AnimatedPropertyName(Target.Property))
+            RmlUE_CancelAnimation(View, Node, PropertyName);
 
         FRmlUiAnimationHandle Handle{NextHandle++};
         if (!Handle.IsValid()) Handle.Value = NextHandle++;
@@ -1406,7 +1558,8 @@ public:
             RmlUiAnimation::ToInternalTransform(Desc.To),
             CurrentTimeSeconds, -Desc.DelaySeconds, Desc.PlaybackRate,
             Desc.DurationSeconds, Desc.Iterations, static_cast<uint8>(Desc.Direction),
-            Keyframes, KeyframeCount, Contribution && Contribution->bSuppressBeforeStart};
+            Keyframes, KeyframeCount,
+            Contribution ? Contribution->bSuppressBeforeStart : !RmlUiAnimation::FillsBackwards(Desc.Fill)};
         const UE::MovieScene::FMovieSceneEntityID Entity = UE::MovieScene::FEntityBuilder()
             .Add(Components.RecordIndex, RecordIndex)
             .Add(Components.TransformTrack, Track)
@@ -1429,12 +1582,15 @@ public:
         Record.DurationSeconds = Desc.DurationSeconds;
         Record.Iterations = Desc.Iterations;
         Record.bPaused = false;
-        Record.bSuppressBeforeStart = Contribution && Contribution->bSuppressBeforeStart;
+        Record.bSuppressBeforeStart = Contribution
+            ? Contribution->bSuppressBeforeStart : !RmlUiAnimation::FillsBackwards(Desc.Fill);
+        Record.bRetainAfterFinish = RmlUiAnimation::FillsForwards(Desc.Fill);
         Record.bLayeredContribution = Contribution != nullptr;
         Record.LayeredGroupIndex = Contribution
             ? AddLayeredRecord(Target, RecordIndex) : INDEX_NONE;
         Record.ContributionOrder = Contribution ? Contribution->Order : 0;
         Record.bActive = true;
+        AdjustViewActivity(Record, 1);
         HandleToRecord.Add(Handle.Value, RecordIndex);
         if (!Contribution)
             NativeTargetToHandle.Add(Target, Handle.Value);
@@ -1455,10 +1611,7 @@ public:
         {
             return false;
         }
-        if (!Record.bLayeredContribution)
-        {
-            CommitLastVisualValue(Record);
-        }
+        RestoreUnderlyingValue(Record, !Record.bLayeredContribution);
         ReleaseEntity(Record.Entity);
         if (Record.OnComplete)
         {
@@ -1530,6 +1683,31 @@ public:
         if (ViewCount == 0)
         {
             ViewEvaluatingRecordCounts.Remove(Record.NativeTarget.View);
+        }
+    }
+
+    void AdjustViewActivity(const FRecord& Record, int32 Delta)
+    {
+        if (!Record.bHasNativeTarget || !Record.NativeTarget.View) return;
+        FRmlUiAnimationViewActivity& Activity =
+            ViewActivities.FindOrAdd(Record.NativeTarget.View);
+        Activity.Total += Delta;
+        switch (GetRmlUiAnimationCostClass(Record.NativeTarget.Property))
+        {
+        case ERmlUiAnimationCostClass::Visual: Activity.Visual += Delta; break;
+        case ERmlUiAnimationCostClass::LayoutPosition: Activity.LayoutPosition += Delta; break;
+        case ERmlUiAnimationCostClass::LayoutSize: Activity.LayoutSize += Delta; break;
+        case ERmlUiAnimationCostClass::VisualDiscrete: Activity.VisualDiscrete += Delta; break;
+        case ERmlUiAnimationCostClass::Paint: Activity.Paint += Delta; break;
+        default: break;
+        }
+        check(Activity.Total >= 0 && Activity.Visual >= 0 &&
+            Activity.LayoutPosition >= 0 && Activity.LayoutSize >= 0);
+        if (Activity.Total == 0)
+        {
+            check(Activity.Visual == 0 && Activity.LayoutPosition == 0 &&
+                Activity.LayoutSize == 0);
+            ViewActivities.Remove(Record.NativeTarget.View);
         }
     }
 
@@ -1976,26 +2154,12 @@ public:
         return true;
     }
 
-    void CommitLastVisualValue(const FRecord& Record)
+    void RestoreUnderlyingValue(const FRecord& Record, bool bRestoreWhenShared)
     {
-        if (!Record.bHasNativeTarget || !Record.bHasLastValue ||
-            Record.NativeTarget.Property != ERmlUiAnimatedProperty::Opacity ||
-            !(Record.NativeTarget.Target
-                ? RmlUE_IsAnimationTargetValid(Record.NativeTarget.View, Record.NativeTarget.Target)
-                : RmlUE_IsNodeValid(Record.NativeTarget.View, Record.NativeTarget.Node)))
+        if (Record.bHasNativeTarget && Record.NativeTarget.Target)
         {
-            return;
-        }
-        FRmlUiAnimationCommitUpdate Update{Record.NativeTarget.View, Record.NativeTarget.Node,
-            Record.NativeTarget.Property,
-            {Record.LastValues[0], Record.LastValues[1], Record.LastValues[2], Record.LastValues[3], Record.LastValues[4]},
-            true, Record.NativeTarget.Target};
-        TArray<ERmlUiAnimationCommitResult> Results;
-        PropertyCommitSink->Commit(MakeArrayView(&Update, 1), Results);
-        if (Results.Num() == 1 && Results[0] == ERmlUiAnimationCommitResult::Committed)
-        {
-            const RmlUE_AnimatedPropertyUpdate BridgeUpdate = ToBridgeUpdate(Update);
-            RmlUE_ClearAnimatedVisualProperties(&BridgeUpdate, 1);
+            RmlUE_RestoreAnimationTargetProperty(
+                Record.NativeTarget.View, Record.NativeTarget.Target, bRestoreWhenShared ? 1 : 0);
         }
     }
 
@@ -2327,6 +2491,8 @@ public:
                         Record.LastValues[2] = Output.Value.ScaleX;
                         Record.LastValues[3] = Output.Value.ScaleY;
                         Record.LastValues[4] = Output.Value.RotationDegrees;
+                        Record.LastValues[5] = Output.Value.SkewXDegrees;
+                        Record.LastValues[6] = Output.Value.SkewYDegrees;
                         Record.bHasLastValue = true;
                         const int32 DispatchIndex = TransformDispatches.Add(FTransformDispatch{
                             RecordIndex, Output.Value, Output.bChanged,
@@ -2413,7 +2579,8 @@ public:
                 const auto& V = Dispatch.Value;
                 CommitUpdates.Add({Record.NativeTarget.View, Record.NativeTarget.Node,
                     Record.NativeTarget.Property,
-                    {V.TranslationX, V.TranslationY, V.ScaleX, V.ScaleY, V.RotationDegrees}, Dispatch.bComplete,
+                    {V.TranslationX, V.TranslationY, V.ScaleX, V.ScaleY, V.RotationDegrees,
+                        V.SkewXDegrees, V.SkewYDegrees}, Dispatch.bComplete,
                     Record.NativeTarget.Target});
                 CommitHandles.Add(Record.Handle.Value);
             }
@@ -2495,7 +2662,8 @@ public:
             ++CommittedPropertyCount;
             const FRmlUiAnimationCommitUpdate& Update = CommitUpdates[Index];
             if (Update.bFinal && (Update.Property == ERmlUiAnimatedProperty::Opacity ||
-                Update.Property == ERmlUiAnimatedProperty::Transform2D))
+                Update.Property == ERmlUiAnimatedProperty::Transform2D ||
+                Update.Property == ERmlUiAnimatedProperty::BackgroundColor))
             {
                 ClearVisualUpdates.Add(ToBridgeUpdate(Update));
             }
@@ -2552,6 +2720,8 @@ public:
             }
             if (Dispatch.bComplete || bInvalidNativeTarget)
             {
+                if (Dispatch.bComplete && !Record.bRetainAfterFinish)
+                    RestoreUnderlyingValue(Record, !Record.bLayeredContribution);
                 RemovalHandles.Add(Handle);
                 RemovalRecordIndices.Add(Dispatch.RecordIndex);
             }
@@ -2570,6 +2740,8 @@ public:
             }
             if (Dispatch.bComplete || bInvalidNativeTarget)
             {
+                if (Dispatch.bComplete && !Record.bRetainAfterFinish)
+                    RestoreUnderlyingValue(Record, !Record.bLayeredContribution);
                 RemovalHandles.Add(Handle);
                 RemovalRecordIndices.Add(Dispatch.RecordIndex);
             }
@@ -2724,6 +2896,7 @@ public:
         OutRecord = MoveTemp(Records[RecordIndex]);
         Records[RecordIndex] = FRecord{};
         FreeRecordIndices.Add(RecordIndex);
+        AdjustViewActivity(OutRecord, -1);
         --ActiveRecordCount;
         if (!OutRecord.bPaused || OutRecord.bScheduledPausedSample)
         {
@@ -2833,6 +3006,7 @@ public:
     TFunction<void(RmlUE_View*)> WakeCallback;
     FSimpleMulticastDelegate PostAdvanceCallbacks;
     TMap<RmlUE_View*, int32> ViewEvaluatingRecordCounts;
+    TMap<RmlUE_View*, FRmlUiAnimationViewActivity> ViewActivities;
     int32 ActiveRecordCount = 0;
     int32 RunningRecordCount = 0;
     int32 EvaluatingRecordCount = 0;
@@ -2864,6 +3038,46 @@ FRmlUiAnimationDefinitionHandle FRmlUiAnimationRuntime::RegisterTransform2DDefin
     const FRmlUiTransform2DAnimationDefinition& Definition)
 {
     return Impl->RegisterTransform2DDefinition(Definition);
+}
+
+FRmlUiAnimationDefinitionHandle FRmlUiAnimationRuntime::RegisterColorDefinition(
+    ERmlUiAnimatedProperty Property,
+    const FRmlUiColorAnimationDefinition& Definition)
+{
+    if (Property < ERmlUiAnimatedProperty::Color || Property > ERmlUiAnimatedProperty::ImageColor)
+        return {};
+    const auto Convert = [](const FRmlUiColor& Color)
+    {
+        FRmlUiTransform2D Value;
+        Value.TranslationX = Color.Red;
+        Value.TranslationY = Color.Green;
+        Value.ScaleX = Color.Blue;
+        Value.ScaleY = Color.Alpha;
+        return Value;
+    };
+    const auto Valid = [](const FRmlUiColor& Color)
+    {
+        return FMath::IsFinite(Color.Red) && FMath::IsFinite(Color.Green) &&
+            FMath::IsFinite(Color.Blue) && FMath::IsFinite(Color.Alpha) &&
+            Color.Red >= 0.f && Color.Red <= 1.f && Color.Green >= 0.f && Color.Green <= 1.f &&
+            Color.Blue >= 0.f && Color.Blue <= 1.f && Color.Alpha >= 0.f && Color.Alpha <= 1.f;
+    };
+    if (!Valid(Definition.From) || !Valid(Definition.To) ||
+        Definition.Keyframes.ContainsByPredicate([&Valid](const FRmlUiColorAnimationKeyframe& Frame) { return !Valid(Frame.Value); }))
+        return {};
+    FRmlUiTransform2DAnimationDefinition Converted;
+    Converted.From = Convert(Definition.From);
+    Converted.To = Convert(Definition.To);
+    Converted.DurationSeconds = Definition.DurationSeconds;
+    Converted.DelaySeconds = Definition.DelaySeconds;
+    Converted.Iterations = Definition.Iterations;
+    Converted.PlaybackRate = Definition.PlaybackRate;
+    Converted.Direction = Definition.Direction;
+    Converted.Fill = Definition.Fill;
+    Converted.Keyframes.Reserve(Definition.Keyframes.Num());
+    for (const FRmlUiColorAnimationKeyframe& Frame : Definition.Keyframes)
+        Converted.Keyframes.Add({Frame.Offset, Convert(Frame.Value), Frame.EasingToNext});
+    return Impl->RegisterTransform2DDefinition(Converted, Property);
 }
 
 bool FRmlUiAnimationRuntime::ReleaseDefinition(FRmlUiAnimationDefinitionHandle Handle)
@@ -2940,6 +3154,7 @@ FRmlUiAnimationHandle FRmlUiAnimationRuntime::PlayFloat(
     Definition.Iterations = Desc.Iterations;
     Definition.PlaybackRate = Desc.PlaybackRate;
     Definition.Direction = Desc.Direction;
+    Definition.Fill = Desc.Fill;
     const FRmlUiAnimationDefinitionHandle DefinitionHandle =
         RegisterFloatDefinition(ERmlUiAnimatedProperty::None, Definition);
     const FRmlUiAnimationBindingHandle Binding = BindCallback(DefinitionHandle, Desc.BindingId);
@@ -2982,6 +3197,7 @@ FRmlUiAnimationHandle FRmlUiAnimationRuntime::PlayNodeFloat(
     Definition.Iterations = Desc.Iterations;
     Definition.PlaybackRate = Desc.PlaybackRate;
     Definition.Direction = Desc.Direction;
+    Definition.Fill = Desc.Fill;
     const FRmlUiAnimationDefinitionHandle DefinitionHandle = RegisterFloatDefinition(Property, Definition);
     const FRmlUiAnimationBindingHandle Binding = BindNode(DefinitionHandle, View, Node, Desc.BindingId);
     if (!DefinitionHandle.IsValid() || !Binding.IsValid())
@@ -3022,6 +3238,7 @@ FRmlUiAnimationHandle FRmlUiAnimationRuntime::PlayNodeTransform2D(
     Definition.Iterations = Desc.Iterations;
     Definition.PlaybackRate = Desc.PlaybackRate;
     Definition.Direction = Desc.Direction;
+    Definition.Fill = Desc.Fill;
     const FRmlUiAnimationDefinitionHandle DefinitionHandle = RegisterTransform2DDefinition(Definition);
     const FRmlUiAnimationBindingHandle Binding = BindNode(DefinitionHandle, View, Node, Desc.BindingId);
     if (!DefinitionHandle.IsValid() || !Binding.IsValid())
@@ -3128,6 +3345,11 @@ bool FRmlUiAnimationRuntime::IsAdvancing() const
 int32 FRmlUiAnimationRuntime::GetActiveAnimationCount() const
 {
     return Impl->ActiveRecordCount;
+}
+
+FRmlUiAnimationViewActivity FRmlUiAnimationRuntime::GetViewActivity(RmlUE_View* View) const
+{
+    return View ? Impl->ViewActivities.FindRef(View) : FRmlUiAnimationViewActivity{};
 }
 
 bool FRmlUiAnimationRuntime::HasActiveAnimations(RmlUE_View* View) const

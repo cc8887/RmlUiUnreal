@@ -29,6 +29,8 @@ void RenderInterface::BeginElement(Element* /*element*/) {}
 
 void RenderInterface::EndElement(Element* /*element*/) {}
 
+void RenderInterface::SetPaintRole(PaintRole /*role*/) {}
+
 void RenderInterface::OnElementRenderDirty(Element* /*element*/) {}
 
 LayerHandle RenderInterface::PushLayer()

@@ -10,41 +10,29 @@ import sharp from 'sharp';
 import { transformSync } from '@babel/core';
 import unicodeProperties from '@babel/plugin-transform-unicode-property-regex';
 import { fileURLToPath } from 'node:url';
+import { compileCss } from '../../Tools/src/compile-css.mjs';
+import { mergeCapabilities } from '../../Tools/src/capabilities.mjs';
+import { throwDiagnostics } from '../../Tools/src/compile-markup.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const hash = value => createHash('sha256').update(value).digest('hex');
-const allowed = new Set(('display position top left right bottom width height min-width min-height max-width max-height box-sizing overflow overflow-x overflow-y ' +
-  'margin margin-top margin-right margin-bottom margin-left padding padding-top padding-right padding-bottom padding-left ' +
-  'color background background-color font-family font-size font-weight font-style line-height text-align text-decoration white-space word-break vertical-align ' +
-  'border border-width border-color border-style border-radius border-top border-bottom border-left border-right border-left-width border-right-width ' +
-  'border-top-width border-bottom-width border-left-color opacity cursor visibility z-index ' +
-  'flex flex-grow flex-shrink flex-basis flex-direction flex-wrap align-items align-self align-content justify-content justify-items justify-self order ' +
-  'gap row-gap column-gap grid-template-columns grid-template-rows grid-template-areas grid-area grid-row grid-column grid-auto-flow grid-auto-rows grid-auto-columns ' +
-  'decorator filter box-shadow transform transform-origin animation animation-delay animation-duration animation-iteration-count').split(/\s+/));
-export function validateCss(css, filename) {
-  postcss.parse(css, { from: filename }).walkDecls(declaration => {
-    if (!allowed.has(declaration.prop)) throw declaration.error(`Unsupported RmlUi CSS property: ${declaration.prop}`);
-    if (/\b(var|env)\(/.test(declaration.value)) throw declaration.error('CSS variables and env() are not implemented by this adapter.');
-  });
+export function validateCss(css, filename, options = {}) {
+  const result = compileCss(css, { profile: 'slate-rhi', ...options, from: filename });
+  throwDiagnostics(result.diagnostics);
+  return result;
 }
-function normalizeTailwindForRmlUi(css) {
-  const root = postcss.parse(css, { from: 'tailwind.css' });
-  root.walkDecls(declaration => {
-    if (declaration.prop.startsWith('--tw-')) { declaration.remove(); return; }
-    declaration.value = declaration.value.replace(
-      /rgb\((\d+)\s+(\d+)\s+(\d+)\s*\/\s*var\(--[^,()]+(?:,\s*[\d.]+)?\)\)/g,
-      'rgb($1,$2,$3)',
-    );
-    if (/\bvar\(/.test(declaration.value)) declaration.remove();
-    declaration.value = declaration.value.replace(/minmax\(0\s*,/g, 'minmax(0px,');
-  });
-  root.walkRules(rule => { if (!rule.nodes?.length) rule.remove(); });
-  return root.toString();
-}
-export async function buildFrontend({ chat = false, actors = false } = {}) {
+export async function buildFrontend({ chat = false, actors = false, outputRoot, activate = true,
+  profile = actors ? 'slate-rhi' : 'dx11-compat', mode = actors ? 'degrade' : 'strict',
+  // This demo displays existing shadow specimens on Slate. Their unsupported layers are
+  // intentionally removed and recorded in the versioned diagnostics artifact.
+  allowDegrade = actors ? ['render.layers', 'render.filters'] : [],
+  requiredFeatures = actors ? ['nodes.query', 'layout.measure', 'events.extended', 'overlays.modal', 'input.ime'] : [],
+} = {}) {
   if (chat && actors) throw new Error('Chat and actor observer builds are separate entry points.');
-  const output = path.resolve(root, actors ? '../Content/ActorObserver' : chat ? '../Content/Chat' : '../Content/Vue');
+  const output = outputRoot ? path.resolve(outputRoot) : path.resolve(root, actors ? '../Content/ActorObserver' : chat ? '../Content/Chat' : '../Content/Vue');
   const styles = new Map();
+  const compilerOptions = { profile, mode, allowDegrade };
+  const tailwindContent = actors ? await readFile(path.join(root, 'src/actors/ActorObserverApp.vue'), 'utf8') : '';
   const vuePlugin = {
     name: 'rmlui-vue-sfc',
     setup(builder) {
@@ -59,7 +47,7 @@ export async function buildFrontend({ chat = false, actors = false } = {}) {
         const script = compileScript(descriptor, { id, genDefaultAs: '__component' });
         let templateCode = '';
         if (descriptor.template) {
-          if (/v-html|\.(prevent|passive|exact)\b/.test(descriptor.template.content)) throw new Error('v-html and prevent/passive/exact modifiers are outside the RmlUi event contract.');
+          if (/v-html|\.passive\b/.test(descriptor.template.content)) throw new Error('v-html and passive modifiers are outside the RmlUi event contract.');
           const template = compileTemplate({ source: descriptor.template.content, filename, id,
             scoped: descriptor.styles.some(style => style.scoped),
             compilerOptions: { runtimeModuleName: '@rmlui/vue', bindingMetadata: script.bindings, hoistStatic: false },
@@ -70,9 +58,17 @@ export async function buildFrontend({ chat = false, actors = false } = {}) {
         for (const style of descriptor.styles) {
           const result = compileStyle({ source: style.content, filename, id, scoped: !!style.scoped });
           if (result.errors.length) throw new Error(result.errors.join('\n'));
-          validateCss(result.code, filename); componentStyles.push(result.code);
+          const sourceLabel = path.relative(root, filename).split(path.sep).join('/');
+          let cssRoot = postcss.parse(result.code, { from: filename });
+          if (actors && /@tailwind\b/.test(result.code)) {
+            cssRoot = (await postcss([tailwindcss({
+              content: [{ raw: tailwindContent, extension: 'vue' }], corePlugins: { preflight: false },
+              theme: { extend: { colors: { ink: '#202a2e', signal: '#14866d', warning: '#c27a28' } } },
+            })]).process(cssRoot, { from: filename })).root;
+          }
+          componentStyles.push(validateCss(cssRoot, filename, { ...compilerOptions, sourceLabel, lineOffset: style.loc.start.line - 1 }));
         }
-        styles.set(filename, componentStyles.join('\n'));
+        styles.set(filename, componentStyles);
         return { contents: `${script.content}\n${templateCode}\n${descriptor.styles.some(s => s.scoped) ? `__component.__scopeId = '${id}';` : ''}\nexport default __component;`,
           loader: 'ts', resolveDir: path.dirname(filename) };
       });
@@ -81,6 +77,7 @@ export async function buildFrontend({ chat = false, actors = false } = {}) {
   const entry = actors ? 'src/actors/main.ts' : chat ? 'src/chat/main.ts' : 'src/main.ts';
   const result = await bundle({ entryPoints: [path.join(root, entry)], bundle: true, write: false,
     platform: 'neutral', format: 'cjs', target: 'es2020', sourcemap: 'external', outfile: 'app.js',
+    loader: { '.svg': 'text' },
     plugins: [vuePlugin], external: ['puerts'], conditions: ['module'], mainFields: ['module', 'main'], metafile: true,
     define: { 'process.env.NODE_ENV': '"production"', __VUE_OPTIONS_API__: 'true', __VUE_PROD_DEVTOOLS__: 'false', __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false' },
   });
@@ -105,24 +102,18 @@ export async function buildFrontend({ chat = false, actors = false } = {}) {
     files.set('app.js', Buffer.from(transformed.code));
     files.set('app.js.map', Buffer.from(JSON.stringify(transformed.map)));
   }
-  let css = [...styles].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value).join('\n');
-  if (actors) {
-    const content = await readFile(path.join(root, 'src/actors/ActorObserverApp.vue'), 'utf8');
-    css = (await postcss([tailwindcss({
-      content: [{ raw: content, extension: 'vue' }],
-      corePlugins: { preflight: false },
-      theme: { extend: { colors: { ink: '#202a2e', signal: '#14866d', warning: '#c27a28' } } },
-    })]).process(css, { from: 'ActorObserverApp.vue' })).css;
-    css = normalizeTailwindForRmlUi(css);
-    validateCss(css, 'ActorObserverApp.vue');
-  }
+  const compiledStyles = [...styles].sort(([a], [b]) => a.localeCompare(b)).flatMap(([, value]) => value);
+  const css = compiledStyles.map(value => value.css).join('\n');
+  const diagnostics = compiledStyles.flatMap(value => value.diagnostics);
+  const capabilities = { ...mergeCapabilities(profile, compiledStyles.map(value => value.capabilities), requiredFeatures), diagnostics: 'compile-diagnostics.json' };
+  files.set('compile-diagnostics.json', Buffer.from(JSON.stringify({ schemaVersion: 1, capabilities, diagnostics }, null, 2)));
   files.set('app.rcss', Buffer.from(css));
   files.set('shell.rml', Buffer.from('<rml><head><title>Vue RmlUi</title><link type="text/rcss" href="app.rcss"/></head><body/></rml>'));
   const content = path.resolve(root, '../Content/RmlUi');
   files.set('hello_world.png', await readFile(path.join(content, 'hello_world.png')));
   const fonts = [];
   if (chat || actors) {
-    const icons = actors ? ['panel-bottom', 'pause', 'play', 'list-tree', 'panels-top-left', 'search', 'circle-plus', 'eye', 'settings-2', 'save', 'trash-2'] : ['arrow-up', 'arrow-down', 'square', 'copy', 'check', 'plus', 'pencil', 'rotate-ccw', 'settings-2', 'panel-left', 'x', 'trash-2', 'messages-square'];
+    const icons = actors ? ['panel-bottom', 'pause', 'play', 'list-tree', 'panels-top-left', 'git-branch', 'zoom-in', 'zoom-out', 'maximize-2', 'search', 'circle-plus', 'eye', 'settings-2', 'save', 'trash-2', 'app-window', 'triangle-alert', 'panel-right-open', 'x', 'sparkles', 'rotate-ccw', 'chevron-down'] : ['arrow-up', 'arrow-down', 'square', 'copy', 'check', 'plus', 'pencil', 'rotate-ccw', 'settings-2', 'panel-left', 'x', 'trash-2', 'messages-square'];
     for (const name of icons) {
       const svg = await readFile(path.join(root, 'node_modules/lucide-static/icons', `${name}.svg`), 'utf8');
       for (const [suffix, color] of [['', '#586675'], ['-white', '#ffffff']]) {
@@ -141,12 +132,14 @@ export async function buildFrontend({ chat = false, actors = false } = {}) {
   await mkdir(directory, { recursive: true });
   const digests = {};
   for (const [name, bytes] of files) { await mkdir(path.dirname(path.join(directory, name)), { recursive: true }); await writeFile(path.join(directory, name), bytes); digests[name] = hash(bytes); }
-  await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ format: 1, abi: 1, stateSchema: 1, version, entry: 'app.js', document: 'shell.rml', fonts, files: digests }, null, 2));
-  const temporary = path.join(output, `current.${randomUUID()}.tmp`);
-  await writeFile(temporary, JSON.stringify({ manifest: `versions/${version}/manifest.json` }, null, 2));
-  await rename(temporary, path.join(output, 'current.json'));
+  await writeFile(path.join(directory, 'manifest.json'), JSON.stringify({ format: 1, abi: 1, stateSchema: 1, version, entry: 'app.js', document: 'shell.rml', fonts, files: digests, capabilities }, null, 2));
+  if (activate) {
+    const temporary = path.join(output, `current.${randomUUID()}.tmp`);
+    await writeFile(temporary, JSON.stringify({ manifest: `versions/${version}/manifest.json` }, null, 2));
+    await rename(temporary, path.join(output, 'current.json'));
+  }
   console.log(`Built Vue UI ${version}: ${directory}`);
-  return { version, directory };
+  return { version, directory, capabilities, diagnostics };
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const options = { chat: process.argv.includes('--chat'), actors: process.argv.includes('--actors') };

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "compiler": "rmlui-css/2.0.0",
+  "minimumHostAbi": 2,
+  "features": {
+    "css.core": { "layer": "core", "description": "Validated RCSS declarations and selectors" },
+    "css.variables": { "layer": "core", "description": "RmlUi inherited custom properties and var() substitution" },
+    "css.grid": { "layer": "core", "description": "The native Taffy Grid adapter" },
+    "css.motion": { "layer": "core", "description": "RmlUi keyframes and transition syntax" },
+    "render.transform2d": { "layer": "renderer", "description": "Two-dimensional affine transforms" },
+    "render.transform3d": { "layer": "renderer", "description": "Perspective and three-dimensional transforms" },
+    "render.layers": { "layer": "renderer", "description": "Render layers required by CSS shadows and mask-image" },
+    "render.filters": { "layer": "renderer", "description": "Filter and backdrop-filter passes" },
+    "render.shaders": { "layer": "renderer", "description": "RmlUi shader decorators including gradients" },
+    "render.ui-material": { "layer": "renderer", "description": "Host-registered Unreal UI material aliases" },
+    "nodes.query": { "layer": "host", "description": "Scoped native node queries" },
+    "layout.measure": { "layer": "host", "description": "Layout snapshots and observation" },
+    "events.extended": { "layer": "host", "description": "Extended native input event contract" },
+    "overlays.modal": { "layer": "host", "description": "Native modal overlay and focus scopes" },
+    "input.ime": { "layer": "platform", "description": "Host composition and text input method context" }
+  },
+  "profiles": {
+    "slate-rhi": {
+      "minimumSlateAbi": 5,
+      "features": ["css.core", "css.variables", "css.grid", "css.motion", "render.transform2d", "render.ui-material", "nodes.query", "layout.measure", "events.extended", "overlays.modal", "input.ime"]
+    },
+    "dx11-compat": {
+      "features": ["css.core", "css.variables", "css.grid", "css.motion", "render.transform2d", "render.transform3d", "render.layers", "render.filters", "render.shaders", "nodes.query", "layout.measure", "events.extended", "overlays.modal", "input.ime"]
+    },
+    "legacy": {
+      "deprecated": true,
+      "description": "Existing WebCompat callers without a declared renderer retain their original lowering. Not a compatibility guarantee or a new bundle profile.",
+      "features": []
+    }
+  }
+}

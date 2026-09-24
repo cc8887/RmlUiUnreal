@@ -33,11 +33,18 @@ bool URmlUiWebWidget::PrepareDocumentMarkup(const FString& Markup, const FString
 {
     LastCompatibilityDiagnostics.Reset();
     bLastCompatibilityCompileCacheHit = false;
-    if (!bCompileDynamicBrowserCss || CompatibilityProfile.IsNone() || CompatibilityProfile == TEXT("RawRml"))
+    if ((!bCompileDynamicBrowserCss && !bEnforceRendererCapabilities) || CompatibilityProfile.IsNone() || CompatibilityProfile == TEXT("RawRml"))
     {
         OutMarkup = Markup;
         return true;
     }
+    FRmlUiCssCompileOptions Options;
+    if (bEnforceRendererCapabilities)
+    {
+        Options.CapabilityProfile = bUseSlateRenderer ? TEXT("slate-rhi") : TEXT("dx11-compat");
+        Options.CapabilityMode = AllowedCssDegradations.IsEmpty() ? TEXT("strict") : TEXT("degrade");
+        Options.AllowedDegradations = AllowedCssDegradations;
+    }
     return FRmlUiWebCompatModule::Get().CompileDynamicDocument(Markup, SourcePath, OutMarkup,
-        LastCompatibilityDiagnostics, bLastCompatibilityCompileCacheHit);
+        LastCompatibilityDiagnostics, bLastCompatibilityCompileCacheHit, Options);
 }

@@ -75,7 +75,7 @@ RMLUE_API int RmlUE_ScrollNode(RmlUE_View* View, RmlUE_Node Node, float Top);
 RMLUE_API float RmlUE_NodeScrollRemaining(RmlUE_View* View, RmlUE_Node Node);
 RMLUE_API int RmlUE_FocusNode(RmlUE_View* View, RmlUE_Node Node);
 
-#define RMLUE_HOST_ABI_VERSION 3u
+#define RMLUE_HOST_ABI_VERSION 5u
 RMLUE_API uint32_t RmlUE_GetHostAbiVersion(void);
 RMLUE_API RmlUE_Node RmlUE_QueryNode(RmlUE_View* View, RmlUE_Node Root, const char* Selector);
 // Returns total count; writes at most Capacity entries. -1 indicates invalid input.
@@ -95,14 +95,25 @@ RMLUE_API int RmlUE_CancelAnimation(RmlUE_View* View, RmlUE_Node Node, const cha
 
 #define RMLUE_ANIMATED_PROPERTY_OPACITY 1u
 #define RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D 2u
+#define RMLUE_ANIMATED_PROPERTY_LEFT_PX 3u
+#define RMLUE_ANIMATED_PROPERTY_TOP_PX 4u
+#define RMLUE_ANIMATED_PROPERTY_RIGHT_PX 5u
+#define RMLUE_ANIMATED_PROPERTY_BOTTOM_PX 6u
+#define RMLUE_ANIMATED_PROPERTY_WIDTH_PX 7u
+#define RMLUE_ANIMATED_PROPERTY_HEIGHT_PX 8u
+#define RMLUE_ANIMATED_PROPERTY_VISIBILITY 9u
+#define RMLUE_ANIMATED_PROPERTY_COLOR 10u
+#define RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR 11u
+#define RMLUE_ANIMATED_PROPERTY_BORDER_COLOR 12u
+#define RMLUE_ANIMATED_PROPERTY_IMAGE_COLOR 13u
 #define RMLUE_FLOAT_PROPERTY_OPACITY RMLUE_ANIMATED_PROPERTY_OPACITY
 typedef struct RmlUE_AnimatedPropertyUpdate {
     RmlUE_View* View;
     RmlUE_Node Node;
     uint32_t Property;
-    // Opacity uses Values[0]. Transform2D uses translation x/y in px,
-    // scale x/y, then clockwise rotation in degrees.
-    float Values[5];
+    // Scalar properties use Values[0]. Transform2D uses translation x/y in px,
+    // scale x/y, clockwise rotation, then skew x/y in degrees. Colors use RGBA 0..1.
+    float Values[7];
     // Optional binding-time target. Zero preserves the Node lookup path.
     RmlUE_AnimationTarget Target;
 } RmlUE_AnimatedPropertyUpdate;
@@ -114,6 +125,11 @@ RMLUE_API int RmlUE_PrepareAnimationTargetProperty(
     RmlUE_View* View, RmlUE_AnimationTarget Target, uint32_t Property);
 RMLUE_API int RmlUE_IsAnimationTargetValid(RmlUE_View* View, RmlUE_AnimationTarget Target);
 RMLUE_API int RmlUE_ReleaseAnimationTarget(RmlUE_View* View, RmlUE_AnimationTarget Target);
+// Restores the local style captured when the target/property binding was prepared.
+// RestoreWhenShared is used by replace semantics; layered effects pass zero so the
+// last live contribution owns restoration of the shared underlying value.
+RMLUE_API int RmlUE_RestoreAnimationTargetProperty(
+    RmlUE_View* View, RmlUE_AnimationTarget Target, int RestoreWhenShared);
 // Validates the entire tagged batch before applying any update. Returns Count on success.
 RMLUE_API int RmlUE_ApplyAnimatedProperties(const RmlUE_AnimatedPropertyUpdate* Updates, int Count);
 // Applies compositor-style visual overrides where supported. Accepted receives one byte per update.
@@ -197,15 +213,25 @@ typedef struct RmlUE_SlateDraw {
     float ScissorX, ScissorY, ScissorWidth, ScissorHeight;
     // Range in RmlUE_SlateFrame::ClipMasks which must be rebuilt before this draw.
     uint32_t ClipMaskStart, ClipMaskCount;
-    // Stable host node producing this draw, when tracked, and an encoded-premultiplied color multiplier.
+    // Stable host node and semantic role producing this draw. PaintRole is conservative: Unknown
+    // means the draw may combine several operations and must not receive a retained color update.
     RmlUE_Node VisualNode;
     float VisualOpacity;
+    int PaintRole;
+    int VisualColorEnabled;
+    // Encoded-sRGB premultiplied replacement color. Valid only for paint roles whose geometry is a
+    // uniform untextured fill; currently this is guaranteed only for Background.
+    float VisualColorR, VisualColorG, VisualColorB, VisualColorA;
 } RmlUE_SlateDraw;
 
 typedef struct RmlUE_SlateVisualDelta {
     RmlUE_Node Node;
     float VisualOpacity;
     int OpacityChanged;
+    int ColorChanged;
+    int PaintRole;
+    int VisualColorEnabled;
+    float VisualColorR, VisualColorG, VisualColorB, VisualColorA;
     int TransformChanged;
     int ClipMaskTransformChanged;
     int TransformEnabled;
@@ -299,7 +325,12 @@ typedef struct RmlUE_SlateScheduleState {
 #define RMLUE_UNSUPPORTED_FILTER (1u << 3)
 #define RMLUE_UNSUPPORTED_SHADER (1u << 4)
 #define RMLUE_UNSUPPORTED_MATERIAL_BLEND_OPACITY (1u << 5)
-#define RMLUE_SLATE_ABI_VERSION 9u
+#define RMLUE_PAINT_ROLE_UNKNOWN 0
+#define RMLUE_PAINT_ROLE_BACKGROUND 1
+#define RMLUE_PAINT_ROLE_BORDER 2
+#define RMLUE_PAINT_ROLE_TEXT 3
+#define RMLUE_PAINT_ROLE_IMAGE 4
+#define RMLUE_SLATE_ABI_VERSION 10u
 
 typedef struct RmlUE_Event {
     char Type[32];

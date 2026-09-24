@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RmlUiUnreal compiled UI capability manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "compiler", "profile", "minimumHostAbi", "requiredFeatures", "degradedFeatures"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "compiler": { "const": "rmlui-css/2.0.0" },
+    "profile": { "enum": ["slate-rhi", "dx11-compat"] },
+    "minimumHostAbi": { "type": "integer", "minimum": 2 },
+    "minimumSlateAbi": { "type": "integer", "minimum": 5 },
+    "requiredFeatures": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/feature" } },
+    "degradedFeatures": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/feature" } },
+    "diagnostics": { "type": "string", "pattern": "^[a-zA-Z0-9_.-]+(?:/[a-zA-Z0-9_.-]+)*$" }
+  },
+  "allOf": [
+    { "if": { "properties": { "profile": { "const": "slate-rhi" } } }, "then": { "required": ["minimumSlateAbi"] } }
+  ],
+  "$defs": {
+    "feature": {
+      "enum": ["css.core", "css.variables", "css.grid", "css.motion", "render.transform2d", "render.transform3d", "render.layers", "render.filters", "render.shaders", "render.ui-material", "nodes.query", "layout.measure", "events.extended", "overlays.modal", "input.ime"]
+    }
+  }
+}

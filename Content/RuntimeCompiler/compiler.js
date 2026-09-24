@@ -2511,7 +2511,7 @@ var require_tokenize = __commonJS({
       let ignore = options.ignoreErrors;
       let code, content, escape2, next, quote;
       let currentToken, escaped, escapePos, n, prev;
-      let length = css.length;
+      let length2 = css.length;
       let pos = 0;
       let buffer = [];
       let returned = [];
@@ -2523,11 +2523,11 @@ var require_tokenize = __commonJS({
         throw input.error("Unclosed " + what, pos);
       }
       function endOfFile() {
-        return returned.length === 0 && pos >= length;
+        return returned.length === 0 && pos >= length2;
       }
       function nextToken(opts) {
         if (returned.length) return returned.pop();
-        if (pos >= length) return;
+        if (pos >= length2) return;
         let ignoreUnclosed = opts ? opts.ignoreUnclosed : false;
         code = css.charCodeAt(pos);
         switch (code) {
@@ -2586,7 +2586,7 @@ var require_tokenize = __commonJS({
               next = css.indexOf(")", pos + 1);
               content = css.slice(pos, next + 1);
               if (next === -1 || RE_BAD_BRACKET.test(content)) {
-                lastBadParen = next === -1 ? length : next;
+                lastBadParen = next === -1 ? length2 : next;
                 currentToken = ["(", "(", pos];
               } else {
                 currentToken = ["brackets", content, pos, next];
@@ -3123,14 +3123,14 @@ var require_parser = __commonJS({
       }
       raw(node, prop, tokens, customProperty) {
         let token, type;
-        let length = tokens.length;
+        let length2 = tokens.length;
         let value = "";
         let clean = true;
         let next, prev;
-        for (let i = 0; i < length; i += 1) {
+        for (let i = 0; i < length2; i += 1) {
           token = tokens[i];
           type = token[0];
-          if (type === "space" && i === length - 1 && !customProperty) {
+          if (type === "space" && i === length2 - 1 && !customProperty) {
             clean = false;
           } else if (type === "comment") {
             prev = tokens[i - 1] ? tokens[i - 1][0] : "empty";
@@ -4258,7 +4258,7 @@ function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCou
   single.fill(-1, dict1AtomCount, dictSize);
   single.fill(-1, dictSize + dict2AtomCount, slotCount);
   const start = new Int32Array(slotCount);
-  const length = new Int32Array(slotCount);
+  const length2 = new Int32Array(slotCount);
   function decodeDelta(count, off) {
     let previous = 0;
     let slot = off;
@@ -4294,8 +4294,8 @@ function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCou
       references[ngramIndex * 2 + 1] = b;
       ngramIndex += 1;
       start[slot] = poolSize;
-      const entryLength = (single[a] < 0 ? length[a] : 1) + (single[b] < 0 ? length[b] : 1);
-      length[slot] = entryLength;
+      const entryLength = (single[a] < 0 ? length2[a] : 1) + (single[b] < 0 ? length2[b] : 1);
+      length2[slot] = entryLength;
       poolSize += entryLength;
     }
   }
@@ -4309,7 +4309,7 @@ function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCou
       const value = single[source];
       if (value < 0) {
         let read = start[source];
-        const readEnd = read + length[source];
+        const readEnd = read + length2[source];
         while (read < readEnd)
           pool[write++] = pool[read++];
       } else {
@@ -4327,7 +4327,7 @@ function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCou
     const value = single[slot];
     if (value < 0) {
       let read = start[slot];
-      const readEnd = read + length[slot];
+      const readEnd = read + length2[slot];
       while (read < readEnd)
         out[outIndex++] = pool[read++];
     } else {
@@ -4838,14 +4838,14 @@ function isXmlEscapable(code) {
   return code >= 128 || code >= 32 && code < 64 && (XML_BITSET_VALUE >>> code & 1) === 1;
 }
 function encodeXML(input) {
-  const { length } = input;
+  const { length: length2 } = input;
   let out;
   let last = 0;
   let index = 0;
-  while (index < length) {
+  while (index < length2) {
     const char = input.charCodeAt(index);
     if (!isXmlEscapable(char)) {
-      const bound = Math.min(index + 32, length);
+      const bound = Math.min(index + 32, length2);
       let next = index + 1;
       while (next < bound && !isXmlEscapable(input.charCodeAt(next))) {
         next++;
@@ -4854,7 +4854,7 @@ function encodeXML(input) {
         index = next;
         continue;
       }
-      if (next >= length)
+      if (next >= length2)
         break;
       xmlEncodeRegex.lastIndex = next;
       if (!xmlEncodeRegex.test(input))
@@ -4879,7 +4879,7 @@ function encodeXML(input) {
   }
   if (out === void 0)
     return input;
-  if (last < length)
+  if (last < length2)
     out += input.substr(last);
   return out;
 }
@@ -6331,10 +6331,10 @@ var Tokenizer = class {
   }
   stateInEntity() {
     const indexInBuffer = this.index - this.offset;
-    const length = this.entityDecoder.write(this.buffer, indexInBuffer);
-    if (length >= 0) {
+    const length2 = this.entityDecoder.write(this.buffer, indexInBuffer);
+    if (length2 >= 0) {
       this.state = this.baseState;
-      if (length === 0) {
+      if (length2 === 0) {
         this.index -= 1;
       }
     } else {
@@ -7205,6 +7205,363 @@ var Rule = import_postcss.default.Rule;
 var Root2 = import_postcss.default.Root;
 var Node2 = import_postcss.default.Node;
 
+// src/capabilities.json
+var capabilities_default = {
+  schemaVersion: 1,
+  compiler: "rmlui-css/2.0.0",
+  minimumHostAbi: 2,
+  features: {
+    "css.core": { layer: "core", description: "Validated RCSS declarations and selectors" },
+    "css.variables": { layer: "core", description: "RmlUi inherited custom properties and var() substitution" },
+    "css.grid": { layer: "core", description: "The native Taffy Grid adapter" },
+    "css.motion": { layer: "core", description: "RmlUi keyframes and transition syntax" },
+    "render.transform2d": { layer: "renderer", description: "Two-dimensional affine transforms" },
+    "render.transform3d": { layer: "renderer", description: "Perspective and three-dimensional transforms" },
+    "render.layers": { layer: "renderer", description: "Render layers required by CSS shadows and mask-image" },
+    "render.filters": { layer: "renderer", description: "Filter and backdrop-filter passes" },
+    "render.shaders": { layer: "renderer", description: "RmlUi shader decorators including gradients" },
+    "render.ui-material": { layer: "renderer", description: "Host-registered Unreal UI material aliases" },
+    "nodes.query": { layer: "host", description: "Scoped native node queries" },
+    "layout.measure": { layer: "host", description: "Layout snapshots and observation" },
+    "events.extended": { layer: "host", description: "Extended native input event contract" },
+    "overlays.modal": { layer: "host", description: "Native modal overlay and focus scopes" },
+    "input.ime": { layer: "platform", description: "Host composition and text input method context" }
+  },
+  profiles: {
+    "slate-rhi": {
+      minimumSlateAbi: 5,
+      features: ["css.core", "css.variables", "css.grid", "css.motion", "render.transform2d", "render.ui-material", "nodes.query", "layout.measure", "events.extended", "overlays.modal", "input.ime"]
+    },
+    "dx11-compat": {
+      features: ["css.core", "css.variables", "css.grid", "css.motion", "render.transform2d", "render.transform3d", "render.layers", "render.filters", "render.shaders", "nodes.query", "layout.measure", "events.extended", "overlays.modal", "input.ime"]
+    },
+    legacy: {
+      deprecated: true,
+      description: "Existing WebCompat callers without a declared renderer retain their original lowering. Not a compatibility guarantee or a new bundle profile.",
+      features: []
+    }
+  }
+};
+
+// src/capabilities.mjs
+var capabilityCatalog = capabilities_default;
+function resolveProfile(name = "legacy") {
+  const profile = capabilities_default.profiles[name];
+  if (!profile) throw new Error(`Unknown RmlUi capability profile: ${name}`);
+  return profile;
+}
+function createCapabilities(profile, requiredFeatures = [], degradedFeatures = []) {
+  const definition = resolveProfile(profile);
+  const required = [...new Set(requiredFeatures)].sort();
+  const degraded = [...new Set(degradedFeatures)].sort();
+  for (const feature of [...required, ...degraded]) {
+    if (!Object.hasOwn(capabilities_default.features, feature)) throw new Error(`Unknown RmlUi capability: ${feature}`);
+  }
+  if (profile !== "legacy") {
+    for (const feature of required) {
+      if (!definition.features.includes(feature)) throw new Error(`${profile} does not provide required capability ${feature}`);
+    }
+  }
+  return {
+    schemaVersion: capabilities_default.schemaVersion,
+    compiler: capabilities_default.compiler,
+    profile,
+    minimumHostAbi: capabilities_default.minimumHostAbi,
+    ...definition.minimumSlateAbi ? { minimumSlateAbi: definition.minimumSlateAbi } : {},
+    requiredFeatures: required,
+    degradedFeatures: degraded
+  };
+}
+function mergeCapabilities(profile, records, requiredFeatures = []) {
+  return createCapabilities(
+    profile,
+    [...requiredFeatures, ...records.flatMap((item) => item.requiredFeatures)],
+    records.flatMap((item) => item.degradedFeatures)
+  );
+}
+
+// src/css-profile.mjs
+var properties = new Set("display position top left right bottom width height min-width min-height max-width max-height box-sizing overflow overflow-x overflow-y margin margin-top margin-right margin-bottom margin-left padding padding-top padding-right padding-bottom padding-left color background background-color caret-color image-color font-family font-size font-weight font-style font-kerning letter-spacing line-height text-align text-decoration text-transform text-overflow white-space word-break vertical-align border border-width border-color border-style border-radius border-top border-bottom border-left border-right border-left-width border-right-width border-top-width border-bottom-width border-top-color border-right-color border-bottom-color border-left-color border-top-left-radius border-top-right-radius border-bottom-left-radius border-bottom-right-radius opacity cursor drag visibility z-index pointer-events tab-index focus nav-up nav-right nav-down nav-left scrollbar-margin overscroll-behavior clip float clear flex flex-grow flex-shrink flex-basis flex-direction flex-wrap align-items align-self align-content justify-content justify-items justify-self order gap row-gap column-gap grid-template-columns grid-template-rows grid-template-areas grid-area grid-row grid-column grid-row-start grid-row-end grid-column-start grid-column-end grid-auto-flow grid-auto-rows grid-auto-columns decorator mask-image filter backdrop-filter box-shadow font-effect fill-image transform transform-origin transform-origin-x transform-origin-y transform-origin-z perspective perspective-origin animation transition -rmlui-language -rmlui-direction".split(/\s+/));
+var enums = {
+  display: ["none", "block", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table", "table-row", "table-row-group", "table-column", "table-column-group", "table-cell"],
+  position: ["static", "relative", "absolute", "fixed"],
+  "box-sizing": ["border-box", "content-box"],
+  "pointer-events": ["none", "auto"],
+  visibility: ["visible", "hidden"],
+  "overflow": ["visible", "hidden", "auto", "scroll"],
+  "overflow-x": ["visible", "hidden", "auto", "scroll"],
+  "overflow-y": ["visible", "hidden", "auto", "scroll"],
+  "flex-direction": ["row", "column", "row-reverse", "column-reverse"],
+  "flex-wrap": ["nowrap", "wrap", "wrap-reverse"],
+  "white-space": ["normal", "pre", "nowrap", "pre-wrap", "pre-line"],
+  "word-break": ["normal", "break-all", "break-word"],
+  "font-style": ["normal", "italic"],
+  "text-align": ["left", "right", "center", "justify"],
+  "focus": ["none", "auto"],
+  "tab-index": ["none", "auto"]
+};
+var functions = new Set("var rgb rgba hsl hsla lab lch oklab oklch minmax repeat fit-content translate translatex translatey translatez translate3d scale scalex scaley scalez scale3d rotate rotatex rotatey rotatez rotate3d skew skewx skewy matrix matrix3d perspective blur opacity brightness contrast invert grayscale sepia saturate hue-rotate drop-shadow horizontal-gradient vertical-gradient linear-gradient radial-gradient conic-gradient repeating-linear-gradient repeating-radial-gradient repeating-conic-gradient image ninepatch tiled-box tiled-horizontal tiled-vertical ue-material ue-material-border shader url shadow outline glow".split(/\s+/));
+var numeric = /^[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?$/i;
+var channels = /^[-+]?(?:\d*\.)?\d+%?$/;
+var length = /^[-+]?(?:\d*\.)?\d+(?:px|dp|em|rem|vw|vh|in|cm|mm|pt|pc|%)$/i;
+var namedColors = new Set("black silver gray grey white maroon red orange purple fuchsia green lime olive yellow navy blue teal aqua transparent".split(" "));
+var transform3d = /\b(?:perspective|matrix3d|translate3d|translatez|scale3d|scalez|rotate3d|rotatex|rotatey)\s*\(/i;
+var shader = /\b(?:shader|(?:repeating-)?(?:linear|radial|conic)-gradient)\s*\(/i;
+function cssDiagnostic(node, severity, code, message, classification = severity === "error" ? "rejected" : "exact") {
+  let rule2 = node;
+  while (rule2 && rule2.type !== "rule") rule2 = rule2.parent;
+  return {
+    severity,
+    classification,
+    code,
+    message,
+    source: node.source?.input?.file ?? node.source?.input?.from ?? "<css>",
+    line: node.source?.start?.line ?? 0,
+    column: node.source?.start?.column ?? 0,
+    selector: rule2?.selector ?? "",
+    property: node.prop ?? "",
+    value: node.value ?? ""
+  };
+}
+function splitTopLevel(value, separator) {
+  const values = [];
+  let start = 0, depth = 0, quote = "";
+  for (let index = 0; index < value.length; ++index) {
+    const character = value[index];
+    if (quote) {
+      if (character === quote && value[index - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === "(") ++depth;
+    else if (character === ")") --depth;
+    else if (!depth && separator.test(character)) {
+      values.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  values.push(value.slice(start).trim());
+  return values.filter(Boolean);
+}
+function rgbToHsl(values) {
+  const [r, g, b] = values.map((value) => Math.max(0, Math.min(1, parseFloat(value) / (value.endsWith("%") ? 100 : 255))));
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min, lightness = (max + min) / 2;
+  const saturation = delta ? delta / (1 - Math.abs(2 * lightness - 1)) : 0;
+  let hue = !delta ? 0 : max === r ? (g - b) / delta % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
+  hue = (hue * 60 + 360) % 360;
+  return [Number(hue.toFixed(8)), `${Number((saturation * 100).toFixed(8))}%`, `${Number((lightness * 100).toFixed(8))}%`];
+}
+function normalizeColor(name, contents, decl2, diagnostics) {
+  const comma = splitTopLevel(contents, /,/), slash = splitTopLevel(contents, /\//);
+  let components, alpha;
+  if (comma.length > 1) {
+    components = comma.slice(0, 3);
+    alpha = comma[3];
+  } else {
+    components = splitTopLevel(slash[0] ?? "", /\s/);
+    alpha = slash[1];
+  }
+  if (components.length !== 3 || comma.length > 4 || slash.length > 2 || /a$/.test(name) && alpha === void 0) {
+    diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-color-components", `${name}() requires three explicit channels; use a complete color token with var(--color), rather than a token containing several channels.`));
+    return `${name}(${contents})`;
+  }
+  const hsl = name.startsWith("hsl");
+  if (hsl && (!/%$/.test(components[1]) || !/%$/.test(components[2]))) {
+    diagnostics.push(cssDiagnostic(decl2, "error", "invalid-hsl-components", "HSL saturation and lightness must be explicit percentages."));
+    return `${name}(${contents})`;
+  }
+  if (alpha === void 0) return `${hsl ? "hsl" : "rgb"}(${components.join(",")})`;
+  if (numeric.test(alpha)) {
+    if (+alpha < 0 || +alpha > 1) diagnostics.push(cssDiagnostic(decl2, "error", "invalid-css-alpha", "CSS numeric alpha must be between 0 and 1; byte alpha is only accepted by the legacy Raw RCSS path."));
+    alpha = hsl ? alpha : `${Number((+alpha * 100).toFixed(6))}%`;
+  } else if (/^\d*(?:\.\d+)?%$/.test(alpha)) {
+    if (hsl) alpha = String(parseFloat(alpha) / 100);
+  } else if (/^var\(/.test(alpha)) {
+    if (!hsl && components.every((value) => channels.test(value))) {
+      diagnostics.push(cssDiagnostic(decl2, "info", "rgb-alpha-token-to-hsla", "Converted constant RGB channels to HSLA so the inherited alpha token remains a live 0..1 value; native 8-bit color rounding may differ.", "approximate"));
+      return `hsla(${rgbToHsl(components).join(",")},${alpha})`;
+    }
+    if (!hsl) diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-dynamic-rgb-alpha", "Dynamic RGB channels plus scalar alpha cannot be represented; use a complete color token or HSL with explicit channels."));
+  } else diagnostics.push(cssDiagnostic(decl2, "error", "invalid-css-alpha", `Unsupported alpha expression ${alpha}.`));
+  return `${hsl ? "hsla" : "rgba"}(${components.join(",")},${alpha})`;
+}
+function normalizeFunctions(value, decl2, diagnostics) {
+  let result = "", cursor = 0;
+  const pattern = /([-a-zA-Z][\w-]*)\s*\(/g;
+  for (let match; match = pattern.exec(value); ) {
+    const start = match.index, open = pattern.lastIndex - 1;
+    let depth = 1, end = open + 1, quote = "";
+    for (; end < value.length && depth; ++end) {
+      const ch = value[end];
+      if (quote) {
+        if (ch === quote && value[end - 1] !== "\\") quote = "";
+        continue;
+      }
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "(") ++depth;
+      else if (ch === ")") --depth;
+    }
+    if (depth) {
+      diagnostics.push(cssDiagnostic(decl2, "error", "unclosed-css-function", `Unclosed ${match[1]}() expression.`));
+      return value;
+    }
+    const name = match[1].toLowerCase();
+    const raw = value.slice(open + 1, end - 1);
+    const inner = name === "url" ? raw : normalizeFunctions(raw, decl2, diagnostics);
+    if (!functions.has(name)) diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-css-function", `${match[1]}() is outside the validated RmlUi value grammar.`));
+    if (name === "var" && !/^--[-_a-zA-Z][\w-]*(?:\s*,[\s\S]*)?$/.test(inner.trim())) diagnostics.push(cssDiagnostic(decl2, "error", "invalid-css-variable", "var() requires a custom property name and an optional fallback."));
+    let replacement = `${match[1]}(${inner})`;
+    if (["rgb", "rgba", "hsl", "hsla"].includes(name)) replacement = normalizeColor(name, inner, decl2, diagnostics);
+    else if (name === "minmax") replacement = `minmax(${inner.replace(/^\s*0\s*,/, "0px,")})`;
+    else if (name === "translate3d") {
+      const args = splitTopLevel(inner, /,/);
+      if (args.length === 3 && /^[-+]?0(?:px)?$/.test(args[2])) replacement = `translate(${args.slice(0, 2).join(",")})`;
+    } else if (name === "scale3d") {
+      const args = splitTopLevel(inner, /,/);
+      if (args.length === 3 && +args[2] === 1) replacement = `scale(${args.slice(0, 2).join(",")})`;
+    }
+    result += value.slice(cursor, start) + replacement;
+    cursor = end;
+    pattern.lastIndex = end;
+  }
+  return result + value.slice(cursor);
+}
+function expandTokenCandidates(value, tokens, visited = /* @__PURE__ */ new Set()) {
+  let expanded = value;
+  for (const match of value.matchAll(/\bvar\(\s*(--[-_a-zA-Z][\w-]*)/g)) {
+    if (visited.has(match[1])) continue;
+    const next = new Set(visited);
+    next.add(match[1]);
+    expanded += ` ${[...tokens.get(match[1]) ?? []].map((candidate) => expandTokenCandidates(candidate, tokens, next)).join(" ")}`;
+  }
+  return expanded;
+}
+function requiredBy(decl2, tokens) {
+  const prop = decl2.prop.toLowerCase(), value = expandTokenCandidates(decl2.value, tokens);
+  const required = /* @__PURE__ */ new Set();
+  if (prop.startsWith("--") || /\bvar\(/.test(value)) required.add("css.variables");
+  if (prop.startsWith("grid-") || /^(?:inline-)?grid$/.test(value) && prop === "display") required.add("css.grid");
+  if (prop === "animation" || prop === "transition") required.add("css.motion");
+  if (prop === "transform" && value !== "none") required.add(transform3d.test(value) ? "render.transform3d" : "render.transform2d");
+  if (/^perspective/.test(prop) && value !== "none" || prop === "transform-origin-z" && !/^0(?:px)?$/.test(value)) required.add("render.transform3d");
+  if ((prop === "box-shadow" || prop === "mask-image") && value !== "none") required.add("render.layers");
+  if (prop === "box-shadow" && value !== "none") {
+    const hasBlur = /\bvar\(/.test(value) || postcss_default.list.comma(value).some((shadow) => {
+      const offsets = postcss_default.list.space(shadow).filter((part) => numeric.test(part) || length.test(part));
+      return offsets.length > 2 && parseFloat(offsets[2]) > 0;
+    });
+    if (hasBlur) required.add("render.filters");
+  }
+  if ((prop === "filter" || prop === "backdrop-filter") && value !== "none") {
+    required.add("render.layers");
+    required.add("render.filters");
+  }
+  if ((prop === "decorator" || prop === "mask-image") && shader.test(value)) required.add("render.shaders");
+  if (prop === "decorator" && /\bue-material(?:-border)?\(/.test(value)) required.add("render.ui-material");
+  return [...required];
+}
+function validateDeclarationValue(decl2, diagnostics) {
+  const prop = decl2.prop.toLowerCase(), value = decl2.value.trim();
+  if (prop.startsWith("--")) return;
+  const fail = (message) => diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-css-value", message));
+  if (prop === "transform" && value !== "none" && !/^var\(/.test(value)) {
+    for (const part of splitTopLevel(value, /\s/)) {
+      const call = /^([a-z][a-z0-9]*)\(([\s\S]*)\)$/i.exec(part);
+      if (!call) {
+        fail(`Invalid transform ${part}; expected a native transform function.`);
+        continue;
+      }
+      const name = call[1].toLowerCase(), args = splitTopLevel(call[2], /,/);
+      const counts = { translate: [1, 2], translatex: [1], translatey: [1], translatez: [1], translate3d: [3], scale: [1, 2], scalex: [1], scaley: [1], scalez: [1], scale3d: [3], rotate: [1], rotatex: [1], rotatey: [1], rotatez: [1], rotate3d: [4], skew: [1, 2], skewx: [1], skewy: [1], matrix: [6], matrix3d: [16], perspective: [1] };
+      if (!counts[name]?.includes(args.length)) {
+        fail(`Unsupported transform ${name} argument count.`);
+        continue;
+      }
+      args.forEach((arg, index) => {
+        if (/^var\(/.test(arg)) return;
+        const isAngle = name.startsWith("rotate") && (name !== "rotate3d" || index === 3) || name.startsWith("skew");
+        const isLength = name.startsWith("translate") || name === "perspective";
+        const valid = isAngle ? arg === "0" || /^[-+]?(?:\d*\.)?\d+(?:deg|rad)$/.test(arg) : isLength ? arg === "0" || length.test(arg) : numeric.test(arg);
+        if (!valid) fail(`${name} has an invalid ${isAngle ? "angle" : isLength ? "length" : "number"}: ${arg}.`);
+      });
+    }
+  }
+  if (prop === "decorator") {
+    for (const match of value.matchAll(/\bue-material(?:-border)?\(([^)]*)\)/g)) {
+      if (!/^[-_.a-zA-Z0-9]+$/.test(match[1])) fail("Unreal material decorators require a registered alias, never an asset path or expression.");
+    }
+  }
+  if (/\bvar\(/.test(value)) return;
+  if (/^(?:width|height|min-width|min-height|max-width|max-height|top|right|bottom|left|flex-basis|font-size|letter-spacing|row-gap|column-gap)$/.test(prop)) {
+    const keyword = value === "auto" && /^(?:width|height|top|right|bottom|left|flex-basis)$/.test(prop) || value === "none" && /^max-/.test(prop) || value === "normal" && prop === "letter-spacing";
+    if (!keyword && value !== "0" && !length.test(value)) fail(`${prop} expects a supported length${keyword ? "" : " or a property-specific keyword"}, not ${value}.`);
+  }
+  if (/^(?:margin|padding)(?:-(?:top|right|bottom|left))?$/.test(prop) || prop === "gap" || /^(?:border-width|border-radius|border-(?:top|right|bottom|left)-width|border-(?:top|bottom)-(?:left|right)-radius)$/.test(prop)) {
+    const parts = postcss_default.list.space(value);
+    if (!parts.length || parts.length > 4 || parts.some((item) => item !== "0" && !length.test(item) && !(prop.startsWith("margin") && item === "auto"))) fail(`${prop} requires supported lengths; slash radii, calculations and intrinsic sizing are not part of this profile.`);
+  }
+  if (prop === "background" || /^(?:color|background-color|caret-color|image-color|border-(?:top|right|bottom|left)-color)$/.test(prop)) {
+    const hex = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+    const functional = /^(?:rgb|rgba|hsl|hsla|lab|lch|oklab|oklch)\([\s\S]*\)$/;
+    if (!hex.test(value) && !functional.test(value) && !namedColors.has(value) && !(prop === "caret-color" && value === "auto")) fail(`${prop} requires a native color value. Use image/gradient decorators for backgrounds and a complete inherited token instead of currentColor.`);
+  }
+  if (/^(?:flex-grow|flex-shrink|order|font-weight|z-index)$/.test(prop) && !numeric.test(value) && !(prop === "font-weight" && /^(?:normal|bold)$/.test(value)) && !(prop === "z-index" && value === "auto")) fail(`${prop} requires a number or its native keyword.`);
+}
+function applyCssProfile(root2, options, diagnostics) {
+  const profileName = options.profile ?? "legacy", profile = resolveProfile(profileName);
+  if (profileName === "legacy") return createCapabilities("legacy");
+  if (options.mode && !["strict", "degrade"].includes(options.mode)) throw new Error(`Unknown CSS compatibility mode: ${options.mode}`);
+  for (const feature of options.allowDegrade ?? []) if (!Object.hasOwn(capabilityCatalog.features, feature)) throw new Error(`Unknown degradable capability: ${feature}`);
+  const required = /* @__PURE__ */ new Set(["css.core"]), degraded = /* @__PURE__ */ new Set();
+  const tokens = /* @__PURE__ */ new Map();
+  root2.walkDecls((decl2) => {
+    if (!decl2.prop.startsWith("--")) return;
+    if (!tokens.has(decl2.prop)) tokens.set(decl2.prop, /* @__PURE__ */ new Set());
+    tokens.get(decl2.prop).add(decl2.value);
+  });
+  root2.walkAtRules((rule2) => {
+    if (!["keyframes", "media", "font-face", "spritesheet", "decorator"].includes(rule2.name.toLowerCase())) diagnostics.push(cssDiagnostic(rule2, "error", "unsupported-css-at-rule", `@${rule2.name} is outside this profile.`));
+  });
+  root2.walkRules((rule2) => {
+    if (/::|:(?:has|is|where)\(/i.test(rule2.selector) || (rule2.selector.match(/:not\(/g) ?? []).length > 1 || /:not\([^)]*[,(]/.test(rule2.selector)) diagnostics.push(cssDiagnostic(rule2, "error", "unsupported-css-selector", `Selector ${rule2.selector} requires an unimplemented browser selector contract.`));
+  });
+  root2.walkDecls((decl2) => {
+    const prop = decl2.prop.toLowerCase();
+    if (!prop.startsWith("--") && !properties.has(prop)) {
+      diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-css-property", `Unsupported RmlUi CSS property: ${decl2.prop}`));
+      return;
+    }
+    if (prop.startsWith("--") && !/^--[-_a-zA-Z][\w-]*$/.test(decl2.prop)) {
+      diagnostics.push(cssDiagnostic(decl2, "error", "invalid-custom-property-name", `Invalid custom property ${decl2.prop}.`));
+      return;
+    }
+    const original = decl2.value;
+    decl2.value = normalizeFunctions(decl2.value, decl2, diagnostics);
+    if (decl2.value !== original) diagnostics.push({ ...cssDiagnostic(decl2, "info", "css-value-normalized", "Converted CSS value to the native RCSS representation."), originalValue: original });
+    if (enums[prop] && !/\bvar\(/.test(decl2.value) && !enums[prop].includes(decl2.value)) diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-css-value", `${prop}: ${decl2.value} has no supported core semantics.`));
+    if (/\b(?:dvh|dvw|svh|svw|lvh|lvw|cqw|cqh|cqi|cqb)\b/.test(decl2.value) || /\d(?:dvh|dvw|svh|svw|lvh|lvw|cqw|cqh|cqi|cqb)\b/.test(decl2.value)) diagnostics.push(cssDiagnostic(decl2, "error", "unsupported-css-unit", "Dynamic viewport and container units require an explicit host layout contract."));
+    if (prop === "opacity" && !/\bvar\(/.test(decl2.value) && (!numeric.test(decl2.value) || +decl2.value < 0 || +decl2.value > 1)) diagnostics.push(cssDiagnostic(decl2, "error", "invalid-opacity", "opacity must be a scalar between 0 and 1."));
+    validateDeclarationValue(decl2, diagnostics);
+    if (["transform", "decorator", "mask-image"].includes(prop) && /^var\(/.test(decl2.value)) {
+      const match = /^var\(\s*(--[-_a-zA-Z][\w-]*)/.exec(decl2.value);
+      if (match && !tokens.has(match[1])) diagnostics.push(cssDiagnostic(decl2, "error", "untyped-renderer-variable", `The renderer requirements of ${match[1]} are unknown. Declare its values in this stylesheet or keep the function explicit and vary scalar/color arguments.`));
+    }
+    const features = requiredBy(decl2, tokens);
+    const unavailable = features.filter((feature) => !profile.features.includes(feature));
+    if (unavailable.length) {
+      const allowed = options.mode === "degrade" && unavailable.every((feature) => options.allowDegrade?.includes(feature));
+      diagnostics.push({ ...cssDiagnostic(decl2, allowed ? "warning" : "error", allowed ? "renderer-effect-degraded" : "unsupported-renderer-feature", `${profileName} cannot render ${unavailable.join(", ")}. ${allowed ? "Removed this declaration under the explicit downgrade policy." : "Use a supported effect or explicitly authorize degradation."}`, allowed ? "degraded" : "rejected"), features: unavailable });
+      if (allowed) {
+        for (const feature of unavailable) degraded.add(feature);
+        decl2.remove();
+      }
+      return;
+    }
+    for (const feature of features) required.add(feature);
+  });
+  return createCapabilities(profileName, [...required], [...degraded]);
+}
+
 // src/compile-css.mjs
 var motionFields = {
   animation: /* @__PURE__ */ new Map([
@@ -7239,7 +7596,7 @@ var supportedVendorProperties = /* @__PURE__ */ new Set([
   "transform-origin"
 ]);
 function diagnostic(decl2, severity, code, message) {
-  return { severity, code, message, source: decl2.source?.input?.file ?? "<css>", line: decl2.source?.start?.line ?? 0, column: decl2.source?.start?.column ?? 0 };
+  return cssDiagnostic(decl2, severity, code, message, severity === "error" ? "rejected" : "approximate");
 }
 function isInsideKeyframes(rule2) {
   for (let node = rule2.parent; node; node = node.parent) {
@@ -7254,8 +7611,10 @@ function normalizeVendorDeclarations(rule2, diagnostics) {
     const match = decl2.prop.toLowerCase().match(/^-(webkit|moz|o)-(.+)$/);
     if (!match) continue;
     const standard = match[2];
-    if (standardProperties.has(standard)) decl2.remove();
-    else if (supportedVendorProperties.has(standard)) {
+    if (standardProperties.has(standard)) {
+      diagnostics.push(cssDiagnostic(decl2, "info", "vendor-duplicate-normalized", "Removed a vendor declaration already supplied by the standard property."));
+      decl2.remove();
+    } else if (supportedVendorProperties.has(standard)) {
       decl2.prop = standard;
       standardProperties.add(standard);
     } else {
@@ -7280,6 +7639,12 @@ function normalizeBorderStyleTokens(rule2, diagnostics) {
       continue;
     }
     decl2.value = decl2.value.replace(/\bsolid\b/ig, " ").replace(/\s+/g, " ").trim();
+  }
+  for (const decl2 of [...rule2.nodes ?? []].filter((node) => node.type === "decl" && node.prop.toLowerCase() === "border-style")) {
+    if (decl2.value.trim().toLowerCase() === "solid") {
+      diagnostics.push(cssDiagnostic(decl2, "info", "solid-border-style-normalized", "RmlUi border geometry always uses the solid style."));
+      decl2.remove();
+    } else diagnostics.push(diagnostic(decl2, "error", "unsupported-border-style", "Only border-style:solid has an equivalent native border model."));
   }
 }
 function lowerUnrealMaterial(rule2, diagnostics) {
@@ -7407,7 +7772,9 @@ function emitComposedRules(root2, records, kind, diagnostics) {
   }
 }
 function compileCss(source, options = {}) {
-  const root2 = postcss_default.parse(source, { from: options.from });
+  resolveProfile(options.profile);
+  const input = typeof source === "string" ? source : source.toString();
+  const root2 = typeof source === "string" ? postcss_default.parse(source, { from: options.from }) : source.clone();
   const diagnostics = [];
   const records = { animation: [], transition: [] };
   const standardKeyframes = /* @__PURE__ */ new Set();
@@ -7446,22 +7813,55 @@ function compileCss(source, options = {}) {
   });
   emitComposedRules(root2, records.animation, "animation", diagnostics);
   emitComposedRules(root2, records.transition, "transition", diagnostics);
+  const capabilities = applyCssProfile(root2, options, diagnostics);
+  if (options.profile && options.profile !== "legacy") {
+    for (const item of diagnostics) {
+      if (/-dropped$/.test(item.code) || item.code === "selector-composition-skipped" || item.code === "camel-case-selector-broadened") {
+        const permitted = options.mode === "degrade" && options.allowDegradeCodes?.includes(item.code);
+        item.severity = permitted ? "warning" : "error";
+        item.classification = permitted ? "degraded" : "rejected";
+        if (!permitted) item.message += " This semantic change requires an explicit allowDegradeCodes policy.";
+      }
+    }
+  }
+  for (const item of diagnostics) {
+    if (item.line && options.lineOffset) item.line += options.lineOffset;
+    if (options.sourceLabel) item.source = options.sourceLabel;
+  }
   const css = root2.toString();
-  return { css, diagnostics, changed: css !== source };
+  return { css, diagnostics, capabilities, changed: css !== input };
 }
 
 // src/compile-markup.mjs
-function compileMarkupTree(source, from) {
-  const document2 = parseDocument(source, { xmlMode: true, lowerCaseAttributeNames: false, lowerCaseTags: false });
+function compileMarkupTree(source, from, options = {}) {
+  const document2 = parseDocument(source, { xmlMode: true, lowerCaseAttributeNames: false, lowerCaseTags: false, withStartIndices: true });
   const diagnostics = [];
+  const capabilities = [];
   const styleNodes = findAll((node) => node.type === "tag" && node.name?.toLowerCase() === "style", document2.children);
   for (const style of styleNodes) {
     const cssText = style.children?.map((node) => node.data ?? "").join("") ?? "";
-    const result = compileCss(cssText, { from: `${from}#inline-style` });
+    const prefix = source.slice(0, style.children?.[0]?.startIndex ?? style.startIndex ?? 0);
+    const result = compileCss(cssText, { ...options, from, lineOffset: prefix.split("\n").length - 1 });
     diagnostics.push(...result.diagnostics);
+    capabilities.push(result.capabilities);
     style.children = [{ type: "text", data: result.css, parent: style, prev: null, next: null }];
   }
-  return { document: document2, diagnostics };
+  if (options.profile && options.profile !== "legacy") {
+    const links = findAll((node) => node.type === "tag" && node.name?.toLowerCase() === "link" && node.attribs?.href && (node.attribs.rel?.toLowerCase() === "stylesheet" || /^text\/(?:r?css)$/i.test(node.attribs.type ?? "") || /\.r?css$/i.test(node.attribs.href)), document2.children);
+    for (const link of links) {
+      if (options.allowLinkedStyles && !/^(?:[a-z]+:|\/\/|#)/i.test(link.attribs.href)) continue;
+      diagnostics.push({ severity: "error", classification: "rejected", code: "unvalidated-linked-stylesheet", message: `Strict documents must inline CSS or use a precompiled local stylesheet; ${link.attribs.href} has not passed the renderer profile.`, source: from, line: source.slice(0, link.startIndex ?? 0).split("\n").length, column: 1, selector: "", property: "", value: link.attribs.href });
+    }
+    const styledNodes = findAll((node) => node.type === "tag" && typeof node.attribs?.style === "string", document2.children);
+    for (const node of styledNodes) {
+      const prefix = source.slice(0, node.startIndex ?? 0);
+      const result = compileCss(`.__inline { ${node.attribs.style} }`, { ...options, from, lineOffset: prefix.split("\n").length - 1 });
+      diagnostics.push(...result.diagnostics);
+      capabilities.push(result.capabilities);
+      node.attribs.style = result.css.slice(result.css.indexOf("{") + 1, result.css.lastIndexOf("}")).trim();
+    }
+  }
+  return { document: document2, diagnostics, capabilities: mergeCapabilities(options.profile ?? "legacy", capabilities, options.requiredFeatures) };
 }
 function throwDiagnostics(diagnostics) {
   const errors = diagnostics.filter((item) => item.severity === "error");
@@ -7472,16 +7872,21 @@ ${detail}`);
 }
 function compileDocumentMarkup(source, options = {}) {
   const from = options.from ?? "memory.html";
-  const { document: document2, diagnostics } = compileMarkupTree(source, from);
+  const { document: document2, diagnostics, capabilities } = compileMarkupTree(source, from, options);
   throwDiagnostics(diagnostics);
-  return { markup: dist_default(document2, { xmlMode: true, encodeEntities: false }), diagnostics };
+  return { markup: dist_default(document2, { xmlMode: true, encodeEntities: false }), diagnostics, capabilities };
 }
 
 // src/runtime-entry.mjs
 var bridge = require("puerts").argv.getByName("bridge");
 bridge.OnCompileRequest.Add((markup, sourcePath) => {
   try {
-    const result = compileDocumentMarkup(markup, { from: sourcePath || "memory.html" });
+    const result = compileDocumentMarkup(markup, {
+      from: sourcePath || "memory.html",
+      profile: bridge.CapabilityProfile || "legacy",
+      mode: bridge.CapabilityMode || "strict",
+      allowDegrade: JSON.parse(bridge.AllowedDegradationsJson || "[]")
+    });
     bridge.Complete(true, result.markup, JSON.stringify(result.diagnostics));
   } catch (error) {
     bridge.Complete(false, "", error instanceof Error ? error.message : String(error));

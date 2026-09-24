@@ -768,7 +768,8 @@ const TransformState* Element::GetTransformState() const noexcept
 	return transform_state.get();
 }
 
-void Element::SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y, float rotation_degrees)
+void Element::SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y,
+	float rotation_degrees, float skew_x_degrees, float skew_y_degrees)
 {
 	animation_transform_2d_active = true;
 	animation_transform_2d[0] = translation_x;
@@ -776,6 +777,8 @@ void Element::SetAnimationTransform2D(float translation_x, float translation_y, 
 	animation_transform_2d[2] = scale_x;
 	animation_transform_2d[3] = scale_y;
 	animation_transform_2d[4] = rotation_degrees;
+	animation_transform_2d[5] = skew_x_degrees;
+	animation_transform_2d[6] = skew_y_degrees;
 	DirtyTransformState(false, true);
 }
 
@@ -3062,10 +3065,12 @@ void Element::UpdateTransformState()
 			const float angle = Math::DegreesToRadians(animation_transform_2d[4]);
 			const float cosine = Math::Cos(angle);
 			const float sine = Math::Sin(angle);
-			const float m00 = cosine * animation_transform_2d[2];
-			const float m01 = -sine * animation_transform_2d[3];
-			const float m10 = sine * animation_transform_2d[2];
-			const float m11 = cosine * animation_transform_2d[3];
+			const float skew_x = Math::Tan(Math::DegreesToRadians(animation_transform_2d[5]));
+			const float skew_y = Math::Tan(Math::DegreesToRadians(animation_transform_2d[6]));
+			const float m00 = (cosine - sine * skew_y) * animation_transform_2d[2];
+			const float m01 = (cosine * skew_x - sine) * animation_transform_2d[3];
+			const float m10 = (sine + cosine * skew_y) * animation_transform_2d[2];
+			const float m11 = (sine * skew_x + cosine) * animation_transform_2d[3];
 			const float translation_x = transform_origin.x + animation_transform_2d[0] -
 				m00 * transform_origin.x - m01 * transform_origin.y;
 			const float translation_y = transform_origin.y + animation_transform_2d[1] -

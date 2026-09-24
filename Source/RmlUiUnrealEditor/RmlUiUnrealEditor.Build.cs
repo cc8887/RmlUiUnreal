@@ -6,7 +6,7 @@ public class RmlUiUnrealEditor : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateDependencyModuleNames.AddRange(new[] {
-            "Core", "CoreUObject", "Engine", "Slate", "SlateCore", "UMG", "MovieScene", "Json", "RmlUiUnreal", "ApplicationCore", "InputCore",
+            "Core", "CoreUObject", "Engine", "Slate", "SlateCore", "UMG", "MovieScene", "MovieSceneTracks", "Json", "RmlUiUnreal", "ApplicationCore", "InputCore",
             "UnrealEd", "WorkspaceMenuStructure", "DesktopPlatform", "Projects", "RenderCore", "RHI", "WebBrowser", "RmlUiUnrealJS"
         });
     }

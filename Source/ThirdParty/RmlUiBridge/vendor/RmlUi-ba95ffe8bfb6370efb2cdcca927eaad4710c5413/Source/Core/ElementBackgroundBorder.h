@@ -19,7 +19,7 @@ public:
 	Geometry* GetClipGeometry(Element* element, BoxArea clip_area);
 
 private:
-	enum class BackgroundType { BackgroundBorder, BoxShadowAndBackgroundBorder, ClipBorder, ClipPadding, ClipContent, Count };
+	enum class BackgroundType { Background, Border, BoxShadowAndBackgroundBorder, ClipBorder, ClipPadding, ClipContent, Count };
 	struct Background {
 		Geometry geometry;
 		Texture texture;

@@ -396,9 +396,18 @@ html, body { width: 100%%; height: 100%%; margin: 0; background: #101820; }
             return false;
         }
 
-        Test->TestTrue(TEXT("Peer Widget keeps rendering after first Widget shutdown"),
-            SecondSlate->GetFrameNumber() > SecondFrameBeforePeerRelease &&
-            !FRmlUiResourceRegistry::Get().SnapshotOwnedBy(SecondOwnerId, true).IsEmpty());
+        Test->TestEqual(TEXT("Idle peer Widget keeps its retained frame after first Widget shutdown"),
+            SecondSlate->GetFrameNumber(), SecondFrameBeforePeerRelease);
+        Test->TestFalse(TEXT("Peer Widget keeps its resources after first Widget shutdown"),
+            FRmlUiResourceRegistry::Get().SnapshotOwnedBy(SecondOwnerId, true).IsEmpty());
+        TArray<FColor> PeerPixels;
+        FIntVector PeerSize = FIntVector::ZeroValue;
+        const bool bPeerCaptured = FSlateApplication::Get().TakeScreenshot(SecondRoot.ToSharedRef(), PeerPixels, PeerSize);
+        Test->TestTrue(TEXT("Peer Widget remains visually available from its cached Slate frame"),
+            bPeerCaptured && PeerSize.X == 320 && PeerSize.Y == 200 &&
+            PeerPixels.Num() == PeerSize.X * PeerSize.Y &&
+            PeerPixels[100 * PeerSize.X + 160].G > PeerPixels[100 * PeerSize.X + 160].R * 2 &&
+            PeerPixels[100 * PeerSize.X + 160].G > PeerPixels[100 * PeerSize.X + 160].B * 2);
         SecondWidget->UnregisterMaterial(TEXT("shared.panel"));
         SecondSlate->ShutdownNative();
         FlushRenderingCommands();
@@ -544,6 +553,45 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiEngineMaterialE2ETest, "RmlUiUnreal.WebCo
 bool FRmlUiEngineMaterialE2ETest::RunTest(const FString&)
 {
     AddCommand(new FWebCompatVisualCapture(this, true));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiCssCapabilityProfileTest, "RmlUiUnreal.WebCompat.CssCapabilityProfiles",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiCssCapabilityProfileTest::RunTest(const FString&)
+{
+    auto& Module = FRmlUiWebCompatModule::Get();
+    Module.ClearCompiledDocumentCache();
+    const FString Markup = TEXT("<html><head><style>.panel { --brand:#f0d283; color:var(--brand); box-shadow:0 3px 8px #0008; }</style></head><body><div class='panel'>Profile</div></body></html>");
+    FString Output, Diagnostics;
+    bool bCacheHit = false;
+    TestTrue(TEXT("Legacy documents preserve their historical CSS contract"),
+        Module.CompileDynamicDocument(Markup, TEXT("profile.html"), Output, Diagnostics, bCacheHit));
+    FRmlUiCssCompileOptions Options;
+    Options.CapabilityProfile = TEXT("slate-rhi");
+    AddExpectedError(TEXT("Dynamic document compilation failed: WebCompat compilation failed:"), EAutomationExpectedErrorFlags::Contains, 1);
+    TestFalse(TEXT("Slate strict compile rejects layer effects even after legacy cache population"),
+        Module.CompileDynamicDocument(Markup, TEXT("profile.html"), Output, Diagnostics, bCacheHit, Options));
+    TestFalse(TEXT("A different capability profile never reuses the legacy cache"), bCacheHit);
+    TestTrue(TEXT("Rejected effects have a named renderer diagnostic"), Diagnostics.Contains(TEXT("unsupported-renderer-feature")));
+    Options.CapabilityMode = TEXT("degrade");
+    Options.AllowedDegradations.Add(TEXT("render.layers"));
+    Options.AllowedDegradations.Add(TEXT("render.filters"));
+    TestTrue(TEXT("An explicit layer downgrade permits the known demo"),
+        Module.CompileDynamicDocument(Markup, TEXT("profile.html"), Output, Diagnostics, bCacheHit, Options));
+    TestFalse(TEXT("The unsupported shadow was removed"), Output.Contains(TEXT("box-shadow:")));
+    TestTrue(TEXT("Live theme variables are preserved"), Output.Contains(TEXT("var(--brand)")));
+    TestTrue(TEXT("The downgrade records its source and classification"), Diagnostics.Contains(TEXT("profile.html")) && Diagnostics.Contains(TEXT("degraded")));
+    TestTrue(TEXT("Identical profile and policy may use the cache"),
+        Module.CompileDynamicDocument(Markup, TEXT("profile.html"), Output, Diagnostics, bCacheHit, Options));
+    TestTrue(TEXT("The matching policy was cached"), bCacheHit);
+    Options = FRmlUiCssCompileOptions();
+    Options.CapabilityProfile = TEXT("dx11-compat");
+    TestTrue(TEXT("Full DX11 profile preserves the layer declaration"),
+        Module.CompileDynamicDocument(Markup, TEXT("profile.html"), Output, Diagnostics, bCacheHit, Options));
+    TestTrue(TEXT("The DX11 output includes its supported shadow"), Output.Contains(TEXT("box-shadow:")));
+    TestFalse(TEXT("DX11 output is not a downgraded Slate cache entry"), bCacheHit);
     return true;
 }
 

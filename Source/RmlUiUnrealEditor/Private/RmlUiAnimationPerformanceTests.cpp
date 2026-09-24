@@ -3,19 +3,38 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "RmlUiAnimationRuntime.h"
+#include "RmlUiAnimationBenchmarkWidget.h"
 #include "RmlUiBridge.h"
 #include "RmlUiPerformance.h"
+
+#include "Animation/MovieScene2DTransformSection.h"
+#include "Animation/MovieScene2DTransformTrack.h"
+#include "Animation/MovieSceneMarginSection.h"
+#include "Animation/MovieSceneMarginTrack.h"
+#include "Animation/UMGSequenceTickManager.h"
+#include "Animation/WidgetAnimation.h"
+#include "Animation/WidgetAnimationHandle.h"
+#include "Animation/WidgetAnimationState.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
+#include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
 
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Misc/CommandLine.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/Parse.h"
+#include "MovieScene.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/StrongObjectPtr.h"
+#include "Widgets/SWindow.h"
 
 namespace RmlUiAnimationPerformanceTests
 {
@@ -454,6 +473,720 @@ TSharedPtr<FJsonObject> RunNativeScenario(
     return Result;
 }
 
+enum class ELayoutScalePath : uint8
+{
+    LeftPx,
+    WidthPx,
+    Transform2D
+};
+
+const TCHAR* LayoutScalePathName(ELayoutScalePath Path)
+{
+    switch (Path)
+    {
+    case ELayoutScalePath::LeftPx: return TEXT("left_px");
+    case ELayoutScalePath::WidthPx: return TEXT("width_px");
+    case ELayoutScalePath::Transform2D: return TEXT("transform2d_visual");
+    default: return TEXT("unknown");
+    }
+}
+
+TSharedPtr<FJsonObject> RunLayoutScaleScenario(
+    FAutomationTestBase* Test, int32 TrackCount, ELayoutScalePath Path)
+{
+    const bool bTransform = Path == ELayoutScalePath::Transform2D;
+    RmlUE_View* View = RmlUE_CreateSlateView(512, 512, 1.0f);
+    Test->TestNotNull(TEXT("layout scale benchmark view created"), View);
+    if (!View) return MakeShared<FJsonObject>();
+
+    FString NodesMarkup;
+    NodesMarkup.Reserve(TrackCount * 24);
+    for (int32 Index = 0; Index < TrackCount; ++Index)
+        NodesMarkup += FString::Printf(TEXT("<div id='n%d'/>"), Index);
+    const FString Markup = FString::Printf(
+        TEXT("<rml><head><style>body{margin:0;}div{position:absolute;left:0;top:0;width:1px;height:1px;"
+            "background:#fff;transform-origin:0px 0px;transform:translate(0px,0px);}</style></head>"
+            "<body>%s</body></rml>"), *NodesMarkup);
+    Test->TestTrue(TEXT("layout scale benchmark document loaded"),
+        RmlUE_LoadDocumentFromMemory(View, TCHAR_TO_UTF8(*Markup),
+            "animation-layout-scale-performance.rml") != 0);
+    Test->TestTrue(TEXT("layout scale benchmark initial update completed"), RmlUE_Update(View) != 0);
+
+    TArray<uint32> Nodes;
+    Nodes.Reserve(TrackCount);
+    for (int32 Index = 0; Index < TrackCount; ++Index)
+    {
+        const FTCHARToUTF8 Id(*FString::Printf(TEXT("n%d"), Index));
+        const uint32 Node = RmlUE_FindNode(View, Id.Get());
+        Test->TestTrue(TEXT("layout scale benchmark target found"), Node != 0);
+        Nodes.Add(Node);
+    }
+
+    RmlUE_NodeMetrics BaselineMetrics{};
+    RmlUE_LayoutInfo BaselineLayout{};
+    Test->TestTrue(TEXT("layout scale benchmark baseline geometry readable"),
+        RmlUE_MeasureNodes(View, Nodes.GetData(), 1, &BaselineMetrics, &BaselineLayout) != 0 &&
+        BaselineMetrics.Valid != 0);
+    RmlUE_SlateFrame BaselineFrame{};
+    Test->TestTrue(TEXT("layout scale benchmark baseline frame recorded"),
+        RmlUE_RenderSlate(View, &BaselineFrame) != 0 && BaselineFrame.Replayed == 0);
+
+    FRmlUiAnimationRuntime Runtime;
+    FRmlUiAnimationDefinitionHandle DefinitionHandle;
+    if (bTransform)
+    {
+        FRmlUiTransform2DAnimationDefinition Definition;
+        Definition.To.TranslationX = 100.0f;
+        Definition.DurationSeconds = 100.0;
+        DefinitionHandle = Runtime.RegisterTransform2DDefinition(Definition);
+    }
+    else
+    {
+        FRmlUiFloatAnimationDefinition Definition;
+        Definition.From = Path == ELayoutScalePath::WidthPx ? 1.0f : 0.0f;
+        Definition.To = Path == ELayoutScalePath::WidthPx ? 101.0f : 100.0f;
+        Definition.DurationSeconds = 100.0;
+        DefinitionHandle = Runtime.RegisterFloatDefinition(
+            Path == ELayoutScalePath::WidthPx
+                ? ERmlUiAnimatedProperty::WidthPx
+                : ERmlUiAnimatedProperty::LeftPx,
+            Definition);
+    }
+    Test->TestTrue(TEXT("layout scale benchmark definition registered"), DefinitionHandle.IsValid());
+
+    TArray<FRmlUiAnimationBindingHandle> Bindings;
+    const uint64 BindStart = FPlatformTime::Cycles64();
+    const int32 Bound = Runtime.BindNodes(DefinitionHandle, View, Nodes, Bindings);
+    const double BindMilliseconds = CyclesToMilliseconds(FPlatformTime::Cycles64() - BindStart);
+    Test->TestEqual(TEXT("layout scale benchmark bound every node"), Bound, TrackCount);
+
+    TArray<FRmlUiAnimationHandle> Handles;
+    const uint64 PlayStart = FPlatformTime::Cycles64();
+    const int32 Played = Runtime.PlayBindings(Bindings, Handles);
+    const double PlayMilliseconds = CyclesToMilliseconds(FPlatformTime::Cycles64() - PlayStart);
+    Test->TestEqual(TEXT("layout scale benchmark played every binding"), Played, TrackCount);
+
+    for (int32 Frame = 0; Frame < WarmupFrames; ++Frame)
+    {
+        Runtime.Advance(FrameDeltaSeconds);
+        RmlUE_Update(View);
+        RmlUE_SlateFrame SlateFrame{};
+        RmlUE_RenderSlate(View, &SlateFrame);
+    }
+
+    FRmlUiPerformance::Reset();
+    TArray<double> AdvanceSamples;
+    TArray<double> UpdateSamples;
+    TArray<double> RenderSlateSamples;
+    AdvanceSamples.Reserve(SampleFrames);
+    UpdateSamples.Reserve(SampleFrames);
+    RenderSlateSamples.Reserve(SampleFrames);
+    uint64 VisualDraws = 0;
+    bool bAllUpdatesCompleted = true;
+    bool bAllFramesRendered = true;
+    for (int32 Frame = 0; Frame < SampleFrames; ++Frame)
+    {
+        uint64 Start = FPlatformTime::Cycles64();
+        Runtime.Advance(FrameDeltaSeconds);
+        AdvanceSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+
+        Start = FPlatformTime::Cycles64();
+        const bool bUpdated = RmlUE_Update(View) != 0;
+        UpdateSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+        bAllUpdatesCompleted &= bUpdated;
+
+        RmlUE_SlateFrame SlateFrame{};
+        Start = FPlatformTime::Cycles64();
+        const bool bRendered = RmlUE_RenderSlate(View, &SlateFrame) != 0;
+        RenderSlateSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+        bAllFramesRendered &= bRendered;
+        for (uint32 DrawIndex = 0; DrawIndex < SlateFrame.DrawCount; ++DrawIndex)
+            VisualDraws += SlateFrame.Draws[DrawIndex].VisualNode != 0 ? 1 : 0;
+    }
+
+    const FRmlUiPerformanceSnapshot Snapshot = FRmlUiPerformance::Snapshot();
+    const uint64 ExpectedWork = static_cast<uint64>(TrackCount) * SampleFrames;
+    Test->TestEqual(TEXT("layout scale benchmark committed every property"),
+        Snapshot.WorkCount(ERmlUiPerformanceBackend::Unattributed,
+            ERmlUiPerformanceWork::AnimationCommittedProperties), ExpectedWork);
+
+    RmlUE_NodeMetrics FinalMetrics{};
+    RmlUE_LayoutInfo FinalLayout{};
+    Test->TestTrue(TEXT("layout scale benchmark final geometry readable"),
+        RmlUE_MeasureNodes(View, Nodes.GetData(), 1, &FinalMetrics, &FinalLayout) != 0 &&
+        FinalMetrics.Valid != 0);
+    if (Path == ELayoutScalePath::LeftPx)
+    {
+        Test->TestTrue(TEXT("left px changes layout position"),
+            FinalMetrics.LayoutX > BaselineMetrics.LayoutX && FinalMetrics.X > BaselineMetrics.X);
+    }
+    else if (Path == ELayoutScalePath::WidthPx)
+    {
+        Test->TestTrue(TEXT("width px changes layout width"),
+            FinalMetrics.Width > BaselineMetrics.Width);
+    }
+    else
+    {
+        Test->TestTrue(TEXT("Transform2D changes visual position without reflow"),
+            FinalMetrics.X > BaselineMetrics.X &&
+            FMath::IsNearlyEqual(FinalMetrics.LayoutX, BaselineMetrics.LayoutX));
+    }
+    Test->TestTrue(TEXT("layout scale benchmark completed every context update"),
+        bAllUpdatesCompleted);
+    Test->TestTrue(TEXT("layout scale benchmark rendered every Slate frame"), bAllFramesRendered);
+    Test->TestTrue(TEXT("layout scale benchmark emitted draw commands"), VisualDraws > 0);
+
+    RmlUE_SlateReplayStats ReplayStats{};
+    RmlUE_GetSlateReplayStats(View, &ReplayStats);
+    if (bTransform)
+    {
+        Test->TestEqual(TEXT("Transform2D records topology once"),
+            ReplayStats.FullRenderFrames, uint64(1));
+        Test->TestTrue(TEXT("Transform2D replays sampled frames"),
+            ReplayStats.ReplayedFrames >= static_cast<uint64>(SampleFrames));
+    }
+    else
+    {
+        Test->TestTrue(TEXT("layout properties rebuild sampled frames"),
+            ReplayStats.FullRenderFrames >= static_cast<uint64>(SampleFrames + 1));
+    }
+
+    Runtime.CancelViewAnimations(View);
+    Test->TestTrue(TEXT("layout scale benchmark definition released"),
+        Runtime.ReleaseDefinition(DefinitionHandle));
+    RmlUE_DestroyView(View);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("path"), LayoutScalePathName(Path));
+    Result->SetNumberField(TEXT("tracks"), TrackCount);
+    Result->SetNumberField(TEXT("bind_total_ms"), BindMilliseconds);
+    Result->SetNumberField(TEXT("batch_play_total_ms"), PlayMilliseconds);
+    AddFrameDistribution(Result, TEXT("advance_frame"), AdvanceSamples);
+    AddFrameDistribution(Result, TEXT("rmlui_update_frame"), UpdateSamples);
+    AddFrameDistribution(Result, TEXT("render_slate_frame"), RenderSlateSamples);
+    Result->SetObjectField(TEXT("advance"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationAdvance));
+    Result->SetObjectField(TEXT("evaluate"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationEvaluate));
+    Result->SetObjectField(TEXT("collect"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationCollect));
+    Result->SetObjectField(TEXT("commit"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationCommit));
+    Result->SetNumberField(TEXT("committed_properties"), static_cast<double>(ExpectedWork));
+    Result->SetNumberField(TEXT("layout_revision_delta"),
+        static_cast<double>(FinalLayout.Revision - BaselineLayout.Revision));
+    Result->SetNumberField(TEXT("visual_draws"), static_cast<double>(VisualDraws));
+    Result->SetNumberField(TEXT("full_render_frames"),
+        static_cast<double>(ReplayStats.FullRenderFrames));
+    Result->SetNumberField(TEXT("replayed_frames"),
+        static_cast<double>(ReplayStats.ReplayedFrames));
+    Result->SetStringField(TEXT("scope"), bTransform
+        ? TEXT("MovieScene ECS Transform2D visual commit, explicit RmlUi context update, then RmlUE_RenderSlate retained replay. It is the no-reflow control for the same absolute-positioned nodes.")
+        : TEXT("MovieScene ECS typed px property commit, explicit RmlUi context update/layout, then RmlUE_RenderSlate full command-frame build for the same absolute-positioned nodes."));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> RunBackgroundColorScaleScenario(
+    FAutomationTestBase* Test, int32 TrackCount)
+{
+    RmlUE_View* View = RmlUE_CreateSlateView(512, 512, 1.0f);
+    Test->TestNotNull(TEXT("background color benchmark view created"), View);
+    if (!View) return MakeShared<FJsonObject>();
+
+    FString NodesMarkup;
+    NodesMarkup.Reserve(TrackCount * 24);
+    for (int32 Index = 0; Index < TrackCount; ++Index)
+        NodesMarkup += FString::Printf(TEXT("<div id='n%d'/>") , Index);
+    const FString Markup = FString::Printf(
+        TEXT("<rml><head><style>body{margin:0;}div{position:absolute;left:0;top:0;width:1px;height:1px;"
+            "background:#f00;}</style></head><body>%s</body></rml>"), *NodesMarkup);
+    Test->TestTrue(TEXT("background color benchmark document loaded"),
+        RmlUE_LoadDocumentFromMemory(View, TCHAR_TO_UTF8(*Markup),
+            "animation-background-color-performance.rml") != 0);
+    Test->TestTrue(TEXT("background color benchmark initial update completed"), RmlUE_Update(View) != 0);
+
+    TArray<uint32> Nodes;
+    Nodes.Reserve(TrackCount);
+    for (int32 Index = 0; Index < TrackCount; ++Index)
+    {
+        const FTCHARToUTF8 Id(*FString::Printf(TEXT("n%d"), Index));
+        const uint32 Node = RmlUE_FindNode(View, Id.Get());
+        Test->TestTrue(TEXT("background color benchmark target found"), Node != 0);
+        Nodes.Add(Node);
+    }
+
+    RmlUE_SlateFrame BaselineFrame{};
+    Test->TestTrue(TEXT("background color benchmark baseline frame recorded"),
+        RmlUE_RenderSlate(View, &BaselineFrame) != 0 && BaselineFrame.Replayed == 0);
+    RmlUE_SlateScheduleState BaselineSchedule{};
+    Test->TestTrue(TEXT("background color benchmark baseline schedule readable"),
+        RmlUE_GetSlateScheduleState(View, &BaselineSchedule) != 0 && BaselineSchedule.CanReplay != 0);
+
+    FRmlUiAnimationRuntime Runtime;
+    FRmlUiColorAnimationDefinition Definition;
+    Definition.From = {1.0f, 0.0f, 0.0f, 1.0f};
+    Definition.To = {0.0f, 0.5f, 1.0f, 1.0f};
+    Definition.DurationSeconds = 100.0;
+    const FRmlUiAnimationDefinitionHandle DefinitionHandle = Runtime.RegisterColorDefinition(
+        ERmlUiAnimatedProperty::BackgroundColor, Definition);
+    Test->TestTrue(TEXT("background color benchmark definition registered"), DefinitionHandle.IsValid());
+
+    TArray<FRmlUiAnimationBindingHandle> Bindings;
+    const uint64 BindStart = FPlatformTime::Cycles64();
+    const int32 Bound = Runtime.BindNodes(DefinitionHandle, View, Nodes, Bindings);
+    const double BindMilliseconds = CyclesToMilliseconds(FPlatformTime::Cycles64() - BindStart);
+    Test->TestEqual(TEXT("background color benchmark bound every node"), Bound, TrackCount);
+
+    TArray<FRmlUiAnimationHandle> Handles;
+    const uint64 PlayStart = FPlatformTime::Cycles64();
+    const int32 Played = Runtime.PlayBindings(Bindings, Handles);
+    const double PlayMilliseconds = CyclesToMilliseconds(FPlatformTime::Cycles64() - PlayStart);
+    Test->TestEqual(TEXT("background color benchmark played every binding"), Played, TrackCount);
+
+    bool bWarmupReplayed = true;
+    for (int32 Frame = 0; Frame < WarmupFrames; ++Frame)
+    {
+        Runtime.Advance(FrameDeltaSeconds);
+        RmlUE_Update(View);
+        RmlUE_SlateFrame SlateFrame{};
+        bWarmupReplayed &= RmlUE_RenderSlate(View, &SlateFrame) != 0 && SlateFrame.Replayed == 1;
+    }
+    Test->TestTrue(TEXT("background color benchmark warmup uses retained replay"), bWarmupReplayed);
+
+    FRmlUiPerformance::Reset();
+    TArray<double> AdvanceSamples;
+    TArray<double> UpdateSamples;
+    TArray<double> RenderSlateSamples;
+    AdvanceSamples.Reserve(SampleFrames);
+    UpdateSamples.Reserve(SampleFrames);
+    RenderSlateSamples.Reserve(SampleFrames);
+    bool bAllUpdatesCompleted = true;
+    bool bAllFramesReplayed = true;
+    uint64 VisualDeltaCount = 0;
+    for (int32 Frame = 0; Frame < SampleFrames; ++Frame)
+    {
+        uint64 Start = FPlatformTime::Cycles64();
+        Runtime.Advance(FrameDeltaSeconds);
+        AdvanceSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+
+        Start = FPlatformTime::Cycles64();
+        bAllUpdatesCompleted &= RmlUE_Update(View) != 0;
+        UpdateSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+
+        RmlUE_SlateFrame SlateFrame{};
+        Start = FPlatformTime::Cycles64();
+        const bool bRendered = RmlUE_RenderSlate(View, &SlateFrame) != 0;
+        RenderSlateSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+        bAllFramesReplayed &= bRendered && SlateFrame.Replayed == 1;
+        VisualDeltaCount += SlateFrame.VisualDeltaCount;
+    }
+
+    const FRmlUiPerformanceSnapshot Snapshot = FRmlUiPerformance::Snapshot();
+    const uint64 ExpectedWork = static_cast<uint64>(TrackCount) * SampleFrames;
+    Test->TestEqual(TEXT("background color benchmark committed every property"),
+        Snapshot.WorkCount(ERmlUiPerformanceBackend::Unattributed,
+            ERmlUiPerformanceWork::AnimationCommittedProperties), ExpectedWork);
+    Test->TestTrue(TEXT("background color benchmark completed every context update"),
+        bAllUpdatesCompleted);
+    Test->TestTrue(TEXT("background color benchmark replays every sampled frame"),
+        bAllFramesReplayed);
+    Test->TestEqual(TEXT("background color benchmark emits one visual delta per target and frame"),
+        VisualDeltaCount, ExpectedWork);
+
+    RmlUE_SlateScheduleState FinalSchedule{};
+    Test->TestTrue(TEXT("background color benchmark preserves retained content revision"),
+        RmlUE_GetSlateScheduleState(View, &FinalSchedule) != 0 &&
+        FinalSchedule.ContentRevision == BaselineSchedule.ContentRevision &&
+        FinalSchedule.VisualRevision != BaselineSchedule.VisualRevision);
+    RmlUE_SlateReplayStats ReplayStats{};
+    RmlUE_GetSlateReplayStats(View, &ReplayStats);
+    Test->TestEqual(TEXT("background color benchmark records topology once"),
+        ReplayStats.FullRenderFrames, uint64(1));
+    Test->TestTrue(TEXT("background color benchmark replays warmup and sampled frames"),
+        ReplayStats.ReplayedFrames >= static_cast<uint64>(WarmupFrames + SampleFrames));
+
+    Runtime.CancelViewAnimations(View);
+    Test->TestTrue(TEXT("background color benchmark definition released"),
+        Runtime.ReleaseDefinition(DefinitionHandle));
+    RmlUE_DestroyView(View);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("path"), TEXT("background_color_retained"));
+    Result->SetNumberField(TEXT("tracks"), TrackCount);
+    Result->SetNumberField(TEXT("bind_total_ms"), BindMilliseconds);
+    Result->SetNumberField(TEXT("batch_play_total_ms"), PlayMilliseconds);
+    AddFrameDistribution(Result, TEXT("advance_frame"), AdvanceSamples);
+    AddFrameDistribution(Result, TEXT("rmlui_update_frame"), UpdateSamples);
+    AddFrameDistribution(Result, TEXT("render_slate_frame"), RenderSlateSamples);
+    Result->SetObjectField(TEXT("advance"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationAdvance));
+    Result->SetObjectField(TEXT("evaluate"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationEvaluate));
+    Result->SetObjectField(TEXT("collect"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationCollect));
+    Result->SetObjectField(TEXT("commit"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationCommit));
+    AddCommitBreakdown(Result, TEXT("background_color"), Snapshot);
+    Result->SetNumberField(TEXT("committed_properties"), static_cast<double>(ExpectedWork));
+    Result->SetNumberField(TEXT("visual_deltas"), static_cast<double>(VisualDeltaCount));
+    Result->SetNumberField(TEXT("full_render_frames"), static_cast<double>(ReplayStats.FullRenderFrames));
+    Result->SetNumberField(TEXT("replayed_frames"), static_cast<double>(ReplayStats.ReplayedFrames));
+    Result->SetStringField(TEXT("scope"),
+        TEXT("MovieScene ECS color sampling and eligible untextured background-color visual commit, explicit idle RmlUi context update, then retained RmlUE_RenderSlate replay. The final property-tree commit is excluded because the 100-second tracks remain active."));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> RunUmgScaleScenario(
+    FAutomationTestBase* Test, int32 TrackCount, ELayoutScalePath Path)
+{
+    const bool bTransform = Path == ELayoutScalePath::Transform2D;
+    constexpr int32 DurationFrames = 6000;
+    const FFrameNumber StartFrame(0);
+    const FFrameNumber EndFrame(DurationFrames);
+
+    TStrongObjectPtr<URmlUiAnimationBenchmarkWidget> UserWidget(
+        NewObject<URmlUiAnimationBenchmarkWidget>(GetTransientPackage()));
+    UserWidget->WidgetTree = NewObject<UWidgetTree>(UserWidget.Get(), TEXT("WidgetTree"));
+    UCanvasPanel* Canvas = UserWidget->WidgetTree->ConstructWidget<UCanvasPanel>(
+        UCanvasPanel::StaticClass(), TEXT("BenchmarkCanvas"));
+    UserWidget->WidgetTree->RootWidget = Canvas;
+    Test->TestNotNull(TEXT("UMG scale benchmark canvas created"), Canvas);
+    if (!Canvas) return MakeShared<FJsonObject>();
+
+    TArray<UCanvasPanelSlot*> Slots;
+    TArray<UWidget*> Widgets;
+    Slots.Reserve(TrackCount);
+    Widgets.Reserve(TrackCount);
+    for (int32 Index = 0; Index < TrackCount; ++Index)
+    {
+        UBorder* Border = UserWidget->WidgetTree->ConstructWidget<UBorder>(
+            UBorder::StaticClass(), *FString::Printf(TEXT("BenchmarkNode_%d"), Index));
+        Border->SetBrushColor(FLinearColor::White);
+        UCanvasPanelSlot* Slot = Canvas->AddChildToCanvas(Border);
+        Slot->SetPosition(FVector2D::ZeroVector);
+        Slot->SetSize(FVector2D(1.0f, 1.0f));
+        Slots.Add(Slot);
+        Widgets.Add(Border);
+    }
+
+    const uint64 MovieSceneSetupStart = FPlatformTime::Cycles64();
+    TStrongObjectPtr<UWidgetAnimation> Animation(
+        NewObject<UWidgetAnimation>(UserWidget.Get(), TEXT("BenchmarkAnimation")));
+    UMovieScene* MovieScene = NewObject<UMovieScene>(Animation.Get(), TEXT("MovieScene"));
+    Animation->MovieScene = MovieScene;
+    MovieScene->SetTickResolutionDirectly(FFrameRate(60, 1));
+    MovieScene->SetDisplayRate(FFrameRate(60, 1));
+    MovieScene->SetPlaybackRange(StartFrame, DurationFrames);
+
+    for (int32 Index = 0; Index < TrackCount; ++Index)
+    {
+        UObject* Target = bTransform ? static_cast<UObject*>(Widgets[Index]) : Slots[Index];
+        const FGuid Possessable = MovieScene->AddPossessable(Target->GetName(), Target->GetClass());
+        Animation->BindPossessableObject(Possessable, *Target, UserWidget.Get());
+
+        if (bTransform)
+        {
+            UMovieScene2DTransformTrack* Track =
+                MovieScene->AddTrack<UMovieScene2DTransformTrack>(Possessable);
+            Track->SetPropertyNameAndPath(TEXT("RenderTransform"), TEXT("RenderTransform"));
+            UMovieScene2DTransformSection* Section =
+                CastChecked<UMovieScene2DTransformSection>(Track->CreateNewSection());
+            Section->SetRange(TRange<FFrameNumber>(StartFrame, EndFrame));
+            Section->SetMask(FMovieScene2DTransformMask(
+                EMovieScene2DTransformChannel::TranslationX));
+            Section->Translation[0].AddLinearKey(StartFrame, 0.0f);
+            Section->Translation[0].AddLinearKey(EndFrame, 100.0f);
+            Track->AddSection(*Section);
+        }
+        else
+        {
+            UMovieSceneMarginTrack* Track =
+                MovieScene->AddTrack<UMovieSceneMarginTrack>(Possessable);
+            Track->SetPropertyNameAndPath(TEXT("Offsets"), TEXT("LayoutData.Offsets"));
+            UMovieSceneMarginSection* Section =
+                CastChecked<UMovieSceneMarginSection>(Track->CreateNewSection());
+            Section->SetRange(TRange<FFrameNumber>(StartFrame, EndFrame));
+            FMovieSceneFloatChannel& Channel = Path == ELayoutScalePath::LeftPx
+                ? Section->LeftCurve
+                : Section->RightCurve;
+            Channel.AddLinearKey(StartFrame, Path == ELayoutScalePath::LeftPx ? 0.0f : 1.0f);
+            Channel.AddLinearKey(EndFrame, Path == ELayoutScalePath::LeftPx ? 100.0f : 101.0f);
+            Track->AddSection(*Section);
+        }
+    }
+    const double MovieSceneSetupMilliseconds =
+        CyclesToMilliseconds(FPlatformTime::Cycles64() - MovieSceneSetupStart);
+
+    TSharedRef<SWidget> SlateRoot = UserWidget->TakeWidget();
+    TSharedPtr<SWindow> Window = SNew(SWindow)
+        .Title(FText::FromString(TEXT("UMG animation scale benchmark")))
+        .ClientSize(FVector2D(512, 512))
+        .UseOSWindowBorder(false)
+        .CreateTitleBar(false)
+        .AutoCenter(EAutoCenter::None)
+        .ScreenPosition(FVector2D(0, 0))
+        .AdjustInitialSizeAndPositionForDPIScale(false)
+        .SaneWindowPlacement(false)
+        .SizingRule(ESizingRule::FixedSize)
+        .SupportsMaximize(false)
+        .SupportsMinimize(false)
+        [SlateRoot];
+    FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+    SlateRoot->SlatePrepass(1.0f);
+
+    const uint64 PlayStart = FPlatformTime::Cycles64();
+    const FWidgetAnimationHandle AnimationHandle = UserWidget->PlayAnimation(Animation.Get());
+    const double PlayMilliseconds =
+        CyclesToMilliseconds(FPlatformTime::Cycles64() - PlayStart);
+    TSharedPtr<FWidgetAnimationState> AnimationState = AnimationHandle.PinAnimationState();
+    UUMGSequenceTickManager* TickManager = UUMGSequenceTickManager::Get(UserWidget.Get());
+    Test->TestTrue(TEXT("UMG scale benchmark animation state created"), AnimationState.IsValid());
+    Test->TestNotNull(TEXT("UMG scale benchmark tick manager created"), TickManager);
+    if (!AnimationState || !TickManager)
+    {
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        return MakeShared<FJsonObject>();
+    }
+
+    for (int32 Frame = 0; Frame < WarmupFrames; ++Frame)
+    {
+        AnimationState->Tick(FrameDeltaSeconds);
+        TickManager->ForceFlush();
+        SlateRoot->SlatePrepass(1.0f);
+    }
+
+    TArray<double> MovieSceneSamples;
+    TArray<double> PrepassSamples;
+    MovieSceneSamples.Reserve(SampleFrames);
+    PrepassSamples.Reserve(SampleFrames);
+    for (int32 Frame = 0; Frame < SampleFrames; ++Frame)
+    {
+        uint64 Start = FPlatformTime::Cycles64();
+        AnimationState->Tick(FrameDeltaSeconds);
+        TickManager->ForceFlush();
+        MovieSceneSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+
+        Start = FPlatformTime::Cycles64();
+        SlateRoot->SlatePrepass(1.0f);
+        PrepassSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+    }
+
+    Test->TestTrue(TEXT("UMG scale benchmark produced MovieScene samples"), MovieSceneSamples.Num() == SampleFrames);
+    Test->TestTrue(TEXT("UMG scale benchmark produced prepass samples"), PrepassSamples.Num() == SampleFrames);
+    if (bTransform)
+    {
+        Test->TestTrue(TEXT("UMG MovieScene changed render translation"),
+            Widgets[0]->GetRenderTransform().Translation.X > 0.0f);
+    }
+    else if (Path == ELayoutScalePath::LeftPx)
+    {
+        Test->TestTrue(TEXT("UMG MovieScene changed canvas position"),
+            Slots[0]->GetPosition().X > 0.0f);
+    }
+    else
+    {
+        Test->TestTrue(TEXT("UMG MovieScene changed canvas width"),
+            Slots[0]->GetSize().X > 1.0f);
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("path"), LayoutScalePathName(Path));
+    Result->SetNumberField(TEXT("tracks"), TrackCount);
+    Result->SetNumberField(TEXT("movie_scene_setup_total_ms"), MovieSceneSetupMilliseconds);
+    Result->SetNumberField(TEXT("play_total_ms"), PlayMilliseconds);
+    AddFrameDistribution(Result, TEXT("umg_moviescene_frame"), MovieSceneSamples);
+    AddFrameDistribution(Result, TEXT("umg_slate_prepass_frame"), PrepassSamples);
+    Result->SetStringField(TEXT("scope"), bTransform
+        ? TEXT("UMG UWidgetAnimation with one 2D Transform track per widget. umg_moviescene_frame includes FWidgetAnimationState::Tick plus shared UMG MovieScene ECS ForceFlush; Slate prepass is separate. Window painting is excluded.")
+        : TEXT("UMG UWidgetAnimation with one Margin track per canvas slot, animating LayoutData.Offsets.Left or Right. umg_moviescene_frame includes FWidgetAnimationState::Tick plus shared UMG MovieScene ECS ForceFlush; Slate prepass is separate. Window painting is excluded."));
+
+    UserWidget->StopAnimation(Animation.Get());
+    TickManager->ForceFlush();
+    AnimationState->TearDown();
+    TickManager->ForceFlush();
+    TickManager->RemoveWidget(UserWidget.Get());
+    FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+    Window.Reset();
+    Animation.Reset();
+    UserWidget.Reset();
+    return Result;
+}
+
+TSharedPtr<FJsonObject> RunUmgFewTargetsManyTracksScenario(
+    FAutomationTestBase* Test, int32 TargetCount, int32 TracksPerTarget)
+{
+    const int32 LogicalTrackCount = TargetCount * TracksPerTarget;
+    constexpr int32 DurationFrames = 6000;
+    const FFrameNumber StartFrame(0);
+    const FFrameNumber EndFrame(DurationFrames);
+    SIZE_T MemoryBefore = 0;
+    FPlatformProcess::GetApplicationMemoryUsage(
+        FPlatformProcess::GetCurrentProcessId(), &MemoryBefore);
+
+    TStrongObjectPtr<URmlUiAnimationBenchmarkWidget> UserWidget(
+        NewObject<URmlUiAnimationBenchmarkWidget>(GetTransientPackage()));
+    UserWidget->WidgetTree = NewObject<UWidgetTree>(UserWidget.Get(), TEXT("WidgetTree"));
+    UCanvasPanel* Canvas = UserWidget->WidgetTree->ConstructWidget<UCanvasPanel>(
+        UCanvasPanel::StaticClass(), TEXT("BenchmarkCanvas"));
+    UserWidget->WidgetTree->RootWidget = Canvas;
+    Test->TestNotNull(TEXT("UMG many-track benchmark canvas created"), Canvas);
+    if (!Canvas) return MakeShared<FJsonObject>();
+
+    TArray<UWidget*> Widgets;
+    Widgets.Reserve(TargetCount);
+    for (int32 TargetIndex = 0; TargetIndex < TargetCount; ++TargetIndex)
+    {
+        UBorder* Border = UserWidget->WidgetTree->ConstructWidget<UBorder>(
+            UBorder::StaticClass(), *FString::Printf(TEXT("BenchmarkNode_%d"), TargetIndex));
+        Border->SetBrushColor(FLinearColor::White);
+        UCanvasPanelSlot* Slot = Canvas->AddChildToCanvas(Border);
+        Slot->SetPosition(FVector2D::ZeroVector);
+        Slot->SetSize(FVector2D(1.0f, 1.0f));
+        Widgets.Add(Border);
+    }
+
+    const uint64 MovieSceneSetupStart = FPlatformTime::Cycles64();
+    TStrongObjectPtr<UWidgetAnimation> Animation(
+        NewObject<UWidgetAnimation>(UserWidget.Get(), TEXT("ManyTrackAnimation")));
+    UMovieScene* MovieScene = NewObject<UMovieScene>(Animation.Get(), TEXT("MovieScene"));
+    Animation->MovieScene = MovieScene;
+    MovieScene->SetTickResolutionDirectly(FFrameRate(60, 1));
+    MovieScene->SetDisplayRate(FFrameRate(60, 1));
+    MovieScene->SetPlaybackRange(StartFrame, DurationFrames);
+    bool bAllPhysicalTracksAdded = true;
+
+    for (int32 TargetIndex = 0; TargetIndex < TargetCount; ++TargetIndex)
+    {
+        UObject* Target = Widgets[TargetIndex];
+        const FGuid Possessable = MovieScene->AddPossessable(Target->GetName(), Target->GetClass());
+        Animation->BindPossessableObject(Possessable, *Target, UserWidget.Get());
+        for (int32 TrackIndex = 0; TrackIndex < TracksPerTarget; ++TrackIndex)
+        {
+            UMovieScene2DTransformTrack* Track = nullptr;
+            if (TrackIndex == 0)
+            {
+                Track = MovieScene->AddTrack<UMovieScene2DTransformTrack>(Possessable);
+            }
+            else
+            {
+                Track = NewObject<UMovieScene2DTransformTrack>(
+                    MovieScene,
+                    *FString::Printf(TEXT("TransformTrack_%d_%d"), TargetIndex, TrackIndex),
+                    RF_Transactional);
+                bAllPhysicalTracksAdded &= MovieScene->AddGivenTrack(Track, Possessable);
+            }
+            bAllPhysicalTracksAdded &= Track != nullptr;
+            if (!Track) continue;
+            Track->SetPropertyNameAndPath(TEXT("RenderTransform"), TEXT("RenderTransform"));
+            UMovieScene2DTransformSection* Section =
+                CastChecked<UMovieScene2DTransformSection>(Track->CreateNewSection());
+            Section->SetRange(TRange<FFrameNumber>(StartFrame, EndFrame));
+            Section->SetBlendType(EMovieSceneBlendType::Additive);
+            Section->SetMask(FMovieScene2DTransformMask(
+                EMovieScene2DTransformChannel::TranslationX));
+            Section->Translation[0].AddLinearKey(StartFrame, 0.0f);
+            Section->Translation[0].AddLinearKey(
+                EndFrame, 10.0f / static_cast<float>(TracksPerTarget));
+            Track->AddSection(*Section);
+        }
+    }
+    Test->TestTrue(TEXT("UMG many-track physical tracks created"), bAllPhysicalTracksAdded);
+    const double MovieSceneSetupMilliseconds =
+        CyclesToMilliseconds(FPlatformTime::Cycles64() - MovieSceneSetupStart);
+    SIZE_T MemoryAfterSetup = 0;
+    FPlatformProcess::GetApplicationMemoryUsage(
+        FPlatformProcess::GetCurrentProcessId(), &MemoryAfterSetup);
+
+    TSharedRef<SWidget> SlateRoot = UserWidget->TakeWidget();
+    TSharedPtr<SWindow> Window = SNew(SWindow)
+        .Title(FText::FromString(TEXT("UMG few targets many tracks benchmark")))
+        .ClientSize(FVector2D(512, 512))
+        .UseOSWindowBorder(false)
+        .CreateTitleBar(false)
+        .AutoCenter(EAutoCenter::None)
+        .ScreenPosition(FVector2D(0, 0))
+        .AdjustInitialSizeAndPositionForDPIScale(false)
+        .SaneWindowPlacement(false)
+        .SizingRule(ESizingRule::FixedSize)
+        .SupportsMaximize(false)
+        .SupportsMinimize(false)
+        [SlateRoot];
+    FSlateApplication::Get().AddWindow(Window.ToSharedRef());
+    SlateRoot->SlatePrepass(1.0f);
+
+    const uint64 PlayStart = FPlatformTime::Cycles64();
+    const FWidgetAnimationHandle AnimationHandle = UserWidget->PlayAnimation(Animation.Get());
+    const double PlayMilliseconds =
+        CyclesToMilliseconds(FPlatformTime::Cycles64() - PlayStart);
+    TSharedPtr<FWidgetAnimationState> AnimationState = AnimationHandle.PinAnimationState();
+    UUMGSequenceTickManager* TickManager = UUMGSequenceTickManager::Get(UserWidget.Get());
+    Test->TestTrue(TEXT("UMG many-track animation state created"), AnimationState.IsValid());
+    Test->TestNotNull(TEXT("UMG many-track tick manager created"), TickManager);
+    if (!AnimationState || !TickManager)
+    {
+        FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+        return MakeShared<FJsonObject>();
+    }
+
+    for (int32 Frame = 0; Frame < WarmupFrames; ++Frame)
+    {
+        AnimationState->Tick(FrameDeltaSeconds);
+        TickManager->ForceFlush();
+        SlateRoot->SlatePrepass(1.0f);
+    }
+
+    TArray<double> MovieSceneSamples;
+    TArray<double> PrepassSamples;
+    MovieSceneSamples.Reserve(SampleFrames);
+    PrepassSamples.Reserve(SampleFrames);
+    for (int32 Frame = 0; Frame < SampleFrames; ++Frame)
+    {
+        uint64 Start = FPlatformTime::Cycles64();
+        AnimationState->Tick(FrameDeltaSeconds);
+        TickManager->ForceFlush();
+        MovieSceneSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+
+        Start = FPlatformTime::Cycles64();
+        SlateRoot->SlatePrepass(1.0f);
+        PrepassSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - Start));
+    }
+    const float FinalTranslationX = Widgets[0]->GetRenderTransform().Translation.X;
+    const float ExpectedTranslationX = 10.0f *
+        (WarmupFrames + SampleFrames) * FrameDeltaSeconds /
+        (DurationFrames / 60.0f);
+    Test->TestTrue(TEXT("UMG many-track additive tracks all contribute"),
+        FMath::IsNearlyEqual(FinalTranslationX, ExpectedTranslationX, 0.02f));
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("target_widgets"), TargetCount);
+    Result->SetNumberField(TEXT("tracks_per_target"), TracksPerTarget);
+    Result->SetNumberField(TEXT("logical_tracks"), LogicalTrackCount);
+    Result->SetNumberField(TEXT("physical_movie_scene_tracks"), LogicalTrackCount);
+    Result->SetNumberField(TEXT("active_sections"), LogicalTrackCount);
+    Result->SetStringField(TEXT("composition"), TEXT("additive"));
+    Result->SetNumberField(TEXT("movie_scene_setup_total_ms"), MovieSceneSetupMilliseconds);
+    Result->SetNumberField(TEXT("play_total_ms"), PlayMilliseconds);
+    Result->SetNumberField(TEXT("final_translation_x"), FinalTranslationX);
+    Result->SetNumberField(TEXT("expected_translation_x"), ExpectedTranslationX);
+    Result->SetNumberField(TEXT("process_memory_setup_delta_bytes"),
+        static_cast<double>(MemoryAfterSetup >= MemoryBefore ? MemoryAfterSetup - MemoryBefore : 0));
+    AddFrameDistribution(Result, TEXT("umg_moviescene_frame"), MovieSceneSamples);
+    AddFrameDistribution(Result, TEXT("umg_slate_prepass_frame"), PrepassSamples);
+    Result->SetStringField(TEXT("scope"),
+        TEXT("One UWidgetAnimation and one possessable per target widget. Every logical track is a distinct physical UMovieScene2DTransformTrack with one overlapping additive TranslationX section. Frame time includes FWidgetAnimationState::Tick and shared UMG MovieScene ECS ForceFlush; Slate prepass is separate and window paint is excluded."));
+
+    UserWidget->StopAnimation(Animation.Get());
+    TickManager->ForceFlush();
+    AnimationState->TearDown();
+    TickManager->ForceFlush();
+    TickManager->RemoveWidget(UserWidget.Get());
+    FSlateApplication::Get().RequestDestroyWindow(Window.ToSharedRef());
+    Window.Reset();
+    Animation.Reset();
+    UserWidget.Reset();
+    return Result;
+}
+
 TSharedPtr<FJsonObject> RunLayeredContributionScenario(
     FAutomationTestBase* Test, int32 TargetCount, int32 LayerCount)
 {
@@ -568,6 +1301,13 @@ TSharedPtr<FJsonObject> RunLayeredContributionScenario(
     Result->SetNumberField(TEXT("targets"), TargetCount);
     Result->SetNumberField(TEXT("layers"), LayerCount);
     Result->SetNumberField(TEXT("entities"), EntityCount);
+    Result->SetNumberField(TEXT("target_elements"), TargetCount);
+    Result->SetNumberField(TEXT("tracks_per_target"), LayerCount);
+    Result->SetNumberField(TEXT("logical_tracks"), EntityCount);
+    Result->SetNumberField(TEXT("active_movie_scene_entities"), EntityCount);
+    Result->SetNumberField(TEXT("physical_movie_scene_tracks"), 0);
+    Result->SetStringField(TEXT("composition"),
+        LayerCount == 1 ? TEXT("ordinary-replace") : TEXT("ordered-replace-winner"));
     Result->SetStringField(TEXT("path"), LayerCount == 1 ? TEXT("ordinary-replace") : TEXT("layered-replace"));
     Result->SetNumberField(TEXT("bind_total_ms"), BindMilliseconds);
     Result->SetNumberField(TEXT("batch_play_total_ms"), PlayMilliseconds);
@@ -595,6 +1335,131 @@ TSharedPtr<FJsonObject> RunLayeredContributionScenario(
         static_cast<double>(MemoryAfterSetup >= MemoryBefore ? MemoryAfterSetup - MemoryBefore : 0));
     Result->SetStringField(TEXT("scope"),
         TEXT("Editor NullRHI MovieScene ECS opacity benchmark with a real RmlUi Slate view and visual commit sink. One layer uses ordinary replace; two and four layers use same-target ordered contributions. Setup memory is process working-set delta and remains allocator/order sensitive. Slate widget paint, render thread, GPU and present are excluded."));
+    return Result;
+}
+
+TSharedPtr<FJsonObject> RunRmlUiFewTargetsManyTracksScenario(
+    FAutomationTestBase* Test, int32 TargetCount, int32 TracksPerTarget)
+{
+    const int32 LogicalTrackCount = TargetCount * TracksPerTarget;
+    SIZE_T MemoryBefore = 0;
+    FPlatformProcess::GetApplicationMemoryUsage(
+        FPlatformProcess::GetCurrentProcessId(), &MemoryBefore);
+
+    RmlUE_View* View = RmlUE_CreateSlateView(512, 512, 1.0f);
+    Test->TestNotNull(TEXT("RmlUi many-track benchmark view created"), View);
+    if (!View) return MakeShared<FJsonObject>();
+    const FString Markup = NativeMarkup(TargetCount, false);
+    Test->TestTrue(TEXT("RmlUi many-track benchmark document loaded"),
+        RmlUE_LoadDocumentFromMemory(View, TCHAR_TO_UTF8(*Markup),
+            "animation-few-targets-many-tracks.rml") != 0);
+    Test->TestTrue(TEXT("RmlUi many-track initial update completed"), RmlUE_Update(View) != 0);
+
+    TArray<uint32> Nodes;
+    Nodes.Reserve(TargetCount);
+    bool bAllTargetsFound = true;
+    for (int32 TargetIndex = 0; TargetIndex < TargetCount; ++TargetIndex)
+    {
+        const FTCHARToUTF8 Id(*FString::Printf(TEXT("n%d"), TargetIndex));
+        const uint32 Node = RmlUE_FindNode(View, Id.Get());
+        bAllTargetsFound &= Node != 0;
+        Nodes.Add(Node);
+    }
+    Test->TestTrue(TEXT("RmlUi many-track targets found"), bAllTargetsFound);
+
+    FRmlUiAnimationRuntime Runtime;
+    FRmlUiFloatAnimationDefinition Definition;
+    Definition.From = 0.1f;
+    Definition.To = 0.9f;
+    Definition.DurationSeconds = 100.0;
+    const FRmlUiAnimationDefinitionHandle DefinitionHandle =
+        Runtime.RegisterFloatDefinition(ERmlUiAnimatedProperty::Opacity, Definition);
+    Test->TestTrue(TEXT("RmlUi many-track shared definition registered"),
+        DefinitionHandle.IsValid());
+
+    TArray<FRmlUiAnimationBindingHandle> Bindings;
+    TArray<FRmlUiAnimationContributionSpec> Contributions;
+    Bindings.Reserve(LogicalTrackCount);
+    Contributions.Reserve(LogicalTrackCount);
+    bool bAllLayersBound = true;
+    const uint64 BindStart = FPlatformTime::Cycles64();
+    for (int32 LayerIndex = 0; LayerIndex < TracksPerTarget; ++LayerIndex)
+    {
+        TArray<FRmlUiAnimationBindingHandle> LayerBindings;
+        bAllLayersBound &= Runtime.BindNodes(
+            DefinitionHandle, View, Nodes, LayerBindings) == TargetCount;
+        for (FRmlUiAnimationBindingHandle Binding : LayerBindings)
+        {
+            Bindings.Add(Binding);
+            Contributions.Add({LayerIndex, true, true});
+        }
+    }
+    const double BindMilliseconds = CyclesToMilliseconds(FPlatformTime::Cycles64() - BindStart);
+    Test->TestTrue(TEXT("RmlUi many-track bound every layer"), bAllLayersBound);
+
+    TArray<FRmlUiAnimationHandle> Handles;
+    const uint64 PlayStart = FPlatformTime::Cycles64();
+    const int32 Played = Runtime.PlayContributionBindings(Bindings, Contributions, Handles);
+    const double PlayMilliseconds = CyclesToMilliseconds(FPlatformTime::Cycles64() - PlayStart);
+    Test->TestEqual(TEXT("RmlUi many-track played every logical track"),
+        Played, LogicalTrackCount);
+    SIZE_T MemoryAfterSetup = 0;
+    FPlatformProcess::GetApplicationMemoryUsage(
+        FPlatformProcess::GetCurrentProcessId(), &MemoryAfterSetup);
+
+    for (int32 Frame = 0; Frame < WarmupFrames; ++Frame)
+        Runtime.Advance(FrameDeltaSeconds);
+    FRmlUiPerformance::Reset();
+    TArray<double> FrameSamples;
+    FrameSamples.Reserve(SampleFrames);
+    for (int32 Frame = 0; Frame < SampleFrames; ++Frame)
+    {
+        const uint64 FrameStart = FPlatformTime::Cycles64();
+        Runtime.Advance(FrameDeltaSeconds);
+        FrameSamples.Add(CyclesToMilliseconds(FPlatformTime::Cycles64() - FrameStart));
+    }
+    const FRmlUiPerformanceSnapshot Snapshot = FRmlUiPerformance::Snapshot();
+    const uint64 ExpectedEvaluated = static_cast<uint64>(TargetCount) * SampleFrames;
+    const uint64 ExpectedCommitted = ExpectedEvaluated;
+    Test->TestEqual(TEXT("RmlUi many-track evaluates one stable winner per target"),
+        Snapshot.WorkCount(ERmlUiPerformanceBackend::Unattributed,
+            ERmlUiPerformanceWork::AnimationTracksEvaluated), ExpectedEvaluated);
+    Test->TestEqual(TEXT("RmlUi many-track commits one property per target"),
+        Snapshot.WorkCount(ERmlUiPerformanceBackend::Unattributed,
+            ERmlUiPerformanceWork::AnimationCommittedProperties), ExpectedCommitted);
+    Test->TestEqual(TEXT("RmlUi many-track keeps every entity active"),
+        Runtime.GetActiveAnimationCount(), LogicalTrackCount);
+
+    Runtime.CancelViewAnimations(View);
+    Test->TestTrue(TEXT("RmlUi many-track shared definition released"),
+        Runtime.ReleaseDefinition(DefinitionHandle));
+    RmlUE_DestroyView(View);
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("target_elements"), TargetCount);
+    Result->SetNumberField(TEXT("tracks_per_target"), TracksPerTarget);
+    Result->SetNumberField(TEXT("logical_tracks"), LogicalTrackCount);
+    Result->SetNumberField(TEXT("shared_definitions"), 1);
+    Result->SetNumberField(TEXT("active_movie_scene_entities"), LogicalTrackCount);
+    Result->SetNumberField(TEXT("physical_movie_scene_tracks"), 0);
+    Result->SetStringField(TEXT("composition"), TEXT("ordered-replace-winner"));
+    Result->SetNumberField(TEXT("bind_total_ms"), BindMilliseconds);
+    Result->SetNumberField(TEXT("batch_play_total_ms"), PlayMilliseconds);
+    Result->SetNumberField(TEXT("process_memory_setup_delta_bytes"),
+        static_cast<double>(MemoryAfterSetup >= MemoryBefore ? MemoryAfterSetup - MemoryBefore : 0));
+    AddFrameDistribution(Result, TEXT("advance_frame"), FrameSamples);
+    Result->SetObjectField(TEXT("advance"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationAdvance));
+    Result->SetObjectField(TEXT("evaluate"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationEvaluate));
+    Result->SetObjectField(TEXT("collect"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationCollect));
+    Result->SetObjectField(TEXT("commit"),
+        StageJson(Snapshot, ERmlUiPerformanceStage::AnimationCommit));
+    Result->SetNumberField(TEXT("evaluated_tracks"), static_cast<double>(ExpectedEvaluated));
+    Result->SetNumberField(TEXT("committed_properties"), static_cast<double>(ExpectedCommitted));
+    Result->SetStringField(TEXT("scope"),
+        TEXT("One immutable opacity definition is shared by every binding. Each logical track owns a MovieScene ECS entity and an ordered replace contribution. Stable arbitration evaluates and commits only the winning contribution per target. RmlUi update, Slate replay, render thread, GPU and present are excluded."));
     return Result;
 }
 
@@ -944,6 +1809,121 @@ bool FRmlUiAnimationPerformanceBaselineTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRmlUiAnimationBackgroundColorPerformanceTest,
+    "RmlUi.Animation.MovieSceneRuntime.BackgroundColorPerformance",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiAnimationBackgroundColorPerformanceTest::RunTest(const FString& Parameters)
+{
+    using namespace RmlUiAnimationPerformanceTests;
+    const bool bPreviouslyEnabled = FRmlUiPerformance::IsEnabled();
+    FRmlUiPerformance::SetEnabled(true);
+
+    TArray<TSharedPtr<FJsonValue>> Results;
+    for (int32 TrackCount : TrackCounts)
+    {
+        Results.Add(MakeShared<FJsonValueObject>(
+            RunBackgroundColorScaleScenario(this, TrackCount)));
+    }
+
+    TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetNumberField(TEXT("schema_version"), 1);
+    Root->SetStringField(TEXT("workload_id"), TEXT("background-color-retained-v1"));
+    Root->SetStringField(TEXT("engine"), FEngineVersion::Current().ToString());
+    Root->SetStringField(TEXT("cpu"), FPlatformMisc::GetCPUBrand());
+    Root->SetNumberField(TEXT("warmup_frames"), WarmupFrames);
+    Root->SetNumberField(TEXT("sample_frames"), SampleFrames);
+    Root->SetNumberField(TEXT("frame_delta_seconds"), FrameDeltaSeconds);
+    Root->SetArrayField(TEXT("background_color_retained"), Results);
+    Root->SetStringField(TEXT("gate"),
+        TEXT("For 100, 1000 and 10000 tracks, the baseline records one full frame; every warmup and sampled frame must replay, preserve ContentRevision, advance VisualRevision and emit one role-filtered color delta per target."));
+    Root->SetStringField(TEXT("limitations"),
+        TEXT("Editor NullRHI CPU microbenchmark with overlapping one-pixel untextured backgrounds. It measures MovieScene evaluation, retained background-color commit, an idle RmlUi update call and command replay. It excludes SRmlUiWidget decode/paint, render thread, GPU and present. Box-shadow, textured backgrounds and final property-tree commit intentionally use the paint fallback and are outside this retained-only workload."));
+
+    FString Json;
+    FJsonSerializer::Serialize(
+        Root.ToSharedRef(), TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json));
+    const FString Directory = OutputDirectory();
+    IFileManager::Get().MakeDirectory(*Directory, true);
+    FString EngineLabel = FEngineVersion::Current().ToString();
+    EngineLabel.ReplaceInline(TEXT("+"), TEXT("-"));
+    const FString Path = FPaths::Combine(
+        Directory, TEXT("BackgroundColorRetained-") + EngineLabel + TEXT(".json"));
+    TestTrue(TEXT("background color performance report saved"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    AddInfo(FString::Printf(TEXT("Background color performance report: %s"), *Path));
+
+    FRmlUiPerformance::SetEnabled(bPreviouslyEnabled);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRmlUiAnimationLayoutPropertyPerformanceTest,
+    "RmlUi.Animation.MovieSceneRuntime.LayoutPropertyPerformance",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiAnimationLayoutPropertyPerformanceTest::RunTest(const FString& Parameters)
+{
+    using namespace RmlUiAnimationPerformanceTests;
+    const bool bPreviouslyEnabled = FRmlUiPerformance::IsEnabled();
+    FRmlUiPerformance::SetEnabled(true);
+
+    TArray<TSharedPtr<FJsonValue>> LeftResults;
+    TArray<TSharedPtr<FJsonValue>> WidthResults;
+    TArray<TSharedPtr<FJsonValue>> TransformResults;
+    TArray<TSharedPtr<FJsonValue>> UmgLeftResults;
+    TArray<TSharedPtr<FJsonValue>> UmgWidthResults;
+    TArray<TSharedPtr<FJsonValue>> UmgTransformResults;
+    for (int32 TrackCount : TrackCounts)
+    {
+        LeftResults.Add(MakeShared<FJsonValueObject>(
+            RunLayoutScaleScenario(this, TrackCount, ELayoutScalePath::LeftPx)));
+        WidthResults.Add(MakeShared<FJsonValueObject>(
+            RunLayoutScaleScenario(this, TrackCount, ELayoutScalePath::WidthPx)));
+        TransformResults.Add(MakeShared<FJsonValueObject>(
+            RunLayoutScaleScenario(this, TrackCount, ELayoutScalePath::Transform2D)));
+        UmgLeftResults.Add(MakeShared<FJsonValueObject>(
+            RunUmgScaleScenario(this, TrackCount, ELayoutScalePath::LeftPx)));
+        UmgWidthResults.Add(MakeShared<FJsonValueObject>(
+            RunUmgScaleScenario(this, TrackCount, ELayoutScalePath::WidthPx)));
+        UmgTransformResults.Add(MakeShared<FJsonValueObject>(
+            RunUmgScaleScenario(this, TrackCount, ELayoutScalePath::Transform2D)));
+    }
+
+    TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetNumberField(TEXT("schema_version"), 2);
+    Root->SetStringField(TEXT("engine"), FEngineVersion::Current().ToString());
+    Root->SetStringField(TEXT("cpu"), FPlatformMisc::GetCPUBrand());
+    Root->SetNumberField(TEXT("warmup_frames"), WarmupFrames);
+    Root->SetNumberField(TEXT("sample_frames"), SampleFrames);
+    Root->SetNumberField(TEXT("frame_delta_seconds"), FrameDeltaSeconds);
+    Root->SetArrayField(TEXT("left_px"), LeftResults);
+    Root->SetArrayField(TEXT("width_px"), WidthResults);
+    Root->SetArrayField(TEXT("transform2d_visual"), TransformResults);
+    Root->SetArrayField(TEXT("umg_left_px"), UmgLeftResults);
+    Root->SetArrayField(TEXT("umg_width_px"), UmgWidthResults);
+    Root->SetArrayField(TEXT("umg_transform2d_visual"), UmgTransformResults);
+    Root->SetStringField(TEXT("limitations"),
+        TEXT("Editor NullRHI microbenchmark with absolute-positioned one-pixel elements. RmlUi advance includes MovieScene schedule/evaluate/collect and the selected commit sink. UMG umg_moviescene_frame includes FWidgetAnimationState::Tick plus shared UMG MovieScene ECS ForceFlush; UMG SlatePrepass is measured separately. RmlUi render_slate_frame records or replays RmlUi draw commands, while the UMG side excludes window paint, so those stages are not equivalent end-to-end render measurements. Render thread, GPU and present are excluded. Run independent processes before treating small differences as stable."));
+
+    FString Json;
+    FJsonSerializer::Serialize(
+        Root.ToSharedRef(), TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json));
+    const FString Directory = OutputDirectory();
+    IFileManager::Get().MakeDirectory(*Directory, true);
+    FString EngineLabel = FEngineVersion::Current().ToString();
+    EngineLabel.ReplaceInline(TEXT("+"), TEXT("-"));
+    const FString Path = FPaths::Combine(
+        Directory, TEXT("LayoutPropertyScale-") + EngineLabel + TEXT(".json"));
+    TestTrue(TEXT("layout property performance report saved"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    AddInfo(FString::Printf(TEXT("Layout property performance report: %s"), *Path));
+
+    FRmlUiPerformance::SetEnabled(bPreviouslyEnabled);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FRmlUiAnimationLayeredContributionPerformanceTest,
     "RmlUi.Animation.MovieSceneRuntime.LayeredContributionPerformance",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -993,6 +1973,62 @@ bool FRmlUiAnimationLayeredContributionPerformanceTest::RunTest(const FString& P
     TestTrue(TEXT("layered contribution performance report saved"),
         FFileHelper::SaveStringToFile(Json, *Path));
     AddInfo(FString::Printf(TEXT("Layered contribution performance report: %s"), *Path));
+
+    FRmlUiPerformance::SetEnabled(bPreviouslyEnabled);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FRmlUiAnimationFewTargetsManyTracksPerformanceTest,
+    "RmlUi.Animation.MovieSceneRuntime.FewTargetsManyTracksPerformance",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FRmlUiAnimationFewTargetsManyTracksPerformanceTest::RunTest(const FString& Parameters)
+{
+    using namespace RmlUiAnimationPerformanceTests;
+    constexpr int32 FixedLogicalTrackCount = 10000;
+    const bool bPreviouslyEnabled = FRmlUiPerformance::IsEnabled();
+    FRmlUiPerformance::SetEnabled(true);
+
+    TArray<TSharedPtr<FJsonValue>> RmlUiResults;
+    TArray<TSharedPtr<FJsonValue>> UmgResults;
+    for (int32 TargetCount : {1, 10, 100, 10000})
+    {
+        const int32 TracksPerTarget = FixedLogicalTrackCount / TargetCount;
+        RmlUiResults.Add(MakeShared<FJsonValueObject>(
+            RunRmlUiFewTargetsManyTracksScenario(this, TargetCount, TracksPerTarget)));
+        UmgResults.Add(MakeShared<FJsonValueObject>(
+            RunUmgFewTargetsManyTracksScenario(this, TargetCount, TracksPerTarget)));
+    }
+
+    TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetNumberField(TEXT("schema_version"), 1);
+    Root->SetStringField(TEXT("workload_id"), TEXT("few-targets-many-tracks-v1"));
+    Root->SetStringField(TEXT("engine"), FEngineVersion::Current().ToString());
+    Root->SetStringField(TEXT("cpu"), FPlatformMisc::GetCPUBrand());
+    Root->SetNumberField(TEXT("fixed_logical_tracks"), FixedLogicalTrackCount);
+    Root->SetNumberField(TEXT("warmup_frames"), WarmupFrames);
+    Root->SetNumberField(TEXT("sample_frames"), SampleFrames);
+    Root->SetNumberField(TEXT("frame_delta_seconds"), FrameDeltaSeconds);
+    Root->SetArrayField(TEXT("rmlui_ordered_replace"), RmlUiResults);
+    Root->SetArrayField(TEXT("umg_additive"), UmgResults);
+    Root->SetStringField(TEXT("comparison_contract"),
+        TEXT("Both paths keep 10000 active logical tracks while redistributing them across 1, 10, 100 and 10000 visual targets. RmlUi uses ordered replace contributions and evaluates only the active winner per target after stable arbitration. UMG uses one physical additive 2D Transform track and overlapping section per logical track, so it evaluates and blends every active contribution. The composition semantics differ intentionally; compare topology scaling within each path, not absolute parity between paths."));
+    Root->SetStringField(TEXT("limitations"),
+        TEXT("Editor NullRHI CPU microbenchmark. One UUserWidget owns all UMG target widgets, so the UMG results exclude many-UUserWidget tick-manager map traversal. RmlUi includes its visual commit sink but excludes RmlUi update and Slate replay; UMG MovieScene and Slate prepass are separate and window paint is excluded. Render thread, GPU and present are excluded. Process memory deltas are order-sensitive. Preserve workload_id and run independent processes before using small differences as optimization evidence."));
+
+    FString Json;
+    FJsonSerializer::Serialize(
+        Root.ToSharedRef(), TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&Json));
+    const FString Directory = OutputDirectory();
+    IFileManager::Get().MakeDirectory(*Directory, true);
+    FString EngineLabel = FEngineVersion::Current().ToString();
+    EngineLabel.ReplaceInline(TEXT("+"), TEXT("-"));
+    const FString Path = FPaths::Combine(
+        Directory, TEXT("FewTargetsManyTracks-") + EngineLabel + TEXT(".json"));
+    TestTrue(TEXT("few-targets many-tracks performance report saved"),
+        FFileHelper::SaveStringToFile(Json, *Path));
+    AddInfo(FString::Printf(TEXT("Few-targets many-tracks performance report: %s"), *Path));
 
     FRmlUiPerformance::SetEnabled(bPreviouslyEnabled);
     return true;

@@ -1255,12 +1255,17 @@ bool SRmlUiWidget::RenderFrameInternal(int32 Width, int32 Height, float DpRatio,
             {
                 const RmlUE_SlateVisualDelta& Delta = SlateFrame.VisualDeltas[DeltaIndex];
                 if (!Delta.Node || (Delta.OpacityChanged != 0 && Delta.OpacityChanged != 1) ||
+                    (Delta.ColorChanged != 0 && Delta.ColorChanged != 1) ||
                     (Delta.TransformChanged != 0 && Delta.TransformChanged != 1) ||
                     (Delta.ClipMaskTransformChanged != 0 && Delta.ClipMaskTransformChanged != 1) ||
-                    (!Delta.OpacityChanged && !Delta.TransformChanged && !Delta.ClipMaskTransformChanged) ||
+                    (!Delta.OpacityChanged && !Delta.ColorChanged && !Delta.TransformChanged && !Delta.ClipMaskTransformChanged) ||
+                    (Delta.ColorChanged && (Delta.PaintRole != RMLUE_PAINT_ROLE_BACKGROUND ||
+                        (Delta.VisualColorEnabled != 0 && Delta.VisualColorEnabled != 1))) ||
                     ((Delta.TransformChanged || Delta.ClipMaskTransformChanged) &&
                         Delta.TransformEnabled != 0 && Delta.TransformEnabled != 1) ||
                     (Delta.OpacityChanged && !FMath::IsFinite(Delta.VisualOpacity)) ||
+                    (Delta.ColorChanged && (!FMath::IsFinite(Delta.VisualColorR) || !FMath::IsFinite(Delta.VisualColorG) ||
+                        !FMath::IsFinite(Delta.VisualColorB) || !FMath::IsFinite(Delta.VisualColorA))) ||
                     ((Delta.TransformChanged || Delta.ClipMaskTransformChanged) &&
                         (!FMath::IsFinite(Delta.TransformM00) || !FMath::IsFinite(Delta.TransformM01) ||
                          !FMath::IsFinite(Delta.TransformM10) || !FMath::IsFinite(Delta.TransformM11) ||
@@ -1270,7 +1275,7 @@ bool SRmlUiWidget::RenderFrameInternal(int32 Width, int32 Height, float DpRatio,
                     return false;
                 }
                 const TArray<int32>* DrawIndices = NativeDrawIndicesByVisualNode.Find(Delta.Node);
-                if ((Delta.OpacityChanged || Delta.TransformChanged) && !DrawIndices)
+                if ((Delta.OpacityChanged || Delta.ColorChanged || Delta.TransformChanged) && !DrawIndices)
                 {
                     LastError = FString::Printf(TEXT("Slate replay references unknown visual node %u."), Delta.Node);
                     return false;
@@ -1285,6 +1290,12 @@ bool SRmlUiWidget::RenderFrameInternal(int32 Width, int32 Height, float DpRatio,
                     FNativeDraw& Draw = NativeDraws[DrawIndex];
                     if (Delta.OpacityChanged)
                         Draw.VisualOpacity = FMath::Max(Delta.VisualOpacity, 0.0f);
+                    if (Delta.ColorChanged && Draw.PaintRole == Delta.PaintRole)
+                    {
+                        Draw.bVisualColor = Delta.VisualColorEnabled != 0;
+                        Draw.VisualColor = FLinearColor(Delta.VisualColorR, Delta.VisualColorG,
+                            Delta.VisualColorB, Delta.VisualColorA);
+                    }
                     if (Delta.TransformChanged)
                     {
                         Draw.bTransform = Delta.TransformEnabled != 0;
@@ -1336,6 +1347,11 @@ bool SRmlUiWidget::RenderFrameInternal(int32 Width, int32 Height, float DpRatio,
             {
                 const RmlUE_SlateDraw& Source = SlateFrame.Draws[Index];
                 if (!NativeGeometries.Contains(Source.GeometryId) ||
+                    Source.PaintRole < RMLUE_PAINT_ROLE_UNKNOWN || Source.PaintRole > RMLUE_PAINT_ROLE_IMAGE ||
+                    (Source.VisualColorEnabled != 0 && Source.VisualColorEnabled != 1) ||
+                    (Source.VisualColorEnabled && (!FMath::IsFinite(Source.VisualColorR) ||
+                        !FMath::IsFinite(Source.VisualColorG) || !FMath::IsFinite(Source.VisualColorB) ||
+                        !FMath::IsFinite(Source.VisualColorA))) ||
                     (Source.ClipMaskCount > 0 && SlateFrame.ClipMasks == nullptr) ||
                     Source.ClipMaskStart > SlateFrame.ClipMaskCount ||
                     Source.ClipMaskCount > SlateFrame.ClipMaskCount - Source.ClipMaskStart)
@@ -1354,6 +1370,12 @@ bool SRmlUiWidget::RenderFrameInternal(int32 Width, int32 Height, float DpRatio,
                 Draw.Scissor = FSlateRect(Source.ScissorX, Source.ScissorY, Source.ScissorX + Source.ScissorWidth, Source.ScissorY + Source.ScissorHeight);
                 Draw.VisualNode = Source.VisualNode;
                 Draw.VisualOpacity = FMath::Max(Source.VisualOpacity, 0.0f);
+                Draw.PaintRole = Source.PaintRole;
+                Draw.bVisualColor = Source.VisualColorEnabled != 0;
+                Draw.VisualColor = FLinearColor(Source.VisualColorR, Source.VisualColorG,
+                    Source.VisualColorB, Source.VisualColorA);
+                // Opacity and transform address every draw. Color deltas are additionally filtered
+                // by PaintRole, so Unknown and non-background draws retain their compiled colors.
                 if (Draw.VisualNode) NativeDrawIndicesByVisualNode.FindOrAdd(Draw.VisualNode).Add(NativeDraws.Num() - 1);
                 Draw.ClipMasks.Reserve(Source.ClipMaskCount);
                 for (uint32 MaskIndex = 0; MaskIndex < Source.ClipMaskCount; ++MaskIndex)
@@ -1728,6 +1750,9 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                 RhiDraw.ScissorRect = ResolveScissor(Draw.bScissor, Draw.Scissor);
                 RhiDraw.GeometryId = Draw.GeometryId;
                 RhiDraw.VisualOpacity = Draw.VisualOpacity;
+                RhiDraw.bVisualColor = Draw.bVisualColor;
+                RhiDraw.VisualColor = FVector4f(Draw.VisualColor.R, Draw.VisualColor.G,
+                    Draw.VisualColor.B, Draw.VisualColor.A);
                 RhiDraw.ClipMasks.Reserve(Draw.ClipMasks.Num());
                 for (const FNativeMask& Mask : Draw.ClipMasks)
                 {
@@ -1853,6 +1878,14 @@ int32 SRmlUiWidget::OnPaint(const FPaintArgs&, const FGeometry& Geometry, const 
                         static_cast<uint8>(GeometryResource->Vertices[Offset + 5]),
                         static_cast<uint8>(GeometryResource->Vertices[Offset + 6]),
                         static_cast<uint8>(GeometryResource->Vertices[Offset + 7]));
+                    if (Draw.bVisualColor)
+                    {
+                        Color = FColor(
+                            static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Draw.VisualColor.R * 255.0f), 0, 255)),
+                            static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Draw.VisualColor.G * 255.0f), 0, 255)),
+                            static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Draw.VisualColor.B * 255.0f), 0, 255)),
+                            static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Draw.VisualColor.A * 255.0f), 0, 255)));
+                    }
                     if (ResolvedMaterial && !ResolvedMaterial->bUsePremultipliedVertexColor)
                     {
                         Color = UnpremultiplyMaterialVertexColor(Color);

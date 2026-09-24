@@ -1,0 +1,1336 @@
+diff --git a/Include/RmlUi/Core/Element.h b/Include/RmlUi/Core/Element.h
+index e0e9572..82dc8a5 100644
+--- a/Include/RmlUi/Core/Element.h
++++ b/Include/RmlUi/Core/Element.h
+@@ -249,6 +249,8 @@ public:
+ 	/// @return True if a new animation key was added.
+ 	bool AddAnimationKey(const String& property_name, const Property& target_value, float duration, Tween tween = Tween{});
+ 	bool AddAnimationKey(PropertyId id, const Property& target_value, float duration, Tween tween = Tween{});
++	/// Unreal host extension: cancel an animation, retaining its current property value.
++	void CancelAnimation(const String& property_name);
+ 
+ 	/// Iterator for the local (non-inherited) properties defined on this element.
+ 	/// @param[in] filter_inherited_by If set, only iterates properties that are inherited by the given element.
+@@ -574,6 +576,17 @@ public:
+ 	Element* GetClosestScrollableContainer();
+ 	/// Returns the element's transform state.
+ 	const TransformState* GetTransformState() const noexcept;
++	/// Unreal host extension: replace the computed 2D transform for animation sampling without mutating style.
++	void SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y,
++		float rotation_degrees, float skew_x_degrees, float skew_y_degrees);
++	/// Unreal host extension: restore the computed transform after a visual animation override.
++	void ClearAnimationTransform2D();
++	bool HasAnimationTransform2D() const noexcept;
++	/// Synchronize transform caches after completed layout, without rendering or running layout again.
++	/// The host calls this parent-first traversal before publishing geometry snapshots.
++	void SynchronizeTransformStateTree();
++	// Refresh compositor-only animation transforms against an unchanged layout and stacking tree.
++	void SynchronizeAnimationTransformStateTree();
+ 	/// Returns the data model of this element.
+ 	DataModel* GetDataModel() const;
+ 	//@}
+@@ -635,6 +648,8 @@ protected:
+ 	virtual void DirtyLayout();
+ 	/// Returns true if the element has been marked as needing a re-layout.
+ 	virtual bool IsLayoutDirty();
++	/// Notifies retained render backends that this element's visual output can no longer be replayed unchanged.
++	void NotifyRenderDirty();
+ 
+ 	/// Returns the RML of this element and all children.
+ 	/// @param[out] content The content of this element and those under it, in XML form.
+@@ -724,6 +739,8 @@ private:
+ 	bool dirty_transition : 1;
+ 	bool dirty_transform : 1;
+ 	bool dirty_perspective : 1;
++	bool animation_transform_2d_active = false;
++	float animation_transform_2d[7] = {0.f, 0.f, 1.f, 1.f, 0.f, 0.f, 0.f};
+ 
+ 	OwnedElementList children;
+ 	int num_non_dom_children;
+diff --git a/Include/RmlUi/Core/Event.h b/Include/RmlUi/Core/Event.h
+index e59f8ef..051aef3 100644
+--- a/Include/RmlUi/Core/Event.h
++++ b/Include/RmlUi/Core/Event.h
+@@ -56,6 +56,10 @@ public:
+ 	/// Stops propagation of the event if it is interruptible, including to any other listeners on the current element.
+ 	void StopImmediatePropagation();
+ 
++	// Unreal host extension: cancellation is independent of listener propagation.
++	void PreventDefault() { if (interruptible) default_prevented = true; }
++	bool IsDefaultPrevented() const { return default_prevented; }
++
+ 	/// Returns true if the event can be interrupted, that is, stopped from propagating.
+ 	bool IsInterruptible() const;
+ 	/// Returns true if the event is still propagating.
+@@ -107,6 +111,7 @@ private:
+ 
+ 	bool interrupted = false;
+ 	bool interrupted_immediate = false;
++	bool default_prevented = false;
+ 
+ 	bool has_mouse_position = false;
+ 	Vector2f mouse_screen_position = Vector2f(0, 0);
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index d28c326..2617d21 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -32,6 +32,12 @@ enum class ShorthandId : uint8_t {
+ 	Flex,
+ 	FlexFlow,
+ 	Nav,
++	GridColumn,
++	GridRow,
++	GridArea,
++	GridTemplate,
++	PlaceItems,
++	PlaceSelf,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -156,12 +162,25 @@ enum class PropertyId : uint8_t {
+ 
+ 	RmlUi_Language,
+ 	RmlUi_Direction,
++	GridTemplateColumns,
++	GridTemplateRows,
++	GridAutoColumns,
++	GridAutoRows,
++	GridTemplateAreas,
++	GridAutoFlow,
++	GridColumnStart,
++	GridColumnEnd,
++	GridRowStart,
++	GridRowEnd,
++	JustifyItems,
++	JustifySelf,
++	Order,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+ 
+ 	// The maximum number of IDs. This limits the number of possible custom IDs to MaxNumIds - FirstCustomId.
+-	MaxNumIds = 128
++	MaxNumIds = 192
+ };
+ 
+ enum class MediaQueryId : uint8_t {
+diff --git a/Include/RmlUi/Core/PropertySpecification.h b/Include/RmlUi/Core/PropertySpecification.h
+index f15d2f8..4509178 100644
+--- a/Include/RmlUi/Core/PropertySpecification.h
++++ b/Include/RmlUi/Core/PropertySpecification.h
+@@ -27,7 +27,9 @@ enum class ShorthandType {
+ 	// Comma-separated list of properties or shorthands, the number of declared values must match the specified.
+ 	RecursiveCommaSeparated,
+ 	// The 'flex' shorthand has some special behavior but otherwise acts like 'FallThrough'.
+-	Flex
++	Flex,
++	GridPlacement,
++	GridTemplate
+ };
+ 
+ /**
+@@ -106,7 +108,7 @@ private:
+ 	PropertyIdSet property_ids_forcing_layout;
+ 
+ 	enum class ParsePropertyResult { Success, ContainsVariable, Error };
+-	enum class SplitOption { None, Whitespace, Comma };
++	enum class SplitOption { None, Whitespace, Comma, PreserveQuotes };
+ 	ParsePropertyResult ParsePropertyValues(StringList& values_list, const String& values, SplitOption split_option) const;
+ 
+ 	friend class Rml::StyleSheetSpecification;
+diff --git a/Include/RmlUi/Core/RenderInterface.h b/Include/RmlUi/Core/RenderInterface.h
+index a25347d..eaa5d47 100644
+--- a/Include/RmlUi/Core/RenderInterface.h
++++ b/Include/RmlUi/Core/RenderInterface.h
+@@ -7,6 +7,8 @@
+ 
+ namespace Rml {
+ 
++class Element;
++
+ enum class ClipMaskOperation {
+ 	Set,        // Set the clip mask to the area of the rendered geometry, clearing any existing clip mask.
+ 	SetInverse, // Set the clip mask to the area *outside* the rendered geometry, clearing any existing clip mask.
+@@ -17,6 +19,17 @@ enum class BlendMode {
+ 	Replace, // Replace the destination colors from the source.
+ };
+ 
++// Optional semantic role for geometry emitted by the core renderer. Hosts may use this to
++// update uniform paint values without rebuilding geometry. Unknown must remain the default:
++// custom elements, decorators, effects, and combined geometry cannot be classified safely.
++enum class PaintRole {
++	Unknown,
++	Background,
++	Border,
++	Text,
++	Image,
++};
++
+ /**
+     The abstract base class for application-specific rendering implementation. Your application must provide a concrete
+     implementation of this class and install it through Rml::SetRenderInterface() in order for anything to be rendered.
+@@ -84,6 +97,8 @@ public:
+ 	/// @note The clip mask applies exclusively to all other functions that render with a geometry handle, in addition
+ 	/// to the `CompositeLayers` function while rendering to its destination.
+ 	virtual void RenderToClipMask(ClipMaskOperation operation, CompiledGeometryHandle geometry, Vector2f translation);
++	/// Optional host hook identifying the element which owns subsequent clip-mask geometry.
++	virtual void SetClipMaskOwner(Element* element);
+ 
+ 	/// Called by RmlUi when it wants the renderer to use a new transform matrix.
+ 	/// @param[in] transform The new transform to apply, or nullptr if no transform applies to the current element.
+@@ -92,6 +107,14 @@ public:
+ 	/// @note The transform applies to all functions that render with a geometry handle, and only those.
+ 	virtual void SetTransform(const Matrix4f* transform);
+ 
++	/// Optional host hook bracketing all rendering emitted directly by one element.
++	/// Nested elements receive their own begin/end pair.
++	virtual void BeginElement(Element* element);
++	virtual void EndElement(Element* element);
++	virtual void SetPaintRole(PaintRole role);
++	/// Optional host hook notifying retained renderers that an element changed its visual output.
++	virtual void OnElementRenderDirty(Element* element);
++
+ 	/// Called by RmlUi when it wants to push a new layer onto the render stack, setting it as the new render target.
+ 	/// @return An application-specified handle representing the new layer. The value 'zero' is reserved for the initial base layer.
+ 	/// @note The new layer should be initialized to transparent black within the current scissor region.
+diff --git a/Include/RmlUi/Core/RenderManager.h b/Include/RmlUi/Core/RenderManager.h
+index 4dd4b0b..20ac9b4 100644
+--- a/Include/RmlUi/Core/RenderManager.h
++++ b/Include/RmlUi/Core/RenderManager.h
+@@ -9,6 +9,7 @@
+ namespace Rml {
+ 
+ class Geometry;
++class Element;
+ class CompiledFilter;
+ class CompiledShader;
+ class TextureDatabase;
+@@ -20,10 +21,12 @@ struct ClipMaskGeometry {
+ 	Geometry* geometry;
+ 	Vector2f absolute_offset;
+ 	const Matrix4f* transform;
++	Element* owner_element;
+ };
+ inline bool operator==(const ClipMaskGeometry& a, const ClipMaskGeometry& b)
+ {
+-	return a.operation == b.operation && a.geometry == b.geometry && a.absolute_offset == b.absolute_offset && a.transform == b.transform;
++	return a.operation == b.operation && a.geometry == b.geometry && a.absolute_offset == b.absolute_offset && a.transform == b.transform &&
++		a.owner_element == b.owner_element;
+ }
+ inline bool operator!=(const ClipMaskGeometry& a, const ClipMaskGeometry& b)
+ {
+@@ -60,6 +63,7 @@ public:
+ 	void SetClipMask(ClipMaskOperation operation, Geometry* geometry, Vector2f translation);
+ 
+ 	void SetTransform(const Matrix4f* new_transform);
++	RenderInterface* GetRenderInterface() const { return render_interface; }
+ 
+ 	// Retrieves the cached render state. If setting this state again, ensure the lifetimes of referenced objects are
+ 	// still valid. Possibly invalidating actions include destroying an element, or altering its transform property.
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index fca4660..1e4ef80 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -42,7 +42,9 @@ namespace Style {
+ 		TableRowGroup,
+ 		TableColumn,
+ 		TableColumnGroup,
+-		TableCell
++		TableCell,
++		Grid,
++		InlineGrid
+ 	};
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
+ 
+@@ -130,7 +132,7 @@ namespace Style {
+ 	using FlexBasis = LengthPercentageAuto;
+ 	enum class FlexDirection : uint8_t { Row, RowReverse, Column, ColumnReverse };
+ 	enum class FlexWrap : uint8_t { Nowrap, Wrap, WrapReverse };
+-	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly };
++	enum class JustifyContent : uint8_t { FlexStart, FlexEnd, Center, SpaceBetween, SpaceAround, SpaceEvenly, Stretch };
+ 
+ 	enum class Nav : uint8_t { None, Auto, Horizontal, Vertical, TreeOrder };
+ 
+diff --git a/Include/RmlUi/Core/TextInputContext.h b/Include/RmlUi/Core/TextInputContext.h
+index cc282f3..00ed563 100644
+--- a/Include/RmlUi/Core/TextInputContext.h
++++ b/Include/RmlUi/Core/TextInputContext.h
+@@ -27,6 +27,13 @@ public:
+ 	/// @return True if the bounds can be successfully retrieved, false otherwise.
+ 	virtual bool GetBoundingBox(Rectanglef& out_rectangle) const = 0;
+ 
++	// Host IME queries. Default implementations preserve third-party handler compatibility.
++	virtual Element* GetElement() const { return nullptr; }
++	virtual String GetText() const { return {}; }
++	virtual int GetCursorPosition() const { int start = 0, end = 0; GetSelectionRange(start, end); return end; }
++	virtual bool GetTextBounds(int, int, Rectanglef& bounds) const { return GetBoundingBox(bounds); }
++	virtual int GetCharacterIndexAtPoint(Vector2f) const { return -1; }
++
+ 	/// Retrieve the selection range.
+ 	/// @param[out] start The first character selected.
+ 	/// @param[out] end The first character *after* the selection.
+diff --git a/Source/Core/BoxShadowCache.cpp b/Source/Core/BoxShadowCache.cpp
+index 6b8155c..73a6bb7 100644
+--- a/Source/Core/BoxShadowCache.cpp
++++ b/Source/Core/BoxShadowCache.cpp
+@@ -10,12 +10,14 @@
+ namespace Rml {
+ 
+ struct BoxShadowCacheData {
+-	StableUnorderedMap<BoxShadowGeometryInfo, WeakPtr<BoxShadowRenderable>> handles;
++	UnorderedMap<RenderManager*, StableUnorderedMap<BoxShadowGeometryInfo, WeakPtr<BoxShadowRenderable>>> handles_by_manager;
+ };
+ 
+ static void ReleaseHandle(BoxShadowRenderable* handle);
+ 
+-BoxShadowRenderable::BoxShadowRenderable(const BoxShadowGeometryInfo& geometry_info) : cache_key(geometry_info) {}
++BoxShadowRenderable::BoxShadowRenderable(RenderManager& in_render_manager, const BoxShadowGeometryInfo& geometry_info) :
++	render_manager(&in_render_manager), cache_key(geometry_info)
++{}
+ 
+ BoxShadowRenderable::~BoxShadowRenderable()
+ {
+@@ -37,20 +39,21 @@ void BoxShadowCache::Shutdown()
+ static SharedPtr<BoxShadowRenderable> GetOrCreateBoxShadow(RenderManager& render_manager, const BoxShadowGeometryInfo& info)
+ {
+ 	RMLUI_ZoneScoped;
+-	auto it_handle = shadow_cache_data->handles.find(info);
+-	if (it_handle != shadow_cache_data->handles.end())
++	auto& handles = shadow_cache_data->handles_by_manager[&render_manager];
++	auto it_handle = handles.find(info);
++	if (it_handle != handles.end())
+ 	{
+ 		SharedPtr<BoxShadowRenderable> result = it_handle->second.lock();
+ 		RMLUI_ASSERTMSG(result, "Failed to lock handle in Box Shadow cache");
+ 		return result;
+ 	}
+ 
+-	const auto iterator_inserted = shadow_cache_data->handles.emplace(info, WeakPtr<BoxShadowRenderable>());
++	const auto iterator_inserted = handles.emplace(info, WeakPtr<BoxShadowRenderable>());
+ 	RMLUI_ASSERTMSG(iterator_inserted.second, "Could not insert entry into the Box Shadow cache handle map, duplicate key.");
+ 	const BoxShadowGeometryInfo& inserted_key = iterator_inserted.first->first;
+ 	WeakPtr<BoxShadowRenderable>& inserted_weak_data_pointer = iterator_inserted.first->second;
+ 
+-	auto shadow_handle = MakeShared<BoxShadowRenderable>(inserted_key);
++	auto shadow_handle = MakeShared<BoxShadowRenderable>(render_manager, inserted_key);
+ 	GeometryBoxShadow::GenerateTexture(shadow_handle->texture, shadow_handle->background_border_geometry, render_manager, inserted_key);
+ 
+ 	Mesh mesh;
+@@ -67,13 +70,17 @@ static void ReleaseHandle(BoxShadowRenderable* handle)
+ 	// There are no longer any users of the cache entry uniquely identified by the handle address. Start from the
+ 	// tip (i.e. per-color data) and remove that entry from its parent. Move up the cache ancestry and erase any
+ 	// entries that no longer have any children.
+-	auto& handles = shadow_cache_data->handles;
++	auto it_manager = shadow_cache_data->handles_by_manager.find(handle->render_manager);
++	RMLUI_ASSERT(it_manager != shadow_cache_data->handles_by_manager.end());
++	auto& handles = it_manager->second;
+ 	const BoxShadowGeometryInfo& key = handle->cache_key;
+ 
+ 	auto it_handle = handles.find(key);
+ 	RMLUI_ASSERT(it_handle != handles.cend());
+ 
+ 	handles.erase(it_handle);
++	if (handles.empty())
++		shadow_cache_data->handles_by_manager.erase(it_manager);
+ }
+ 
+ SharedPtr<BoxShadowRenderable> BoxShadowCache::GetHandle(Element* element, const ComputedValues& computed)
+diff --git a/Source/Core/BoxShadowCache.h b/Source/Core/BoxShadowCache.h
+index a80e60e..b8bfaa6 100644
+--- a/Source/Core/BoxShadowCache.h
++++ b/Source/Core/BoxShadowCache.h
+@@ -9,14 +9,16 @@ namespace Style {
+ 	class ComputedValues;
+ }
+ struct BoxShadowGeometryInfo;
++class RenderManager;
+ 
+ struct BoxShadowRenderable : NonCopyMoveable {
+-	BoxShadowRenderable(const BoxShadowGeometryInfo& geometry_info);
++	BoxShadowRenderable(RenderManager& render_manager, const BoxShadowGeometryInfo& geometry_info);
+ 	~BoxShadowRenderable();
+ 
+ 	CallbackTexture texture;
+ 	Geometry geometry;
+ 	Geometry background_border_geometry;
++	RenderManager* render_manager;
+ 	const BoxShadowGeometryInfo& cache_key;
+ };
+ 
+diff --git a/Source/Core/Context.cpp b/Source/Core/Context.cpp
+index 6af67fb..3509cd3 100644
+--- a/Source/Core/Context.cpp
++++ b/Source/Core/Context.cpp
+@@ -1227,7 +1227,13 @@ bool Context::OnFocusChange(Element* new_focus, bool focus_visible)
+ 
+ 	// Send out blur/focus events.
+ 	Dictionary parameters;
++	const auto old_focus_observer = old_focus ? old_focus->GetObserverPtr() : ObserverPtr<Element>();
++	const auto new_focus_observer = new_focus->GetObserverPtr();
++	parameters["related_target"] = static_cast<void*>(new_focus);
+ 	SendEvents(old_chain, new_chain, EventId::Blur, parameters);
++	if (!new_focus_observer)
++		return false;
++	parameters["related_target"] = static_cast<void*>(old_focus_observer.get());
+ 
+ 	if (focus_visible)
+ 		parameters["focus_visible"] = true;
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index fa087f9..a7ab280 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -184,6 +184,10 @@ void Element::Render()
+ 	RMLUI_ZoneScoped;
+ 	RMLUI_ZoneText(name.c_str(), name.size());
+ #endif
++	RenderManager* render_manager = GetRenderManager();
++	RenderInterface* render_interface = render_manager ? render_manager->GetRenderInterface() : nullptr;
++	if (render_interface)
++		render_interface->BeginElement(this);
+ 
+ 	UpdateAbsoluteOffsetAndRenderBoxData();
+ 
+@@ -211,6 +215,9 @@ void Element::Render()
+ 
+ 	ElementUtilities::ApplyTransform(*this);
+ 	meta->effects.RenderEffects(RenderStage::Exit);
++
++	if (render_interface)
++		render_interface->EndElement(this);
+ }
+ 
+ ElementPtr Element::Clone() const
+@@ -761,6 +768,50 @@ const TransformState* Element::GetTransformState() const noexcept
+ 	return transform_state.get();
+ }
+ 
++void Element::SetAnimationTransform2D(float translation_x, float translation_y, float scale_x, float scale_y,
++	float rotation_degrees, float skew_x_degrees, float skew_y_degrees)
++{
++	animation_transform_2d_active = true;
++	animation_transform_2d[0] = translation_x;
++	animation_transform_2d[1] = translation_y;
++	animation_transform_2d[2] = scale_x;
++	animation_transform_2d[3] = scale_y;
++	animation_transform_2d[4] = rotation_degrees;
++	animation_transform_2d[5] = skew_x_degrees;
++	animation_transform_2d[6] = skew_y_degrees;
++	DirtyTransformState(false, true);
++}
++
++void Element::ClearAnimationTransform2D()
++{
++	if (!animation_transform_2d_active)
++		return;
++	animation_transform_2d_active = false;
++	DirtyTransformState(false, true);
++}
++
++bool Element::HasAnimationTransform2D() const noexcept
++{
++	return animation_transform_2d_active;
++}
++
++void Element::SynchronizeTransformStateTree()
++{
++	UpdateAbsoluteOffsetAndRenderBoxData();
++	if (stacking_context_dirty)
++		BuildLocalStackingContext();
++	UpdateTransformState();
++	for (const ElementPtr& child : children)
++		child->SynchronizeTransformStateTree();
++}
++
++void Element::SynchronizeAnimationTransformStateTree()
++{
++	UpdateTransformState();
++	for (const ElementPtr& child : children)
++		child->SynchronizeAnimationTransformStateTree();
++}
++
+ bool Element::Project(Vector2f& point) const noexcept
+ {
+ 	if (!transform_state || !transform_state->GetTransform())
+@@ -1005,6 +1056,7 @@ void Element::SetScrollLeft(float scroll_left)
+ 	if (new_offset != scroll_offset.x)
+ 	{
+ 		scroll_offset.x = new_offset;
++		NotifyRenderDirty();
+ 		meta->scroll.UpdateScrollbar(ElementScroll::HORIZONTAL);
+ 		DirtyAbsoluteOffset();
+ 
+@@ -1023,6 +1075,7 @@ void Element::SetScrollTop(float scroll_top)
+ 	if (new_offset != scroll_offset.y)
+ 	{
+ 		scroll_offset.y = new_offset;
++		NotifyRenderDirty();
+ 		meta->scroll.UpdateScrollbar(ElementScroll::VERTICAL);
+ 		DirtyAbsoluteOffset();
+ 
+@@ -1354,6 +1407,7 @@ Element* Element::AppendChild(ElementPtr child, bool dom_element)
+ 	}
+ 	// Set parent just after inserting into children. This allows us to eg. get our previous sibling in SetParent.
+ 	child_ptr->SetParent(this);
++	NotifyRenderDirty();
+ 
+ 	Element* ancestor = child_ptr;
+ 	for (int i = 0; i <= ChildNotifyLevels && ancestor; i++, ancestor = ancestor->GetParentNode())
+@@ -1467,6 +1521,7 @@ ElementPtr Element::RemoveChild(Element* child)
+ 
+ 			ElementPtr detached_child = std::move(*itr);
+ 			children.erase(itr);
++			NotifyRenderDirty();
+ 
+ 			// Remove the child element as the focused child of this element.
+ 			if (child == focus)
+@@ -1809,6 +1864,8 @@ void Element::OnAttributeChange(const ElementAttributes& changed_attributes)
+ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ {
+ 	RMLUI_ZoneScoped;
++	if (!changed_properties.Empty())
++		NotifyRenderDirty();
+ 	const bool top_right_bottom_left_changed = (           //
+ 		changed_properties.Contains(PropertyId::Top) ||    //
+ 		changed_properties.Contains(PropertyId::Right) ||  //
+@@ -1884,6 +1941,7 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		changed_properties.Contains(PropertyId::TransformOriginY) || changed_properties.Contains(PropertyId::TransformOriginZ);
+ 
+ 	// Update the z-index and stacking context.
++	if (changed_properties.Contains(PropertyId::Order) && parent) parent->DirtyStackingContext();
+ 	if (changed_properties.Contains(PropertyId::ZIndex) || filter_or_mask_changed || perspective_changed || transform_changed)
+ 	{
+ 		const Style::ZIndex z_index_property = meta->computed_values.z_index();
+@@ -1984,10 +2042,18 @@ void Element::OnChildRemove(Element* /*child*/) {}
+ 
+ void Element::DirtyLayout()
+ {
++	NotifyRenderDirty();
+ 	if (Element* document = GetOwnerDocument())
+ 		document->DirtyLayout();
+ }
+ 
++void Element::NotifyRenderDirty()
++{
++	if (RenderManager* render_manager = GetRenderManager())
++		if (RenderInterface* render_interface = render_manager->GetRenderInterface())
++			render_interface->OnElementRenderDirty(this);
++}
++
+ bool Element::IsLayoutDirty()
+ {
+ 	if (Element* document = GetOwnerDocument())
+@@ -2383,7 +2449,18 @@ void Element::BuildLocalStackingContext()
+ 
+ void Element::AddChildrenToStackingContext(Vector<StackingContextChild>& stacking_children)
+ {
+-	bool is_flex_container = (GetDisplay() == Style::Display::Flex);
++	if (GetDisplay() == Style::Display::Grid || GetDisplay() == Style::Display::InlineGrid)
++	{
++		ElementList ordered;
++		for (int i = 0; i < GetNumChildren(); ++i) ordered.push_back(GetChild(i));
++		std::stable_sort(ordered.begin(), ordered.end(), [](Element* a, Element* b) {
++			return a->GetProperty(PropertyId::Order)->Get<float>() < b->GetProperty(PropertyId::Order)->Get<float>();
++		});
++		for (Element* child : ordered) child->AddToStackingContext(stacking_children, true, false);
++		for (int i = GetNumChildren(); i < int(children.size()); ++i) children[i]->AddToStackingContext(stacking_children, false, true);
++		return;
++	}
++	bool is_flex_container = (GetDisplay() == Style::Display::Flex || GetDisplay() == Style::Display::Grid || GetDisplay() == Style::Display::InlineGrid);
+ 	const int num_children = (int)children.size();
+ 	for (int i = 0; i < num_children; ++i)
+ 	{
+@@ -2447,6 +2524,7 @@ void Element::AddToStackingContext(Vector<StackingContextChild>& stacking_childr
+ 		case Display::FlowRoot:
+ 		case Display::Table:
+ 		case Display::Flex:
++		case Display::Grid:
+ 			order = RenderOrder::Block;
+ 			render_as_atomic_unit = (display == Display::Table || is_flex_item);
+ 			break;
+@@ -2454,6 +2532,7 @@ void Element::AddToStackingContext(Vector<StackingContextChild>& stacking_childr
+ 		case Display::Inline:
+ 		case Display::InlineBlock:
+ 		case Display::InlineFlex:
++		case Display::InlineGrid:
+ 		case Display::InlineTable:
+ 			order = RenderOrder::Inline;
+ 			render_as_atomic_unit = (display != Display::Inline || is_flex_item);
+@@ -2563,6 +2642,14 @@ bool Element::Animate(PropertyId id, const Property& target_value, float duratio
+ 	return result;
+ }
+ 
++void Element::CancelAnimation(const String& property_name)
++{
++	const auto id = StyleSheetSpecification::GetPropertyId(property_name);
++	animations.erase(std::remove_if(animations.begin(), animations.end(), [id](const ElementAnimation& item) {
++		return item.GetPropertyId() == id;
++	}), animations.end());
++}
++
+ bool Element::AddAnimationKey(const String& property_name, const Property& target_value, float duration, Tween tween)
+ {
+ 	return AddAnimationKey(StyleSheetSpecification::GetPropertyId(property_name), target_value, duration, tween);
+@@ -2964,7 +3051,36 @@ void Element::UpdateTransformState()
+ 		bool have_transform = false;
+ 		Matrix4f transform = Matrix4f::Identity();
+ 
+-		if (TransformPtr transform_ptr = computed.transform())
++		if (animation_transform_2d_active)
++		{
++			Vector3f transform_origin(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f, 0.f);
++			if (computed.transform_origin_x().type == Style::TransformOrigin::Percentage)
++				transform_origin.x = pos.x + computed.transform_origin_x().value * size.x * 0.01f;
++			else
++				transform_origin.x = pos.x + computed.transform_origin_x().value;
++			if (computed.transform_origin_y().type == Style::TransformOrigin::Percentage)
++				transform_origin.y = pos.y + computed.transform_origin_y().value * size.y * 0.01f;
++			else
++				transform_origin.y = pos.y + computed.transform_origin_y().value;
++			const float angle = Math::DegreesToRadians(animation_transform_2d[4]);
++			const float cosine = Math::Cos(angle);
++			const float sine = Math::Sin(angle);
++			const float skew_x = Math::Tan(Math::DegreesToRadians(animation_transform_2d[5]));
++			const float skew_y = Math::Tan(Math::DegreesToRadians(animation_transform_2d[6]));
++			const float m00 = (cosine - sine * skew_y) * animation_transform_2d[2];
++			const float m01 = (cosine * skew_x - sine) * animation_transform_2d[3];
++			const float m10 = (sine + cosine * skew_y) * animation_transform_2d[2];
++			const float m11 = (sine * skew_x + cosine) * animation_transform_2d[3];
++			const float translation_x = transform_origin.x + animation_transform_2d[0] -
++				m00 * transform_origin.x - m01 * transform_origin.y;
++			const float translation_y = transform_origin.y + animation_transform_2d[1] -
++				m10 * transform_origin.x - m11 * transform_origin.y;
++			transform = Matrix4f::FromRows(
++				{m00, m01, 0.f, translation_x}, {m10, m11, 0.f, translation_y},
++				{0.f, 0.f, 1.f, 0.f}, {0.f, 0.f, 0.f, 1.f});
++			have_transform = true;
++		}
++		else if (TransformPtr transform_ptr = computed.transform())
+ 		{
+ 			// First find the current element's transform
+ 			const int n = transform_ptr->GetNumPrimitives();
+diff --git a/Source/Core/ElementBackgroundBorder.cpp b/Source/Core/ElementBackgroundBorder.cpp
+index 409b1d8..91406a6 100644
+--- a/Source/Core/ElementBackgroundBorder.cpp
++++ b/Source/Core/ElementBackgroundBorder.cpp
+@@ -20,7 +20,7 @@ void ElementBackgroundBorder::Render(Element* element)
+ 	{
+ 		for (auto& background : backgrounds)
+ 		{
+-			if (background.first != BackgroundType::BackgroundBorder)
++			if (background.first != BackgroundType::Background && background.first != BackgroundType::Border)
+ 				background.second.geometry.Release();
+ 		}
+ 
+@@ -33,12 +33,24 @@ void ElementBackgroundBorder::Render(Element* element)
+ 	if (Background* shadow = GetBackground(BackgroundType::BoxShadowAndBackgroundBorder))
+ 	{
+ 		const Vector2f offset = element->GetAbsoluteOffset(BoxArea::Border);
++		element->GetRenderManager()->GetRenderInterface()->SetPaintRole(PaintRole::Unknown);
+ 		shadow->box_shadow_and_background_border->geometry.Render(offset, shadow->box_shadow_and_background_border->texture);
+ 	}
+-	else if (Background* background = GetBackground(BackgroundType::BackgroundBorder))
++	else
+ 	{
+ 		const Vector2f offset = element->GetAbsoluteOffset(BoxArea::Border);
+-		background->geometry.Render(offset);
++		RenderInterface* render_interface = element->GetRenderManager()->GetRenderInterface();
++		if (Background* background = GetBackground(BackgroundType::Background))
++		{
++			render_interface->SetPaintRole(PaintRole::Background);
++			background->geometry.Render(offset);
++		}
++		if (Background* border = GetBackground(BackgroundType::Border))
++		{
++			render_interface->SetPaintRole(PaintRole::Border);
++			border->geometry.Render(offset);
++		}
++		render_interface->SetPaintRole(PaintRole::Unknown);
+ 	}
+ }
+ 
+@@ -111,7 +123,8 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 	if (has_box_shadow)
+ 	{
+ 		// The box shadow geometry also includes the element's background and border, thus we can skip the normal background generation.
+-		EraseBackground(BackgroundType::BackgroundBorder);
++		EraseBackground(BackgroundType::Background);
++		EraseBackground(BackgroundType::Border);
+ 		Background& shadow_background = GetOrCreateBackground(BackgroundType::BoxShadowAndBackgroundBorder);
+ 		shadow_background.box_shadow_and_background_border = BoxShadowCache::GetHandle(element, computed);
+ 		return;
+@@ -128,13 +141,21 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 		computed.border_left_color().ToPremultiplied(opacity),
+ 	};
+ 
+-	Geometry& geometry = GetOrCreateBackground(BackgroundType::BackgroundBorder).geometry;
+-	Mesh mesh = geometry.Release(Geometry::ReleaseMode::ClearMesh);
++	Geometry& background_geometry = GetOrCreateBackground(BackgroundType::Background).geometry;
++	Geometry& border_geometry = GetOrCreateBackground(BackgroundType::Border).geometry;
++	Mesh background_mesh = background_geometry.Release(Geometry::ReleaseMode::ClearMesh);
++	Mesh border_mesh = border_geometry.Release(Geometry::ReleaseMode::ClearMesh);
++	const ColourbPremultiplied transparent(0, 0, 0, 0);
+ 
+ 	for (int i = 0; i < element->GetNumBoxes(); i++)
+-		MeshUtilities::GenerateBackgroundBorder(mesh, element->GetRenderBox(BoxArea::Padding, i), background_color, border_colors.data());
++	{
++		const RenderBox render_box = element->GetRenderBox(BoxArea::Padding, i);
++		MeshUtilities::GenerateBackground(background_mesh, render_box, background_color);
++		MeshUtilities::GenerateBackgroundBorder(border_mesh, render_box, transparent, border_colors.data());
++	}
+ 
+-	geometry = render_manager->MakeGeometry(std::move(mesh));
++	background_geometry = render_manager->MakeGeometry(std::move(background_mesh));
++	border_geometry = render_manager->MakeGeometry(std::move(border_mesh));
+ }
+ 
+ } // namespace Rml
+diff --git a/Source/Core/ElementBackgroundBorder.h b/Source/Core/ElementBackgroundBorder.h
+index d0ffcaf..2e42744 100644
+--- a/Source/Core/ElementBackgroundBorder.h
++++ b/Source/Core/ElementBackgroundBorder.h
+@@ -19,7 +19,7 @@ public:
+ 	Geometry* GetClipGeometry(Element* element, BoxArea clip_area);
+ 
+ private:
+-	enum class BackgroundType { BackgroundBorder, BoxShadowAndBackgroundBorder, ClipBorder, ClipPadding, ClipContent, Count };
++	enum class BackgroundType { Background, Border, BoxShadowAndBackgroundBorder, ClipBorder, ClipPadding, ClipContent, Count };
+ 	struct Background {
+ 		Geometry geometry;
+ 		Texture texture;
+diff --git a/Source/Core/ElementDocument.cpp b/Source/Core/ElementDocument.cpp
+index 381e4c8..acbf847 100644
+--- a/Source/Core/ElementDocument.cpp
++++ b/Source/Core/ElementDocument.cpp
+@@ -137,6 +137,9 @@ ElementDocument::ElementDocument(const String& tag) : Element(tag)
+ 	SetOwnerDocument(this, true);
+ 
+ 	SetProperty(PropertyId::Position, Property(Style::Position::Absolute));
++	// Match :root before Context::LoadDocument performs its initial style update.
++	// Setting this later in the host would report spurious undefined theme variables.
++	SetPseudoClass("root", true);
+ }
+ 
+ ElementDocument::~ElementDocument()
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index bac382b..17172ea 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -161,8 +161,9 @@ void ElementEffects::ReloadEffectsData()
+ 			}
+ 		}
+ 
+-		if (filter_compile_failed)
++		if (filter_compile_failed && !filter_compile_warning_emitted)
+ 			Log::Message(Log::LT_WARNING, "Could not compile filter on element: %s", element->GetAddress().c_str());
++		filter_compile_warning_emitted = filter_compile_failed;
+ 	}
+ }
+ 
+diff --git a/Source/Core/ElementEffects.h b/Source/Core/ElementEffects.h
+index d46a377..2b69794 100644
+--- a/Source/Core/ElementEffects.h
++++ b/Source/Core/ElementEffects.h
+@@ -60,6 +60,8 @@ private:
+ 	bool effects_dirty = false;
+ 	// If set, element data of all decorators need to be regenerated.
+ 	bool effects_data_dirty = false;
++	// Avoid repeating the same backend capability warning whenever unrelated style data dirties the effect.
++	bool filter_compile_warning_emitted = false;
+ };
+ 
+ } // namespace Rml
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 412f9ba..9579490 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1345,6 +1345,19 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::FlexShrink:
+ 	case PropertyId::FlexWrap:
+ 	case PropertyId::JustifyContent:
++	case PropertyId::GridTemplateColumns:
++	case PropertyId::GridTemplateRows:
++	case PropertyId::GridAutoColumns:
++	case PropertyId::GridAutoRows:
++	case PropertyId::GridTemplateAreas:
++	case PropertyId::GridAutoFlow:
++	case PropertyId::GridColumnStart:
++	case PropertyId::GridColumnEnd:
++	case PropertyId::GridRowStart:
++	case PropertyId::GridRowEnd:
++	case PropertyId::JustifyItems:
++	case PropertyId::JustifySelf:
++	case PropertyId::Order:
+ 		break;
+ 	// Navigation properties. Must be manually retrieved with 'GetProperty()'.
+ 	case PropertyId::NavUp:
+diff --git a/Source/Core/ElementText.cpp b/Source/Core/ElementText.cpp
+index fe1dd2e..c37bde4 100644
+--- a/Source/Core/ElementText.cpp
++++ b/Source/Core/ElementText.cpp
+@@ -112,6 +112,7 @@ void ElementText::SetText(const String& _text)
+ 	if (text != _text)
+ 	{
+ 		text = _text;
++		NotifyRenderDirty();
+ 
+ 		if (dirty_layout_on_change)
+ 			DirtyLayout();
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index c146399..38a2081 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -165,7 +165,7 @@ bool ElementUtilities::GetClippingRegion(Element* element, Rectanglei& out_clip_
+ 					const ClipMaskOperation clip_operation = (out_clip_mask_list->empty() ? ClipMaskOperation::Set : ClipMaskOperation::Intersect);
+ 					const Vector2f absolute_offset = clipping_element->GetAbsoluteOffset(BoxArea::Border).Round();
+ 					if (*clip_geometry)
+-						out_clip_mask_list->push_back(ClipMaskGeometry{clip_operation, clip_geometry, absolute_offset, transform});
++						out_clip_mask_list->push_back(ClipMaskGeometry{clip_operation, clip_geometry, absolute_offset, transform, clipping_element});
+ 				}
+ 
+ 				// If we only have border-radius then we add this element to the scissor region as well as the clip mask. This may help with e.g.
+diff --git a/Source/Core/Elements/WidgetTextInput.cpp b/Source/Core/Elements/WidgetTextInput.cpp
+index 1ff0750..5aff5a9 100644
+--- a/Source/Core/Elements/WidgetTextInput.cpp
++++ b/Source/Core/Elements/WidgetTextInput.cpp
+@@ -18,6 +18,7 @@
+ #include "../Clock.h"
+ #include "../ElementStyle.h"
+ #include "ElementTextSelection.h"
++#include "../TransformState.h"
+ #include <algorithm>
+ #include <limits.h>
+ 
+@@ -60,6 +61,11 @@ public:
+ 	~WidgetTextInputContext();
+ 
+ 	bool GetBoundingBox(Rectanglef& out_rectangle) const override;
++	Element* GetElement() const override { return element; }
++	String GetText() const override { return owner->GetAttributeValue(); }
++	int GetCursorPosition() const override;
++	bool GetTextBounds(int start, int end, Rectanglef& bounds) const override;
++	int GetCharacterIndexAtPoint(Vector2f point) const override;
+ 	void GetSelectionRange(int& start, int& end) const override;
+ 	void SetSelectionRange(int start, int end) override;
+ 	void SetCursorPosition(int position) override;
+@@ -87,6 +93,71 @@ bool WidgetTextInputContext::GetBoundingBox(Rectanglef& out_rectangle) const
+ 	return ElementUtilities::GetBoundingBox(out_rectangle, element, BoxArea::Border);
+ }
+ 
++int WidgetTextInputContext::GetCursorPosition() const
++{
++	return StringUtilities::ConvertByteOffsetToCharacterOffset(owner->GetValue(), owner->absolute_cursor_index);
++}
++
++bool WidgetTextInputContext::GetTextBounds(int start, int end, Rectanglef& bounds) const
++{
++	if (owner->lines.empty() || !owner->text_element->GetFontFaceHandle()) return false;
++	const String& value = owner->GetValue();
++	const int begin = StringUtilities::ConvertCharacterOffsetToByteOffset(value, Math::Max(0, start));
++	const int finish = StringUtilities::ConvertCharacterOffsetToByteOffset(value, Math::Max(start, end));
++	const Vector2f origin = element->GetAbsoluteOffset() - Vector2f(element->GetScrollLeft(), element->GetScrollTop());
++	bool found = false;
++	const bool is_cursor = start == end && start == GetCursorPosition();
++	if (is_cursor)
++	{
++		bounds = Rectanglef::FromPositionSize(origin + owner->cursor_position, owner->cursor_size);
++		found = true;
++	}
++	for (int index = 0; !is_cursor && index < (int)owner->lines.size(); ++index)
++	{
++		const auto& line = owner->lines[index];
++		const int line_end = line.value_offset + line.editable_length;
++		if (finish < line.value_offset || begin > line_end) continue;
++		if (start == end && begin == line_end && index + 1 < (int)owner->lines.size() &&
++			owner->lines[index + 1].value_offset == begin && owner->cursor_wrap_down) continue;
++		const int first = Math::Clamp(begin - line.value_offset, 0, line.editable_length);
++		const int last = Math::Clamp(finish - line.value_offset, 0, line.editable_length);
++		const float x0 = (float)ElementUtilities::GetStringWidth(owner->text_element, StringView(value, line.value_offset, first));
++		const float x1 = (float)ElementUtilities::GetStringWidth(owner->text_element, StringView(value, line.value_offset, last));
++		const Vector2f position = origin + Vector2f(x0 + owner->GetAlignmentSpecificTextOffset(line), index * owner->GetLineHeight());
++		const Rectanglef part = Rectanglef::FromPositionSize(position,
++			Vector2f(Math::Max(owner->cursor_size.x, x1 - x0), owner->GetLineHeight()));
++		bounds = found ? bounds.Join(part) : part;
++		found = true;
++		if (start == end) break;
++	}
++	if (!found) return false;
++	const TransformState* state = element->GetTransformState();
++	const Matrix4f* transform = state ? state->GetTransform() : nullptr;
++	if (transform)
++	{
++		Vector2f corners[] = {bounds.TopLeft(), bounds.TopRight(), bounds.BottomRight(), bounds.BottomLeft()};
++		for (int i = 0; i < 4; ++i)
++		{
++			const Vector4f p = *transform * Vector4f(corners[i].x, corners[i].y, 0, 1);
++			if (p.w <= 0.00001f) return false;
++			const Vector2f projected(p.x / p.w, p.y / p.w);
++			bounds = i == 0 ? Rectanglef::FromPosition(projected) : bounds.Join(projected);
++		}
++	}
++	return true;
++}
++
++int WidgetTextInputContext::GetCharacterIndexAtPoint(Vector2f point) const
++{
++	if (owner->lines.empty() || !element->Project(point)) return -1;
++	point -= element->GetAbsoluteOffset() - Vector2f(element->GetScrollLeft(), element->GetScrollTop());
++	const int line = owner->CalculateLineIndex(point.y);
++	const bool previous_ideal = owner->ideal_cursor_position_to_the_right_of_cursor;
++	const int offset = owner->CalculateCharacterIndex(line, point.x) + owner->lines[line].value_offset;
++	owner->ideal_cursor_position_to_the_right_of_cursor = previous_ideal;
++	return StringUtilities::ConvertByteOffsetToCharacterOffset(owner->GetValue(), offset);
++}
++
+ void WidgetTextInputContext::GetSelectionRange(int& start, int& end) const
+ {
+ 	owner->GetSelection(&start, &end, nullptr);
+@@ -141,9 +212,9 @@ void WidgetTextInputContext::CommitComposition(StringView composition)
+ 		int composition_length = (int)StringUtilities::LengthUTF8(composition);
+ 
+ 		// The requested text value would exceed the length restriction after replacing the original value.
+-		if (value_length + composition_length - (start - end) > owner->GetMaxLength())
++		if (value_length + composition_length - (end - start) > owner->GetMaxLength())
+ 		{
+-			int new_length = owner->GetMaxLength() - (value_length - composition_length);
++			int new_length = Math::Max(0, owner->GetMaxLength() - (value_length - (end - start)));
+ 			int new_length_byte = StringUtilities::ConvertCharacterOffsetToByteOffset(composition, new_length);
+ 			composition = StringView(composition.begin(), composition.begin() + new_length_byte);
+ 		}
+diff --git a/Source/Core/Elements/WidgetTextInput.h b/Source/Core/Elements/WidgetTextInput.h
+index ff04868..8a6ff4e 100644
+--- a/Source/Core/Elements/WidgetTextInput.h
++++ b/Source/Core/Elements/WidgetTextInput.h
+@@ -133,6 +133,7 @@ protected:
+ 	void DispatchChangeEvent(bool linebreak = false);
+ 
+ private:
++	friend class WidgetTextInputContext;
+ 	struct Line {
+ 		// Offset into the text field's value.
+ 		int value_offset;
+diff --git a/Source/Core/EventDispatcher.cpp b/Source/Core/EventDispatcher.cpp
+index c621de5..0a2b66d 100644
+--- a/Source/Core/EventDispatcher.cpp
++++ b/Source/Core/EventDispatcher.cpp
+@@ -173,7 +173,7 @@ bool EventDispatcher::DispatchEvent(Element* target_element, const EventId id, c
+ 	// Process the default actions.
+ 	for (auto& element_ptr : default_action_elements)
+ 	{
+-		if (!event->IsPropagating())
++		if (!event->IsPropagating() || event->IsDefaultPrevented())
+ 			break;
+ 
+ 		if (Element* element = element_ptr.get())
+@@ -184,7 +184,8 @@ bool EventDispatcher::DispatchEvent(Element* target_element, const EventId id, c
+ 		}
+ 	}
+ 
+-	bool propagating = event->IsPropagating();
++	// Context also performs defaults (Tab navigation and scrolling) after dispatch.
++	bool propagating = event->IsPropagating() && !event->IsDefaultPrevented();
+ 
+ 	return propagating;
+ }
+diff --git a/Source/Core/Layout/BlockFormattingContext.cpp b/Source/Core/Layout/BlockFormattingContext.cpp
+index 526da4b..c694e77 100644
+--- a/Source/Core/Layout/BlockFormattingContext.cpp
++++ b/Source/Core/Layout/BlockFormattingContext.cpp
+@@ -66,11 +66,13 @@ static OuterDisplayType GetOuterDisplayType(Style::Display display)
+ 	case Style::Display::Block:
+ 	case Style::Display::FlowRoot:
+ 	case Style::Display::Flex:
++	case Style::Display::Grid:
+ 	case Style::Display::Table: return OuterDisplayType::BlockLevel;
+ 
+ 	case Style::Display::Inline:
+ 	case Style::Display::InlineBlock:
+ 	case Style::Display::InlineFlex:
++	case Style::Display::InlineGrid:
+ 	case Style::Display::InlineTable: return OuterDisplayType::InlineLevel;
+ 
+ 	case Style::Display::TableRow:
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 68ec692..f8012a7 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -593,6 +593,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 						break;
+ 					}
+ 					//-fallthrough
++				case JustifyContent::Stretch:
+ 				case JustifyContent::FlexStart: line.items.back().main_auto_margin_size_b = remaining_free_space; break;
+ 				case JustifyContent::FlexEnd: line.items.front().main_auto_margin_size_a = remaining_free_space; break;
+ 				case JustifyContent::Center:
+diff --git a/Source/Core/Layout/FormattingContext.cpp b/Source/Core/Layout/FormattingContext.cpp
+index bc80967..32bbf45 100644
+--- a/Source/Core/Layout/FormattingContext.cpp
++++ b/Source/Core/Layout/FormattingContext.cpp
+@@ -4,6 +4,7 @@
+ #include "../../../Include/RmlUi/Core/Profiling.h"
+ #include "BlockFormattingContext.h"
+ #include "FlexFormattingContext.h"
++#include "GridFormattingContext.h"
+ #include "LayoutBox.h"
+ #include "ReplacedFormattingContext.h"
+ #include "TableFormattingContext.h"
+@@ -27,6 +28,10 @@ UniquePtr<LayoutBox> FormattingContext::FormatIndependent(ContainerBox* parent_c
+ 	{
+ 		type = FormattingContextType::Flex;
+ 	}
++	else if (display == Display::Grid || display == Display::InlineGrid)
++	{
++		return GridFormattingContext::Format(parent_container, element, override_initial_box);
++	}
+ 	else if (display == Display::Table || display == Display::InlineTable)
+ 	{
+ 		type = FormattingContextType::Table;
+diff --git a/Source/Core/Layout/LayoutBox.h b/Source/Core/Layout/LayoutBox.h
+index a98cf01..5e37e0f 100644
+--- a/Source/Core/Layout/LayoutBox.h
++++ b/Source/Core/Layout/LayoutBox.h
+@@ -10,7 +10,7 @@ namespace Rml {
+ */
+ class LayoutBox {
+ public:
+-	enum class Type { Root, BlockContainer, InlineContainer, FlexContainer, TableWrapper, Replaced };
++	enum class Type { Root, BlockContainer, InlineContainer, FlexContainer, TableWrapper, Replaced, GridContainer };
+ 
+ 	virtual ~LayoutBox() = default;
+ 
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index c39dbbf..4f72ba2 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -1,4 +1,5 @@
+ #include "LayoutDetails.h"
++#include "GridFormattingContext.h"
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
+ #include "../../../Include/RmlUi/Core/ElementScroll.h"
+@@ -217,6 +218,8 @@ void LayoutDetails::BuildBoxSizeAndMargins(Box& box, Vector2f min_size, Vector2f
+ float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_block)
+ {
+ 	RMLUI_ASSERT(element);
++	if (element->GetDisplay() == Style::Display::Grid || element->GetDisplay() == Style::Display::InlineGrid)
++		return GridFormattingContext::ShrinkToFit(element, containing_block);
+ 
+ 	// @performance Can we lay out the elements directly using a fit-content size mode, instead of fetching the
+ 	// shrink-to-fit width first? Use a non-definite placeholder for the box content width, and available width as a
+@@ -427,7 +430,7 @@ void LayoutDetails::BuildBoxWidth(Box& box, const ComputedValues& computed, floa
+ 		// See CSS 2.1 section 10.3.7 for when this should be applied.
+ 		const bool shrink_to_fit = !replaced_element &&
+ 			((computed.float_() != Style::Float::None) || (absolutely_positioned && inset_auto) ||
+-				(computed.display() == Style::Display::InlineBlock || computed.display() == Style::Display::InlineFlex));
++				(computed.display() == Style::Display::InlineBlock || computed.display() == Style::Display::InlineFlex || computed.display() == Style::Display::InlineGrid));
+ 
+ 		if (!shrink_to_fit)
+ 		{
+diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
+index c0f8bbe..e25393f 100644
+--- a/Source/Core/PropertySpecification.cpp
++++ b/Source/Core/PropertySpecification.cpp
+@@ -1,4 +1,5 @@
+ #include "../../Include/RmlUi/Core/PropertySpecification.h"
++#include "RmlGrid.h"
+ #include "../../Include/RmlUi/Core/Debug.h"
+ #include "../../Include/RmlUi/Core/Log.h"
+ #include "../../Include/RmlUi/Core/Profiling.h"
+@@ -258,7 +259,7 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
+ 		return false;
+ 
+ 	StringList property_values;
+-	switch (ParsePropertyValues(property_values, property_value, SplitOption::None))
++	switch (ParsePropertyValues(property_values, property_value, property_id == PropertyId::GridTemplateAreas ? SplitOption::PreserveQuotes : SplitOption::None))
+ 	{
+ 	case ParsePropertyResult::Success: break;
+ 	case ParsePropertyResult::ContainsVariable:
+@@ -307,6 +308,33 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
+ 	}
+ 	RMLUI_ASSERT(!property_values.empty());
+ 
++	if (shorthand_definition->type == ShorthandType::GridPlacement || shorthand_definition->type == ShorthandType::GridTemplate)
++	{
++		StringList parts;
++		StringUtilities::ExpandString(parts, property_value, '/');
++		const size_t count = shorthand_definition->items.size();
++		if (parts.empty() || parts.size() > count) return false;
++		for (String& part : parts) { part = StringUtilities::StripWhitespace(part); if (part.empty()) return false; }
++		const bool is_template = shorthand_definition->type == ShorthandType::GridTemplate;
++		if (is_template && parts.size() != 2 && property_value != "none") return false;
++		auto omitted = [](const String& value) {
++			// A single custom identifier propagates to the corresponding omitted grid line.
++			if (RmlGrid_Validate("custom-ident", value.c_str())) return value;
++			return String("auto");
++		};
++		while (parts.size() < count)
++		{
++			const size_t source = count == 4 && parts.size() == 3 ? 1 : 0;
++			parts.push_back(is_template ? String("none") : omitted(parts[source]));
++		}
++		Vector<Property> parsed(count);
++		for (size_t i = 0; i < count; ++i)
++			if (!shorthand_definition->items[i].property_definition->ParseValue(parsed[i], parts[i])) return false;
++		for (size_t i = 0; i < count; ++i) dictionary.SetProperty(shorthand_definition->items[i].property_id, parsed[i]);
++		if (is_template) dictionary.SetProperty(PropertyId::GridTemplateAreas, Property(String("none"), Unit::STRING));
++		return true;
++	}
++
+ 	// Handle the special behavior of the flex shorthand first, otherwise it acts like 'FallThrough'.
+ 	if (shorthand_definition->type == ShorthandType::Flex && !property_values.empty())
+ 	{
+@@ -515,7 +543,8 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ {
+ 	RMLUI_ASSERT(values_list.empty());
+ 
+-	const bool split_values = (split_option != SplitOption::None);
++	const bool preserve_quotes = (split_option == SplitOption::PreserveQuotes);
++	const bool split_values = (split_option != SplitOption::None && !preserve_quotes);
+ 	const bool split_by_comma = (split_option == SplitOption::Comma);
+ 	const bool split_by_whitespace = (split_option == SplitOption::Whitespace);
+ 
+@@ -580,7 +609,7 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 				open_quote_character = character;
+ 				if (split_by_whitespace)
+ 					SubmitValue();
+-				else if (split_by_comma)
++				else if (split_by_comma || preserve_quotes)
+ 					value += character;
+ 				else if (IsAllWhitespace(value))
+ 					value.clear();
+@@ -631,7 +660,7 @@ PropertySpecification::ParsePropertyResult PropertySpecification::ParsePropertyV
+ 				if (open_parentheses == 0)
+ 				{
+ 					state = VALUE;
+-					if (split_by_comma)
++					if (split_by_comma || preserve_quotes)
+ 						value += character;
+ 					else
+ 						SubmitExactValue();
+diff --git a/Source/Core/RenderInterface.cpp b/Source/Core/RenderInterface.cpp
+index 75be1f8..c6e645b 100644
+--- a/Source/Core/RenderInterface.cpp
++++ b/Source/Core/RenderInterface.cpp
+@@ -21,8 +21,18 @@ void RenderInterface::EnableClipMask(bool /*enable*/) {}
+ 
+ void RenderInterface::RenderToClipMask(ClipMaskOperation /*operation*/, CompiledGeometryHandle /*geometry*/, Vector2f /*translation*/) {}
+ 
++void RenderInterface::SetClipMaskOwner(Element* /*element*/) {}
++
+ void RenderInterface::SetTransform(const Matrix4f* /*transform*/) {}
+ 
++void RenderInterface::BeginElement(Element* /*element*/) {}
++
++void RenderInterface::EndElement(Element* /*element*/) {}
++
++void RenderInterface::SetPaintRole(PaintRole /*role*/) {}
++
++void RenderInterface::OnElementRenderDirty(Element* /*element*/) {}
++
+ LayerHandle RenderInterface::PushLayer()
+ {
+ 	return {};
+diff --git a/Source/Core/RenderManager.cpp b/Source/Core/RenderManager.cpp
+index 4beea1e..32e6122 100644
+--- a/Source/Core/RenderManager.cpp
++++ b/Source/Core/RenderManager.cpp
+@@ -128,7 +128,7 @@ void RenderManager::DisableClipMask()
+ void RenderManager::SetClipMask(ClipMaskOperation operation, Geometry* geometry, Vector2f translation)
+ {
+ 	RMLUI_ASSERT(geometry && geometry->render_manager == this);
+-	state.clip_mask_list = {ClipMaskGeometry{operation, geometry, translation, nullptr}};
++	state.clip_mask_list = {ClipMaskGeometry{operation, geometry, translation, nullptr, nullptr}};
+ 	ApplyClipMask(state.clip_mask_list);
+ }
+ 
+@@ -165,10 +165,12 @@ void RenderManager::ApplyClipMask(const ClipMaskGeometryList& clip_elements)
+ 		for (const ClipMaskGeometry& element_clip : clip_elements)
+ 		{
+ 			RMLUI_ASSERT(element_clip.geometry->render_manager == this);
++			render_interface->SetClipMaskOwner(element_clip.owner_element);
+ 			SetTransform(element_clip.transform);
+ 			if (CompiledGeometryHandle handle = GetCompiledGeometryHandle(element_clip.geometry->resource_handle))
+ 				render_interface->RenderToClipMask(element_clip.operation, handle, element_clip.absolute_offset);
+ 		}
++		render_interface->SetClipMaskOwner(nullptr);
+ 
+ 		// Apply the initially set transform in case it was changed.
+ 		SetTransform(&initial_transform);
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index b7eda4a..8e4a9fa 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -13,6 +13,7 @@
+ #include "PropertyParserNumber.h"
+ #include "PropertyParserRatio.h"
+ #include "PropertyParserString.h"
++#include "GridPropertyParser.h"
+ #include "PropertyParserTransform.h"
+ #include "PropertyShorthandDefinition.h"
+ 
+@@ -29,6 +30,7 @@ struct DefaultStyleSheetParsers : NonCopyMoveable {
+ 	PropertyParserNumber angle = PropertyParserNumber(Unit::ANGLE, Unit::RAD);
+ 	PropertyParserKeyword keyword = PropertyParserKeyword();
+ 	PropertyParserString string = PropertyParserString();
++	GridPropertyParser grid_tracks{"tracks"}, grid_auto_tracks{"auto-tracks"}, grid_placement{"placement"}, grid_areas{"areas"}, grid_flow{"flow"}, grid_alignment{"alignment"};
+ 	PropertyParserAnimation animation = PropertyParserAnimation(PropertyParserAnimation::ANIMATION_PARSER);
+ 	PropertyParserAnimation transition = PropertyParserAnimation(PropertyParserAnimation::TRANSITION_PARSER);
+ 	PropertyParserColour color = PropertyParserColour();
+@@ -232,6 +234,12 @@ void StyleSheetSpecification::RegisterDefaultParsers()
+ 	RegisterParser("angle", &default_parsers->angle);
+ 	RegisterParser("keyword", &default_parsers->keyword);
+ 	RegisterParser("string", &default_parsers->string);
++	RegisterParser("grid_tracks", &default_parsers->grid_tracks);
++	RegisterParser("grid_auto_tracks", &default_parsers->grid_auto_tracks);
++	RegisterParser("grid_placement", &default_parsers->grid_placement);
++	RegisterParser("grid_areas", &default_parsers->grid_areas);
++	RegisterParser("grid_flow", &default_parsers->grid_flow);
++	RegisterParser("grid_alignment", &default_parsers->grid_alignment);
+ 	RegisterParser("animation", &default_parsers->animation);
+ 	RegisterParser("transition", &default_parsers->transition);
+ 	RegisterParser("color", &default_parsers->color);
+@@ -304,7 +312,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterShorthand(ShorthandId::BorderRadius, "border-radius", "border-top-left-radius, border-top-right-radius, border-bottom-right-radius, border-bottom-left-radius", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::Display, "display", "inline", false, true)
+-		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell");
++		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell, grid, inline-grid");
+ 	RegisterProperty(PropertyId::Position, "position", "static", false, true).AddParser("keyword", "static, relative, absolute, fixed");
+ 	RegisterProperty(PropertyId::Top, "top", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 	RegisterProperty(PropertyId::Right, "right", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockWidth);
+@@ -413,9 +421,9 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::FillImage, "fill-image", "", false, false).AddParser("string");
+ 
+ 	// Flexbox
+-	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch");
+-	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch");
+-	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch");
++	RegisterProperty(PropertyId::AlignContent, "align-content", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch").AddParser("keyword", "start=0, end=1, normal=6");
++	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch").AddParser("keyword", "start=0, end=1, normal=4");
++	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch").AddParser("keyword", "start=1, end=2, normal=5");
+ 
+ 	RegisterProperty(PropertyId::FlexBasis, "flex-basis", "auto", false, true).AddParser("keyword", "auto").AddParser("length_percent");
+ 	RegisterProperty(PropertyId::FlexDirection, "flex-direction", "row", false, true).AddParser("keyword", "row, row-reverse, column, column-reverse");
+@@ -423,7 +431,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::FlexGrow, "flex-grow", "0", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexShrink, "flex-shrink", "1", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::FlexWrap, "flex-wrap", "nowrap", false, true).AddParser("keyword", "nowrap, wrap, wrap-reverse");
+-	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly");
++	RegisterProperty(PropertyId::JustifyContent, "justify-content", "flex-start", false, true).AddParser("keyword", "flex-start, flex-end, center, space-between, space-around, space-evenly, stretch").AddParser("keyword", "start=0, end=1, normal=6");
+ 
+ 	RegisterShorthand(ShorthandId::Flex, "flex", "flex-grow, flex-shrink, flex-basis", ShorthandType::Flex);
+ 	RegisterShorthand(ShorthandId::FlexFlow, "flex-flow", "flex-direction, flex-wrap", ShorthandType::FallThrough);
+@@ -432,7 +440,26 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::RmlUi_Language, "-rmlui-language", "", true, true).AddParser("string");
+ 	RegisterProperty(PropertyId::RmlUi_Direction, "-rmlui-direction", "auto", true, true).AddParser("keyword", "auto, ltr, rtl");
+ 
+-	RMLUI_ASSERTMSG(instance->properties.shorthand_map->AssertAllInserted(ShorthandId::NumDefinedIds), "Missing specification for one or more Shorthand IDs.");
++	RegisterProperty(PropertyId::GridTemplateColumns, "grid-template-columns", "none", false, true).AddParser("grid_tracks");
++	RegisterProperty(PropertyId::GridTemplateRows, "grid-template-rows", "none", false, true).AddParser("grid_tracks");
++	RegisterProperty(PropertyId::GridAutoColumns, "grid-auto-columns", "auto", false, true).AddParser("grid_auto_tracks");
++	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("grid_auto_tracks");
++	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("grid_areas");
++	RegisterProperty(PropertyId::GridAutoFlow, "grid-auto-flow", "row", false, true).AddParser("grid_flow");
++	RegisterProperty(PropertyId::GridColumnStart, "grid-column-start", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::GridColumnEnd, "grid-column-end", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::GridRowStart, "grid-row-start", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::GridRowEnd, "grid-row-end", "auto", false, true).AddParser("grid_placement");
++	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("grid_alignment");
++	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("grid_alignment", "auto");
++	RegisterProperty(PropertyId::Order, "order", "0", false, true).AddParser("number");
++	RegisterShorthand(ShorthandId::GridColumn, "grid-column", "grid-column-start, grid-column-end", ShorthandType::GridPlacement);
++	RegisterShorthand(ShorthandId::GridRow, "grid-row", "grid-row-start, grid-row-end", ShorthandType::GridPlacement);
++	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row-start, grid-column-start, grid-row-end, grid-column-end", ShorthandType::GridPlacement);
++	RegisterShorthand(ShorthandId::GridTemplate, "grid-template", "grid-template-rows, grid-template-columns", ShorthandType::GridTemplate);
++	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
++	RegisterShorthand(ShorthandId::PlaceSelf, "place-self", "align-self, justify-self", ShorthandType::Replicate);
++	RMLUI_ASSERTMSG(instance->properties.shorthand_map->AssertAllInserted(ShorthandId::NumDefinedIds), "Missing grid shorthand IDs.");
+ 	RMLUI_ASSERTMSG(instance->properties.property_map->AssertAllInserted(PropertyId::NumDefinedIds), "Missing specification for one or more Property IDs.");
+ 	// clang-format on
+ }
+diff --git a/Source/SVG/SVGCache.cpp b/Source/SVG/SVGCache.cpp
+index 920e21c..cbdc4ae 100644
+--- a/Source/SVG/SVGCache.cpp
++++ b/Source/SVG/SVGCache.cpp
+@@ -24,6 +24,7 @@
+ namespace Rml {
+ namespace SVG {
+ 	struct SVGKey {
++		RenderManager* render_manager;
+ 		String source_id;
+ 		Vector2i dimensions;
+ 		bool crop_to_content;
+@@ -31,7 +32,7 @@ namespace SVG {
+ 
+ 		friend bool operator==(const SVGKey& lhs, const SVGKey& rhs)
+ 		{
+-			return lhs.source_id == rhs.source_id && lhs.dimensions == rhs.dimensions && lhs.crop_to_content == rhs.crop_to_content &&
++			return lhs.render_manager == rhs.render_manager && lhs.source_id == rhs.source_id && lhs.dimensions == rhs.dimensions && lhs.crop_to_content == rhs.crop_to_content &&
+ 				lhs.colour == rhs.colour;
+ 		}
+ 	};
+@@ -41,9 +42,9 @@ namespace SVG {
+ namespace std {
+ template <>
+ struct hash<::Rml::SVG::SVGKey> {
+-	size_t operator()(const ::Rml::SVG::SVGKey& key) const noexcept
++		size_t operator()(const ::Rml::SVG::SVGKey& key) const noexcept
+ 	{
+-		size_t hash = 0;
++		size_t hash = std::hash<::Rml::RenderManager*>{}(key.render_manager);
+ 		Rml::Utilities::HashCombine(hash, key.source_id);
+ 		Rml::Utilities::HashCombine(hash, key.dimensions.x);
+ 		Rml::Utilities::HashCombine(hash, key.dimensions.y);
+@@ -68,6 +69,7 @@ namespace SVG {
+ 	};
+ 
+ 	struct SVGTexture {
++		RenderManager* render_manager;
+ 		Vector2i render_dimensions;
+ 		bool crop_to_content;
+ 		CallbackTexture texture;
+@@ -103,10 +105,10 @@ namespace SVG {
+ 		ReleaseHandle(this);
+ 	}
+ 
+-	static Vector<SVGTexture>::iterator FindSVGTexture(SVGDocument& doc, Vector2i dimensions, bool crop_to_content)
++	static Vector<SVGTexture>::iterator FindSVGTexture(SVGDocument& doc, RenderManager* render_manager, Vector2i dimensions, bool crop_to_content)
+ 	{
+ 		return std::find_if(doc.textures.begin(), doc.textures.end(),
+-			[&](const auto& entry) { return entry.render_dimensions == dimensions && entry.crop_to_content == crop_to_content; });
++			[&](const auto& entry) { return entry.render_manager == render_manager && entry.render_dimensions == dimensions && entry.crop_to_content == crop_to_content; });
+ 	}
+ 
+ 	static Vector<SVGGeometry>::iterator FindSVGGeometry(SVGTexture& per_size_data, const ColourbPremultiplied colour)
+@@ -128,7 +130,7 @@ namespace SVG {
+ 	static SharedPtr<SVGData> GetHandle(RenderManager& render_manager, String move_from_id, const String& source, SVGCache::SourceType source_type,
+ 		const Vector2i dimensions, const bool crop_to_content, const ColourbPremultiplied colour)
+ 	{
+-		SVGKey key{std::move(move_from_id), dimensions, crop_to_content, colour};
++		SVGKey key{&render_manager, std::move(move_from_id), dimensions, crop_to_content, colour};
+ 		const String& source_id = key.source_id;
+ 		auto& documents = svg_cache_data->documents;
+ 		auto& handles = svg_cache_data->handles;
+@@ -199,12 +201,13 @@ namespace SVG {
+ 		}
+ 
+ 		// Find or create texture
+-		auto it_size = FindSVGTexture(doc, dimensions, crop_to_content);
++		auto it_size = FindSVGTexture(doc, &render_manager, dimensions, crop_to_content);
+ 		if (it_size == doc.textures.cend())
+ 		{
+ 			RMLUI_SVG_DEBUG_LOG("Creating per-size data for (%d, %d), %s", dimensions.x, dimensions.y,
+ 				crop_to_content ? "crop_to_content" : "crop_none");
+ 			SVGTexture svg_texture;
++			svg_texture.render_manager = &render_manager;
+ 			svg_texture.render_dimensions = dimensions;
+ 			svg_texture.crop_to_content = crop_to_content;
+ 			svg_texture.texture = {};
+@@ -307,7 +310,7 @@ namespace SVG {
+ 		RMLUI_SVG_DEBUG_LOG("Releasing handle: %s, (%d, %d), %s, %#x", key.path.c_str(), key.dimensions.x, key.dimensions.y,
+ 			key.crop_to_content ? "crop_to_content" : "crop_none", *reinterpret_cast<const uint32_t*>(&key.colour[0]));
+ 
+-		auto it_texture = FindSVGTexture(svg_document, key.dimensions, key.crop_to_content);
++		auto it_texture = FindSVGTexture(svg_document, key.render_manager, key.dimensions, key.crop_to_content);
+ 		RMLUI_ASSERT(it_texture != svg_document.textures.cend());
+ 		SVGTexture& svg_texture = *it_texture;
+ 

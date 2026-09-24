@@ -1,19 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { build as bundle } from 'esbuild';
 import { validateCss, buildFrontend } from '../tools/build.mjs';
 
 test('CSS diagnostics retain the implemented grid syntax', () => {
   assert.doesNotThrow(() => validateCss('.grid { display:grid; grid-template-columns:repeat(3,minmax(0px,1fr)); grid-template-areas:"a b c"; gap:16px; }', 'grid.css'));
-  assert.throws(() => validateCss('.x { backdrop-filter:blur(3px); }', 'bad.css'), /Unsupported RmlUi CSS property/);
-  assert.throws(() => validateCss('.x { color:var(--color); }', 'bad.css'), /CSS variables/);
+  assert.throws(() => validateCss('.x { backdrop-filter:blur(3px); }', 'bad.css'), /unsupported-renderer-feature/);
+  assert.doesNotThrow(() => validateCss('.x { --color:#f6c543; color:var(--color); }', 'theme.css'));
+  assert.throws(() => validateCss('.x { position:sticky; }', 'bad.css'), /unsupported-css-value/);
 });
 test('actual SFC bundle has reproducible content-addressed versions and complete hashes', async () => {
-  const first = await buildFrontend(), second = await buildFrontend();
+  const outputRoot = await mkdtemp(path.join(tmpdir(), 'rmlui-vue-build-'));
+  const first = await buildFrontend({ outputRoot, activate: false }), second = await buildFrontend({ outputRoot, activate: false });
   assert.equal(first.version, second.version);
   const manifest = JSON.parse(await readFile(path.join(first.directory, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.capabilities.profile, 'dx11-compat');
+  assert.equal(manifest.capabilities.minimumHostAbi, 2);
+  assert.ok(manifest.capabilities.requiredFeatures.includes('css.grid'));
+  await assert.rejects(readFile(path.join(outputRoot, 'current.json')), { code: 'ENOENT' });
   for (const [name, expected] of Object.entries(manifest.files)) {
     assert.match(name, /^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)*$/, 'manifest paths follow the native runtime contract');
     const data = await readFile(path.join(first.directory, name));
@@ -25,17 +33,135 @@ test('actual SFC bundle has reproducible content-addressed versions and complete
   assert.ok(!source.includes('document.createElement'));
 });
 test('actor observer compiles Tailwind utilities into the supported RmlUi CSS subset', async () => {
-  const result = await buildFrontend({ actors: true });
+  const outputRoot = await mkdtemp(path.join(tmpdir(), 'rmlui-actor-build-'));
+  const result = await buildFrontend({ actors: true, outputRoot, activate: false });
   const css = await readFile(path.join(result.directory, 'app.rcss'), 'utf8');
   const source = await readFile(path.join(result.directory, 'app.js'), 'utf8');
   assert.match(css, /\.grid-cols-3/);
   assert.match(css, /minmax\(0px,\s*1fr\)/);
-  assert.ok(!css.includes('var(--tw-'));
+  assert.ok(css.includes('var(--tw-'), 'Tailwind runtime tokens are retained');
+  assert.ok(css.includes('--tw-bg-opacity:'), 'Tailwind opacity declarations are not silently removed');
   assert.match(css, /grid-template-areas:\s*"icons image"/);
-  assert.match(css, /box-shadow:/);
+  assert.match(css, /\.text-scroll\s*\{[^}]*overflow:\s*auto/);
+  assert.match(css, /\.split-handle\s*\{[^}]*drag:\s*drag/);
+  assert.doesNotMatch(css, /box-shadow:/, 'the Slate demo explicitly degrades unsupported layer effects');
+  assert.ok(result.capabilities.degradedFeatures.includes('render.layers'));
+  assert.ok(result.diagnostics.some(item => item.classification === 'degraded' && item.property === 'box-shadow' && item.source.endsWith('.vue') && item.line > 0));
   assert.match(css, /@keyframes scan-line/);
   assert.ok(source.includes('GetActorSnapshot'));
   assert.ok(source.includes('GetActorDetails'));
   assert.ok(source.includes('hello_world.png'));
   assert.ok(source.includes('Pause live refresh'));
+  assert.ok(source.includes('ui-lab-scroll'));
+  assert.ok(source.includes('ui-lab-resizer'));
+  assert.ok(source.includes('onDragstart'));
+  assert.ok(source.includes('onDrag'));
+  assert.ok(source.includes('onDragend'));
+  assert.ok(source.includes('renderToSVGString'));
+  assert.ok(source.includes('SetInnerRml'));
+  assert.ok(source.includes('chart-slider-'));
+  assert.ok(source.includes('tree-view-tab'));
+  assert.ok(source.includes('motion-view-tab'));
+  assert.ok(source.includes('motion-menu-showcase'));
+  assert.ok(source.includes('motion-option-'));
+  assert.ok(source.includes('animation-view-tab'));
+  assert.ok(source.includes('animation-spring-showcase'));
+  assert.ok(source.includes('animation-spring-replay'));
+  assert.ok(source.includes('animation-official-view-tab'));
+  assert.ok(source.includes('animation-official-examples'));
+  assert.ok(source.includes('CSS compiler'));
+  assert.ok(source.includes('animation adapter'));
+  assert.ok(source.includes('Compatibility routes'));
+  assert.ok(source.includes('Slate-RHI limited'));
+  assert.ok(source.includes('Effects.swirlIn'));
+  assert.ok(source.includes('talent-ring-'));
+  assert.ok(source.includes('easeInOutQuad'));
+  assert.ok(source.includes('translateY'));
+  assert.ok(source.includes('1.28'));
+  assert.ok(source.includes('cubic-bezier(0.16,1.32,0.3,1)'));
+  assert.ok(source.includes('stagger'));
+  assert.match(css, /\.t-dropdown\s*\{[^}]*transform-origin:/);
+  assert.match(css, /\.t-dropdown\.is-closing\s*\{[^}]*transition:transform 0\.15s cubic-out/);
+  assert.ok(source.includes('tree-visible-count'));
+  assert.ok(source.includes('Duplicate tree node id'));
+  assert.ok(source.includes('dialogs-view-tab'));
+  assert.ok(source.includes('headless-dialog-trigger'));
+  assert.ok(source.includes('shadcn-alert-dialog'));
+  assert.ok(source.includes('shadcn-sheet'));
+  assert.ok(source.includes('FocusNode'));
+  assert.ok(source.includes('SetUiMaterialIntensity'));
+  assert.ok(source.includes('ui-material-slider'));
+  assert.ok(source.includes('mask-view-tab'));
+  assert.ok(source.includes('edge-mask'));
+  assert.ok(source.includes('mask-probe-count'));
+  assert.ok(source.includes('mask-motion'));
+  assert.ok(source.includes('gold-flow-'));
+  assert.ok(source.includes('gold-spark'));
+  assert.ok(source.includes('scene-view-tab'));
+  assert.ok(source.includes('scene-overlay-showcase'));
+  assert.ok(source.includes('scene-opacity'));
+  assert.match(css, /body\s*\{[^}]*background-color:\s*transparent/);
+  assert.match(css, /\.scene-panel\s*\{[^}]*pointer-events:\s*auto/);
+  assert.match(css, /\.scene-open-window\s*\{[^}]*pointer-events:\s*none/);
+  assert.match(css, /\.tree-stage\s*\{[^}]*drag:\s*drag/);
+  assert.match(css, /\.material-preview\s*\{[^}]*decorator:\s*ue-material\(showcase\.energy\)/);
+  assert.match(css, /\.gold-edge-mask[^\{]*\{[^}]*position:\s*fixed[^}]*pointer-events:\s*none/);
+  assert.match(css, /@keyframes gold-spark-down\s*\{/);
+  assert.ok(source.includes('AnimateNode'), 'flow animation is started after native layout');
+  for (const edge of ['top', 'right', 'bottom', 'left']) assert.match(source, new RegExp(`side: ["']${edge}["']`));
+  const maskSvg = await readFile(path.resolve('assets/gold-edge-mask.svg'), 'utf8');
+  assert.match(maskSvg, /<mask\b[^>]*id="edge-mask"/);
+  assert.match(maskSvg, /mask="url\(#edge-mask\)"/);
+  assert.match(maskSvg, /id="glow-top"/);
+  assert.match(maskSvg, /id="ray-top"/);
+  assert.match(css, /\.rml-dialog-overlay\s*\{[^}]*position:\s*absolute/);
+  assert.match(css, /\.rml-dialog-backdrop\s*\{[^}]*position:\s*absolute/);
+});
+
+test('d3-hierarchy produces native tree node positions, edges and collapsed layouts', async () => {
+  const result = await bundle({
+    entryPoints: [path.resolve('src/tree/d3TreeLayout.ts')],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'esm',
+  });
+  const module = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`);
+  const tree = {
+    id: 'root', label: 'Root', detail: 'root', kind: 'runtime', children: [
+      { id: 'branch', label: 'Branch', detail: 'branch', kind: 'bridge', children: [
+        { id: 'leaf', label: 'Leaf', detail: 'leaf', kind: 'tooling' },
+      ] },
+      { id: 'peer', label: 'Peer', detail: 'peer', kind: 'render' },
+    ],
+  };
+  const expanded = module.layoutTree(tree, new Set());
+  assert.equal(expanded.nodes.length, 4);
+  assert.equal(expanded.edges.length, 9);
+  assert.ok(expanded.nodes.every(node => Number.isFinite(node.left) && Number.isFinite(node.top)));
+  assert.ok(expanded.width > module.TREE_NODE_WIDTH && expanded.height > module.TREE_NODE_HEIGHT);
+  const collapsed = module.layoutTree(tree, new Set(['branch']));
+  assert.deepEqual(collapsed.nodes.map(node => node.id), ['root', 'branch', 'peer']);
+  assert.equal(collapsed.edges.length, 6);
+  assert.equal(collapsed.nodes.find(node => node.id === 'branch').collapsed, true);
+});
+
+test('ECharts produces chart SVG without a DOM or Canvas', async () => {
+  const result = await bundle({
+    entryPoints: [path.resolve('src/charts/echartsSvg.ts')],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    format: 'esm',
+  });
+  const source = result.outputFiles[0].text;
+  const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  const svg = module.renderEditableChartSvg([
+    { label: 'Render', value: 68, target: 82 },
+    { label: 'Layout', value: 54, target: 72 },
+  ], 480, 240);
+  assert.match(svg, /^<svg\b/);
+  assert.match(svg, /<path\b/);
+  assert.match(svg, />Render<|>Layout</);
+  assert.ok(!svg.includes('<canvas'));
 });

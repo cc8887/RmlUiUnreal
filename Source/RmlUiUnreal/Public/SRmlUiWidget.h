@@ -131,6 +131,9 @@ private:
         bool bMaterialClipSupported = true;
         uint32 VisualNode = 0;
         float VisualOpacity = 1.0f;
+        int32 PaintRole = 0;
+        bool bVisualColor = false;
+        FLinearColor VisualColor = FLinearColor::Transparent;
     };
     struct FNativeMaskRef {
         int32 DrawIndex = INDEX_NONE;

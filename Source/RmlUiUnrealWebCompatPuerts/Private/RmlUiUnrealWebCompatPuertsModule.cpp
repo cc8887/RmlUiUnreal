@@ -6,6 +6,8 @@
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "RmlUiWebCompatModule.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonSerializer.h"
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
@@ -64,12 +66,25 @@ public:
     virtual bool Compile(const FString& Markup, const FString& SourcePath,
         FString& OutMarkup, FString& OutDiagnostics) override
     {
+        return CompileWithOptions(Markup, SourcePath, FRmlUiCssCompileOptions(), OutMarkup, OutDiagnostics);
+    }
+
+    virtual bool CompileWithOptions(const FString& Markup, const FString& SourcePath,
+        const FRmlUiCssCompileOptions& Options, FString& OutMarkup, FString& OutDiagnostics) override
+    {
         if (!IsInGameThread())
         {
             OutDiagnostics = TEXT("Puerts WebCompat compilation must run on the game thread.");
             return false;
         }
-        return Bridge.IsValid() && Bridge->Invoke(Markup, SourcePath, OutMarkup, OutDiagnostics);
+        if (!Bridge.IsValid()) return false;
+        Bridge->CapabilityProfile = Options.CapabilityProfile;
+        Bridge->CapabilityMode = Options.CapabilityMode;
+        TArray<TSharedPtr<FJsonValue>> Degradations;
+        for (const FString& Feature : Options.AllowedDegradations) Degradations.Add(MakeShared<FJsonValueString>(Feature));
+        Bridge->AllowedDegradationsJson.Reset();
+        FJsonSerializer::Serialize(Degradations, TJsonWriterFactory<>::Create(&Bridge->AllowedDegradationsJson));
+        return Bridge->Invoke(Markup, SourcePath, OutMarkup, OutDiagnostics);
     }
 
     bool IsReady() const { return Bridge.IsValid() && Bridge->IsReady(); }

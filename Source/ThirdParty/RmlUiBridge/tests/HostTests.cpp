@@ -396,7 +396,7 @@ static float ComputedFloat(RmlUE_View* View, RmlUE_Node Node, const char* Proper
 
 static void TestAnimatedPropertyBatch()
 {
-    Fixture F(R"(<rml><head><style>body{margin:0;}#a,#b{position:absolute;left:20px;top:30px;display:block;opacity:1;width:10px;height:10px;transform-origin:0 0;}</style></head><body><div id="a"/><div id="b"/></body></rml>)");
+    Fixture F(R"(<rml><head><style>body{margin:0;}#a,#b{position:absolute;left:20px;top:30px;display:block;opacity:1;width:10px;height:10px;transform-origin:0 0;background-color:#000;}</style></head><body><div id="a"/><div id="b"/></body></rml>)");
     F.Update();
     const auto A = F.Node("a");
     const auto B = F.Node("b");
@@ -418,6 +418,45 @@ static void TestAnimatedPropertyBatch()
     Require(Near(ComputedFloat(F.View, A, "opacity"), 0.5f, 0.001f) &&
         Near(Transformed.X, 32.f) && Near(Transformed.Y, 38.f) && Near(Transformed.Width, 10.f) && Near(Transformed.Height, 10.f),
         "tagged batch commits typed opacity and translated geometry");
+
+    const RmlUE_AnimatedPropertyUpdate PaintAndDiscrete[]{
+        {F.View, A, RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR, {0.2f, 0.4f, 0.6f, 0.5f}},
+        {F.View, B, RMLUE_ANIMATED_PROPERTY_VISIBILITY, {0.f}},
+    };
+    Require(RmlUE_ApplyAnimatedProperties(PaintAndDiscrete, 2) == 2,
+        "apply typed RGBA and discrete visibility in one batch");
+    char PropertyBuffer[64]{};
+    Require(RmlUE_GetComputedProperty(F.View, A, "background-color", PropertyBuffer, sizeof(PropertyBuffer)) != 0 &&
+        std::strlen(PropertyBuffer) > 0, "typed RGBA reaches the computed background color");
+    Require(RmlUE_GetComputedProperty(F.View, B, "visibility", PropertyBuffer, sizeof(PropertyBuffer)) != 0 &&
+        std::strcmp(PropertyBuffer, "hidden") == 0, "typed visibility reaches the computed style");
+
+    const RmlUE_AnimatedPropertyUpdate Skew[]{
+        {F.View, B, RMLUE_ANIMATED_PROPERTY_TRANSFORM_2D, {0.f, 0.f, 1.f, 1.f, 0.f, 45.f, 0.f}},
+    };
+    Require(RmlUE_ApplyAnimatedProperties(Skew, 1) == 1, "apply typed affine skew");
+    F.Update();
+    const auto Skewed = F.Measure(B);
+    Require(Near(Skewed.Width, 20.f, 0.01f) && Near(Skewed.Height, 10.f, 0.01f),
+        "typed skew expands transformed geometry");
+
+    const RmlUE_AnimatedPropertyUpdate Layout[] {
+        {F.View, A, RMLUE_ANIMATED_PROPERTY_LEFT_PX, {45.f, 0.f, 0.f, 0.f, 0.f}},
+        {F.View, A, RMLUE_ANIMATED_PROPERTY_WIDTH_PX, {32.f, 0.f, 0.f, 0.f, 0.f}},
+        {F.View, B, RMLUE_ANIMATED_PROPERTY_TOP_PX, {64.f, 0.f, 0.f, 0.f, 0.f}},
+    };
+    Require(RmlUE_ApplyAnimatedProperties(Layout, 3) == 3,
+        "apply px layout scalars through one typed batch");
+    F.Update();
+    const auto LayoutA = F.Measure(A);
+    const auto LayoutB = F.Measure(B);
+    Require(Near(LayoutA.X, 45.f) && Near(LayoutA.Width, 32.f) && Near(LayoutB.Y, 72.f),
+        "typed px scalars drive RmlUi layout without string parsing");
+
+    const RmlUE_AnimatedPropertyUpdate NegativeSize{
+        F.View, A, RMLUE_ANIMATED_PROPERTY_WIDTH_PX, {-1.f, 0.f, 0.f, 0.f, 0.f}};
+    Require(!RmlUE_ApplyAnimatedProperties(&NegativeSize, 1),
+        "typed layout batch rejects negative size");
 
     const RmlUE_AnimatedPropertyUpdate Invalid[]{
         {F.View, A, RMLUE_ANIMATED_PROPERTY_OPACITY, {0.25f, 0.f, 0.f, 0.f, 0.f}},
@@ -443,6 +482,9 @@ static void TestAnimationTargets()
         "resolve a binding-time animation target");
     Require(SecondTarget && SecondTarget != Target && !RmlUE_IsAnimationTargetValid(Second.View, Target),
         "animation target rejects a foreign view");
+    Require(RmlUE_PrepareAnimationTargetProperty(
+        First.View, Target, RMLUE_ANIMATED_PROPERTY_OPACITY),
+        "capture the binding-time underlying opacity");
 
     RmlUE_AnimatedPropertyUpdate Update{First.View, Box, RMLUE_ANIMATED_PROPERTY_OPACITY,
         {0.4f, 0.f, 0.f, 0.f, 0.f}, Target};
@@ -450,11 +492,24 @@ static void TestAnimationTargets()
         Near(ComputedFloat(First.View, Box, "opacity"), 0.4f, 0.001f),
         "target update commits without a per-frame node lookup");
 
+    const RmlUE_AnimationTarget SharedTarget = RmlUE_ResolveAnimationTarget(First.View, Box);
+    Require(SharedTarget && RmlUE_PrepareAnimationTargetProperty(
+        First.View, SharedTarget, RMLUE_ANIMATED_PROPERTY_OPACITY),
+        "replacement target shares the original underlying style");
+    Require(RmlUE_RestoreAnimationTargetProperty(First.View, Target, 0) &&
+        Near(ComputedFloat(First.View, Box, "opacity"), 0.4f, 0.001f),
+        "layered restore waits while another contribution owns the property");
+    Require(RmlUE_ReleaseAnimationTarget(First.View, Target),
+        "release the first shared animation target");
+    Require(RmlUE_RestoreAnimationTargetProperty(First.View, SharedTarget, 0) &&
+        Near(ComputedFloat(First.View, Box, "opacity"), 1.f, 0.001f),
+        "last contribution restores the captured stylesheet value");
+
     Update.View = Second.View;
     Require(RmlUE_ApplyAnimatedProperties(&Update, 1) == 0,
         "target batch rejects a view-token mismatch");
     Update.View = First.View;
-    Require(RmlUE_ReleaseAnimationTarget(First.View, Target) &&
+    Require(RmlUE_ReleaseAnimationTarget(First.View, SharedTarget) &&
         !RmlUE_IsAnimationTargetValid(First.View, Target),
         "released animation target becomes stale");
     const RmlUE_AnimationTarget Reused = RmlUE_ResolveAnimationTarget(First.View, Box);
@@ -642,6 +697,78 @@ body{margin:0;}
     Require(RmlUE_ReleaseAnimationTarget(Dx11.View, Update.Target),
         "release DX11 animation target");
     std::fprintf(stderr, "PASS Slate visual opacity sink and property fallback\n");
+}
+
+static void TestAnimatedVisualBackgroundColor()
+{
+    const char* Markup = R"(<rml><head><style>
+body{margin:0;}#box{display:block;width:80px;height:50px;background-color:#ff0000;border:4px #00ff00;opacity:0.5;}
+#shadow{display:block;width:40px;height:30px;background:#fff;box-shadow:2px 2px 3px #000;}
+</style></head><body><div id="box"/><div id="shadow"/></body></rml>)";
+    Fixture Slate(Markup, true);
+    Slate.Update();
+    const auto Box = Slate.Node("box");
+    const auto Shadow = Slate.Node("shadow");
+    RmlUE_SlateFrame Frame{};
+    Require(RmlUE_RenderSlate(Slate.View, &Frame) != 0 && Frame.Replayed == 0,
+        "record background-color retained fixture");
+    bool FoundBackground = false;
+    bool FoundBorder = false;
+    for (uint32_t Index = 0; Index < Frame.DrawCount; ++Index)
+    {
+        const RmlUE_SlateDraw& Draw = Frame.Draws[Index];
+        if (Draw.VisualNode != Box) continue;
+        FoundBackground |= Draw.PaintRole == RMLUE_PAINT_ROLE_BACKGROUND;
+        FoundBorder |= Draw.PaintRole == RMLUE_PAINT_ROLE_BORDER;
+    }
+    Require(FoundBackground && FoundBorder, "background and border use independent semantic draws");
+
+    RmlUE_AnimatedPropertyUpdate Update{Slate.View, Box, RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR,
+        {0.2f, 0.4f, 0.8f, 0.5f, 0.f}, RmlUE_ResolveAnimationTarget(Slate.View, Box)};
+    Require(Update.Target && RmlUE_PrepareAnimationTargetProperty(Slate.View, Update.Target, Update.Property),
+        "prepare retained background-color binding");
+    RmlUE_SlateScheduleState Before{};
+    Require(RmlUE_GetSlateScheduleState(Slate.View, &Before) != 0, "read background schedule baseline");
+    uint8_t Accepted = 0;
+    Require(RmlUE_ApplyAnimatedVisualProperties(&Update, 1, &Accepted) == 1 && Accepted == 1,
+        "background-color enters retained visual sink");
+    RmlUE_SlateScheduleState After{};
+    Require(RmlUE_GetSlateScheduleState(Slate.View, &After) != 0 &&
+        After.ContentRevision == Before.ContentRevision && After.VisualRevision != Before.VisualRevision,
+        "background-color advances only visual revision");
+    Require(RmlUE_RenderSlate(Slate.View, &Frame) != 0 && Frame.Replayed == 1 &&
+        Frame.VisualDeltaCount == 1 && Frame.VisualDeltas[0].ColorChanged &&
+        Frame.VisualDeltas[0].PaintRole == RMLUE_PAINT_ROLE_BACKGROUND,
+        "background-color replays one role-filtered delta");
+    bool FoundReplacement = false;
+    for (uint32_t Index = 0; Index < Frame.DrawCount; ++Index)
+    {
+        const RmlUE_SlateDraw& Draw = Frame.Draws[Index];
+        if (Draw.VisualNode == Box && Draw.PaintRole == RMLUE_PAINT_ROLE_BACKGROUND)
+        {
+            FoundReplacement = true;
+            Require(Draw.VisualColorEnabled && Near(Draw.VisualColorR, 0.05f, 0.001f) &&
+                Near(Draw.VisualColorG, 0.10f, 0.001f) && Near(Draw.VisualColorB, 0.20f, 0.001f) &&
+                Near(Draw.VisualColorA, 0.25f, 0.001f),
+                "replacement color is encoded-space premultiplied by color alpha and element opacity");
+        }
+        if (Draw.VisualNode == Box && Draw.PaintRole == RMLUE_PAINT_ROLE_BORDER)
+            Require(!Draw.VisualColorEnabled, "background update does not tint border draw");
+    }
+    Require(FoundReplacement, "retained frame exposes replaced background draw");
+    Require(RmlUE_ClearAnimatedVisualProperties(&Update, 1) == 1 &&
+        RmlUE_RenderSlate(Slate.View, &Frame) != 0 && Frame.Replayed == 1 &&
+        Frame.VisualDeltas[0].ColorChanged && !Frame.VisualDeltas[0].VisualColorEnabled,
+        "clearing background override emits a role-filtered reset");
+    Require(RmlUE_ReleaseAnimationTarget(Slate.View, Update.Target), "release background animation target");
+
+    RmlUE_AnimatedPropertyUpdate ShadowUpdate{Slate.View, Shadow, RMLUE_ANIMATED_PROPERTY_BACKGROUND_COLOR,
+        {1.f, 0.f, 0.f, 1.f, 0.f}, RmlUE_ResolveAnimationTarget(Slate.View, Shadow)};
+    Accepted = 1;
+    Require(ShadowUpdate.Target && RmlUE_ApplyAnimatedVisualProperties(&ShadowUpdate, 1, &Accepted) == 0 && Accepted == 0,
+        "combined box-shadow geometry declines retained background color for property fallback");
+    Require(RmlUE_ReleaseAnimationTarget(Slate.View, ShadowUpdate.Target), "release shadow fallback target");
+    std::fprintf(stderr, "PASS retained background-color role and fallback\n");
 }
 
 static void TestAnimatedVisualTransformBatch()
@@ -1100,22 +1227,23 @@ static void TestStrictCapabilities()
 
 int main(int Count, char** Arguments)
 {
-    Require(Count >= 2, "usage: RmlUiHostTests font.ttf [evidence-directory] [all|nodes|measure|modal|pointer|animation|float-batch|visual-batch|capabilities]");
+    Require(Count >= 2, "usage: RmlUiHostTests font.ttf [evidence-directory] [all|nodes|measure|modal|pointer|animation|float-batch|targets|visual-batch|capabilities]");
     RmlUE_Host Host{}; Host.ReadFile = ReadFile; Host.LoadImage = LoadImage; Host.FreeBuffer = FreeBuffer; Host.Log = Log;
     Require(RmlUE_Initialize(&Host) != 0 && RmlUE_LoadFont(Arguments[1], 0) != 0, "initialize native host test runtime and font");
     Require(RmlUE_GetHostAbiVersion() == RMLUE_HOST_ABI_VERSION, "host ABI matches linked header");
     const auto Output = Count > 2 ? std::filesystem::u8path(Arguments[2]) : std::filesystem::path();
     if (!Output.empty()) std::filesystem::create_directories(Output);
     const std::string Suite = Count > 3 ? Arguments[3] : "all";
-    Require(Suite == "all" || Suite == "nodes" || Suite == "measure" || Suite == "modal" || Suite == "pointer" || Suite == "animation" || Suite == "float-batch" || Suite == "visual-batch" || Suite == "capabilities", "known test suite");
+    Require(Suite == "all" || Suite == "nodes" || Suite == "measure" || Suite == "modal" || Suite == "pointer" || Suite == "animation" || Suite == "float-batch" || Suite == "targets" || Suite == "visual-batch" || Suite == "capabilities", "known test suite");
     if (Suite == "all" || Suite == "nodes") TestVariablesAndNodes();
     if (Suite == "all" || Suite == "measure") TestMeasure();
     if (Suite == "all" || Suite == "modal") TestDefaultAndModal();
     if (Suite == "all" || Suite == "pointer") TestPointers();
     if (Suite == "all" || Suite == "animation") TestAnimation(Output);
     if (Suite == "all" || Suite == "float-batch") TestAnimatedPropertyBatch();
-    if (Suite == "all" || Suite == "float-batch") TestAnimationTargets();
+    if (Suite == "all" || Suite == "float-batch" || Suite == "targets") TestAnimationTargets();
     if (Suite == "all" || Suite == "visual-batch") TestAnimatedVisualBatch();
+    if (Suite == "all" || Suite == "visual-batch") TestAnimatedVisualBackgroundColor();
     if (Suite == "all" || Suite == "visual-batch") TestAnimatedVisualTransformBatch();
     if (Suite == "all" || Suite == "visual-batch") TestAnimatedVisualMaskTopology();
     if (Suite == "all" || Suite == "capabilities") TestStrictCapabilities();

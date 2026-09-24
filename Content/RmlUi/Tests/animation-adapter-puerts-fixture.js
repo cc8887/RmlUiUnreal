@@ -7,11 +7,49 @@ function report(error) {
   native.ReportError(error instanceof Error ? error.stack || error.message : String(error));
 }
 
+// src/platform.ts
+var observations = /* @__PURE__ */ new Set();
+var ready = /* @__PURE__ */ new Set();
+var disposed = false;
+function measureNodes(handles) {
+  return JSON.parse(native.MeasureNodes(JSON.stringify([...new Set(handles)].filter((handle) => Number.isInteger(handle) && handle > 0))));
+}
+function layoutCompleted() {
+  if (disposed) return;
+  const pending2 = [...ready];
+  ready.clear();
+  for (const callback of pending2) {
+    try {
+      callback();
+    } catch (error) {
+      report(error);
+    }
+  }
+  const active = [...observations];
+  if (!active.length) return;
+  const snapshot = measureNodes(active.flatMap((item) => item.handles()));
+  for (const item of active) {
+    if (!observations.has(item)) continue;
+    const handles = new Set(item.handles());
+    const selection = { ...snapshot, nodes: snapshot.nodes.filter((node) => handles.has(node.handle)) };
+    const signature = JSON.stringify([selection.viewport, selection.nodes]);
+    if (signature === item.signature) continue;
+    item.signature = signature;
+    try {
+      const result = item.callback(selection);
+      if (result && typeof result.catch === "function") result.catch(report);
+    } catch (error) {
+      report(error);
+    }
+  }
+}
+native.OnAfterLayout.Add(layoutCompleted);
+
 // src/animation.ts
 var fallbackSequence = 0;
 var currentClockSeconds = 0;
 var frameRequest = 0;
-var disposed = false;
+var disposed2 = false;
 var nativeAnimations = /* @__PURE__ */ new Map();
 var fallbackAnimations = /* @__PURE__ */ new Map();
 var animationsByTarget = /* @__PURE__ */ new Map();
@@ -48,12 +86,19 @@ function removeNativeAnimation(animation) {
   lowWords?.delete(low);
   if (lowWords?.size === 0) nativeAnimations.delete(high);
 }
+function isTerminalAnimationState(state) {
+  return state === "finished" || state === "cancelled" || state === "replaced";
+}
+function isStaleNativeHandleError(error) {
+  return error instanceof Error && error.message === "stale_handle";
+}
 var AnimationController = class {
-  constructor(handle, route, targetKey2, compiledPlanKey) {
+  constructor(handle, route, targetKey2, compiledPlanKey, costClass) {
     this.handle = handle;
     this.route = route;
     this.targetKey = targetKey2;
     this.compiledPlanKey = compiledPlanKey;
+    this.costClass = costClass;
     this.currentState = "running";
     if (route === "native") this.nativeHandleWords = nativeHandleWords(handle);
     this.finished = new Promise((resolve) => {
@@ -67,7 +112,7 @@ var AnimationController = class {
     return this.currentState;
   }
   settle(reason) {
-    if (this.currentState === "finished" || this.currentState === "cancelled" || this.currentState === "replaced") return;
+    if (isTerminalAnimationState(this.currentState)) return;
     this.currentState = reason === "completed" ? "finished" : reason;
     const targetAnimations = animationsByTarget.get(this.targetKey);
     targetAnimations?.delete(this);
@@ -100,24 +145,30 @@ var NativeAnimationController = class extends AnimationController {
     this.control("setplaybackrate", value);
   }
   cancel() {
-    this.control("cancel");
+    if (isTerminalAnimationState(this.currentState)) return;
+    try {
+      this.control("cancel");
+    } catch (error) {
+      if (!isStaleNativeHandleError(error)) throw error;
+      this.settle("cancelled");
+    }
   }
   status() {
-    if (this.currentState === "finished" || this.currentState === "cancelled" || this.currentState === "replaced") {
-      return this.currentState;
-    }
+    if (isTerminalAnimationState(this.currentState)) return this.currentState;
     return this.control("status").state;
   }
 };
 var JsAnimationController = class extends AnimationController {
-  constructor(handle, targetKey2, node, property, frames, duration, iterations, direction, delay, playbackRate) {
-    super(handle, "js_batched", targetKey2);
+  constructor(handle, targetKey2, node, property, frames2, duration, iterations, direction, fill, underlyingValue, delay, playbackRate) {
+    super(handle, "js_batched", targetKey2, void 0, getAnimationPropertyCostClass(property));
     this.node = node;
     this.property = property;
-    this.frames = frames;
+    this.frames = frames2;
     this.duration = duration;
     this.iterations = iterations;
     this.direction = direction;
+    this.fill = fill;
+    this.underlyingValue = underlyingValue;
     this.dirty = true;
     this.originLocal = -delay;
     this.rate = playbackRate;
@@ -152,11 +203,23 @@ var JsAnimationController = class extends AnimationController {
     this.rate = value;
     if (this.currentState === "running") requestFallbackFrame();
   }
+  restore(reason) {
+    try {
+      const result = JSON.parse(native.ApplyNodePropertyBatch(JSON.stringify([
+        { node: this.node, property: this.property, value: this.underlyingValue }
+      ])));
+      if (!result.accepted || result.applied !== 1)
+        throw new Error(result.error || "Animation underlying value restore failed");
+    } catch (error) {
+      report(error);
+    }
+    this.settle(reason);
+  }
   cancel() {
-    this.settle("cancelled");
+    this.restore("cancelled");
   }
   replace() {
-    this.settle("replaced");
+    this.restore("replaced");
   }
   needsSample() {
     return this.currentState === "running" || this.dirty;
@@ -166,13 +229,16 @@ var JsAnimationController = class extends AnimationController {
     this.dirty = false;
     const local = this.localTime(now);
     const timing = iterationProgress(local, this.duration, this.iterations, this.direction);
+    const contributes = local >= 0 || this.fill === "backwards" || this.fill === "both";
+    if (timing.complete && this.fill !== "forwards" && this.fill !== "both")
+      return { value: this.underlyingValue, complete: true, contributes: true };
     let segment = 0;
     while (segment + 1 < this.frames.length - 1 && timing.progress >= this.frames[segment + 1].offset) ++segment;
     const from = this.frames[segment], to = this.frames[segment + 1];
     const span = to.offset - from.offset;
     const alpha = from.easing(Math.max(0, Math.min(1, (timing.progress - from.offset) / span)));
     const values = from.values.map((value, index) => value + (to.values[index] - value) * alpha);
-    return { value: from.serialize(values), complete: timing.complete };
+    return { value: from.serialize(values), complete: timing.complete, contributes };
   }
 };
 function requireFiniteNonNegative(value, name) {
@@ -188,6 +254,32 @@ function cubicCoordinate(t, p1, p2) {
   const u = 1 - t;
   return 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t;
 }
+function parseStepEasing(source) {
+  if (source === "step-start") return [1, 1];
+  if (source === "step-end") return [1, 0];
+  const match = source.match(/^steps\(\s*([1-9]\d*)\s*(?:,\s*(start|end|jump-start|jump-end|jump-none|jump-both)\s*)?\)$/);
+  if (!match) return void 0;
+  const count = Number(match[1]);
+  if (!Number.isSafeInteger(count) || count > 65535) return void 0;
+  const positions = {
+    start: 1,
+    end: 0,
+    "jump-start": 1,
+    "jump-end": 0,
+    "jump-none": 2,
+    "jump-both": 3
+  };
+  const position = positions[match[2] || "end"];
+  return position === 2 && count < 2 ? void 0 : [count, position];
+}
+function stepProgress(value, count, position) {
+  let current = Math.floor(Math.max(0, Math.min(1, value)) * count);
+  let jumps = count;
+  if (position === 1 || position === 3) ++current;
+  if (position === 2) --jumps;
+  else if (position === 3) ++jumps;
+  return Math.max(0, Math.min(jumps, current)) / jumps;
+}
 function easing(source = "linear") {
   const text = source.trim().toLowerCase();
   const presets = {
@@ -197,6 +289,8 @@ function easing(source = "linear") {
     "ease-in-out": [0.42, 0, 0.58, 1]
   };
   if (!text || text === "linear") return (value) => value;
+  const steps = parseStepEasing(text);
+  if (steps) return (value) => stepProgress(value, steps[0], steps[1]);
   const powerMatch = text.match(/^rml-power\((in|out|inout),\s*([0-9]+(?:\.[0-9]+)?)\)$/);
   if (powerMatch) {
     const mode = powerMatch[1];
@@ -297,7 +391,7 @@ function iterationProgress(local, duration, iterations, direction) {
   return { progress, complete };
 }
 function requestFallbackFrame() {
-  if (!disposed && !frameRequest && [...fallbackAnimations.values()].some((animation) => animation.needsSample()))
+  if (!disposed2 && !frameRequest && [...fallbackAnimations.values()].some((animation) => animation.needsSample()))
     frameRequest = requestAnimationFrame(flushFallbackFrame);
 }
 function flushFallbackFrame(timeMilliseconds) {
@@ -309,14 +403,29 @@ function flushFallbackFrame(timeMilliseconds) {
   for (const animation of fallbackAnimations.values()) {
     if (!animation.needsSample()) continue;
     const sample = animation.sample(currentClockSeconds);
-    sampled.push(animation);
-    updates.push({ node: animation.node, property: animation.property, value: sample.value });
+    if (sample.contributes) {
+      sampled.push(animation);
+      updates.push({ node: animation.node, property: animation.property, value: sample.value });
+    }
     if (sample.complete && animation.state === "running") completed.push(animation);
   }
   if (updates.length) {
     try {
-      const result = JSON.parse(native.ApplyNodePropertyBatch(JSON.stringify(updates)));
-      if (!result.accepted || result.applied !== updates.length) throw new Error(result.error || "Incomplete property batch");
+      let pendingAnimations = sampled;
+      let pendingUpdates = updates;
+      while (pendingUpdates.length) {
+        const result = JSON.parse(native.ApplyNodePropertyBatch(JSON.stringify(pendingUpdates)));
+        if (result.accepted && result.applied === pendingUpdates.length) break;
+        const failed = result.error === "stale_property_target" && Array.isArray(result.failedIndices) ? [...new Set(result.failedIndices)].sort((left, right) => left - right) : [];
+        if (!failed.length || failed.some((index) => !Number.isInteger(index) || index < 0 || index >= pendingUpdates.length))
+          throw new Error(result.error || "Incomplete property batch");
+        const stale = new Set(failed);
+        pendingAnimations.forEach((animation, index) => {
+          if (stale.has(index)) animation.settle("cancelled");
+        });
+        pendingAnimations = pendingAnimations.filter((_, index) => !stale.has(index));
+        pendingUpdates = pendingUpdates.filter((_, index) => !stale.has(index));
+      }
       for (const animation of completed) animation.settle("completed");
     } catch (error) {
       report(error);
@@ -372,7 +481,8 @@ var nativeAnimationEventDelegate = native.OnAnimationEventBatch ?? native.OnAnim
 function replaceForFallback(key) {
   const existing = [...animationsByTarget.get(key) ?? []];
   for (const animation of existing) {
-    animation.settle("replaced");
+    if (animation instanceof JsAnimationController) animation.replace();
+    else animation.settle("replaced");
     if (animation.route === "native") {
       try {
         native.ControlAnimation(animation.handle, "cancel", 0);
@@ -390,6 +500,24 @@ function trackTargetAnimation(key, animation) {
   }
   targetAnimations.add(animation);
 }
+var NATIVE_PROPERTY_DESCRIPTORS = {
+  opacity: { id: 1, costClass: "visual" },
+  transform: { id: 2, costClass: "visual" },
+  left: { id: 3, costClass: "layout-position" },
+  top: { id: 4, costClass: "layout-position" },
+  right: { id: 5, costClass: "layout-position" },
+  bottom: { id: 6, costClass: "layout-position" },
+  width: { id: 7, costClass: "layout-size" },
+  height: { id: 8, costClass: "layout-size" },
+  visibility: { id: 9, costClass: "visual-discrete" },
+  color: { id: 10, costClass: "paint" },
+  "background-color": { id: 11, costClass: "paint" },
+  "border-color": { id: 12, costClass: "paint" },
+  "image-color": { id: 13, costClass: "paint" }
+};
+function getAnimationPropertyCostClass(property) {
+  return NATIVE_PROPERTY_DESCRIPTORS[property.trim().toLowerCase()]?.costClass;
+}
 function compiledEasing(source = "linear") {
   const text = source.trim().toLowerCase();
   const presets = {
@@ -399,17 +527,35 @@ function compiledEasing(source = "linear") {
     "ease-in-out": [0.42, 0, 0.58, 1]
   };
   if (!text || text === "linear") return [0, 0, 0, 1, 1];
+  const steps = parseStepEasing(text);
+  if (steps) return [2, steps[0], steps[1], 0, 0];
   const match = text.match(/^cubic-bezier\(\s*([^,]+),\s*([^,]+),\s*([^,]+),\s*([^\)]+)\)$/);
   const points = presets[text] || (match ? match.slice(1).map(Number) : void 0);
   if (!points || points.some((value) => !Number.isFinite(value)) || points[0] < 0 || points[0] > 1 || points[2] < 0 || points[2] > 1) return void 0;
   return [1, ...points.map(Math.fround)];
 }
+function compiledColor(value) {
+  const text = String(value).trim().toLowerCase();
+  if (text === "transparent") return [0, 0, 0, 0];
+  const hex = text.match(/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i)?.[1];
+  if (hex) {
+    const expanded = hex.length <= 4 ? [...hex].map((char) => char + char).join("") : hex;
+    const channels2 = [0, 2, 4, 6].map((offset, index) => index === 3 && expanded.length === 6 ? 255 : Number.parseInt(expanded.slice(offset, offset + 2), 16));
+    return channels2.map((channel) => Math.fround(channel / 255));
+  }
+  const rgb = text.match(/^rgba?\(\s*([^,]+),\s*([^,]+),\s*([^,\)]+)(?:,\s*([^\)]+))?\)$/);
+  if (!rgb) return void 0;
+  const channels = [
+    Number(rgb[1]) / 255,
+    Number(rgb[2]) / 255,
+    Number(rgb[3]) / 255,
+    rgb[4] === void 0 ? 1 : Number(rgb[4])
+  ];
+  return channels.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 1) ? channels.map(Math.fround) : void 0;
+}
 function compiledTransform(value) {
   const text = String(value).trim().toLowerCase();
-  if (text === "none") return { values: [0, 0, 1, 1, 0], primitive: "none" };
-  const match = text.match(/^(scale|translate|rotate)\((.*)\)$/);
-  if (!match) return void 0;
-  const parts = match[2].split(",").map((part) => part.trim());
+  if (text === "none") return { values: [0, 0, 1, 1, 0, 0, 0], primitive: 0 };
   const finite = (source, suffix) => {
     let numberText = source;
     if (suffix) {
@@ -419,53 +565,107 @@ function compiledTransform(value) {
     const parsed = Number(numberText);
     return numberText && Number.isFinite(parsed) ? Math.fround(parsed) : void 0;
   };
-  if (match[1] === "scale" && (parts.length === 1 || parts.length === 2)) {
-    const x = finite(parts[0], ""), y = parts.length === 2 ? finite(parts[1], "") : x;
-    if (x === void 0 || y === void 0) return void 0;
-    return { values: [0, 0, x, y, 0], primitive: "scale" };
+  const values = [0, 0, 1, 1, 0, 0, 0];
+  let primitive = 0, cursor = 0;
+  const pattern = /\s*(scale|translate|rotate|skewx|skewy|skew|matrix)\(([^\(\)]*)\)/gy;
+  while (cursor < text.length) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(text);
+    if (!match || match.index !== cursor) return void 0;
+    const parts = match[2].split(",").map((part) => part.trim());
+    const bit = match[1] === "translate" ? 1 : match[1] === "scale" ? 2 : match[1] === "rotate" ? 4 : match[1] === "skewx" ? 8 : match[1] === "skewy" ? 16 : match[1] === "skew" ? 24 : 31;
+    if (primitive & bit) return void 0;
+    if (bit === 1 && parts.length === 2) {
+      const x = finite(parts[0], "px"), y = finite(parts[1], "px");
+      if (x === void 0 || y === void 0) return void 0;
+      values[0] = x;
+      values[1] = y;
+    } else if (bit === 2 && (parts.length === 1 || parts.length === 2)) {
+      const x = finite(parts[0], ""), y = parts.length === 2 ? finite(parts[1], "") : x;
+      if (x === void 0 || y === void 0) return void 0;
+      values[2] = x;
+      values[3] = y;
+    } else if (bit === 4 && parts.length === 1) {
+      const angle = finite(parts[0], "deg");
+      if (angle === void 0) return void 0;
+      values[4] = angle;
+    } else if ((bit === 8 || bit === 16 || bit === 24) && (parts.length === 1 || bit === 24 && parts.length === 2)) {
+      const x = finite(parts[0], "deg"), y = parts.length === 2 ? finite(parts[1], "deg") : 0;
+      if (x === void 0 || y === void 0) return void 0;
+      if (bit === 16) values[6] = x;
+      else {
+        values[5] = x;
+        values[6] = y;
+      }
+    } else if (bit === 31 && parts.length === 6) {
+      const matrix = parts.map((part) => finite(part, ""));
+      if (matrix.some((component) => component === void 0)) return void 0;
+      const [a, b, c, d, tx, ty] = matrix;
+      const scaleX = Math.hypot(a, b);
+      if (scaleX <= Number.EPSILON) return void 0;
+      values[0] = tx;
+      values[1] = ty;
+      values[2] = scaleX;
+      values[3] = (a * d - b * c) / scaleX;
+      values[4] = Math.atan2(b, a) * 180 / Math.PI;
+      values[5] = Math.atan((a * c + b * d) / (scaleX * scaleX)) * 180 / Math.PI;
+    } else return void 0;
+    primitive |= bit;
+    cursor = pattern.lastIndex;
   }
-  if (match[1] === "translate" && parts.length === 2) {
-    const x = finite(parts[0], "px"), y = finite(parts[1], "px");
-    if (x === void 0 || y === void 0) return void 0;
-    return { values: [x, y, 1, 1, 0], primitive: "translate" };
-  }
-  if (match[1] === "rotate" && parts.length === 1) {
-    const angle = finite(parts[0], "deg");
-    if (angle === void 0) return void 0;
-    return { values: [0, 0, 1, 1, angle], primitive: "rotate" };
-  }
-  return void 0;
+  return primitive ? { values, primitive } : void 0;
 }
 function compileNativePlan(request) {
   if (request.keyframes.length < 2 || request.keyframes.length > 4096) return void 0;
   const propertyText = request.property.trim().toLowerCase();
-  const property = propertyText === "opacity" ? 1 : propertyText === "transform" ? 2 : void 0;
-  if (!property) return void 0;
+  const descriptor = NATIVE_PROPERTY_DESCRIPTORS[propertyText];
+  if (!descriptor) return void 0;
+  const property = descriptor.id;
   const direction = ["normal", "reverse", "alternate", "alternate-reverse"].indexOf(request.nativeOptions.direction);
   if (direction < 0) return void 0;
-  let commonPrimitive = "none";
+  const fill = ["none", "forwards", "backwards", "both"].indexOf(request.nativeOptions.fill);
+  if (fill < 0) return void 0;
+  let commonPrimitive = 0;
   const keyframes = [];
   for (const frame of request.keyframes) {
     if (!Number.isFinite(frame.offset)) return void 0;
     const easingValues = compiledEasing(frame.easing);
     if (!easingValues) return void 0;
-    if (property === 1) {
-      const value = Number(frame.value);
-      if (!Number.isFinite(value) || value < 0 || value > 1) return void 0;
+    if (property !== 2 && property < 10) {
+      let value;
+      if (property === 1) {
+        value = Number(frame.value);
+        if (!Number.isFinite(value) || value < 0 || value > 1) return void 0;
+      } else if (property === 9) {
+        const visibility = String(frame.value).trim().toLowerCase();
+        if (visibility !== "visible" && visibility !== "hidden") return void 0;
+        value = visibility === "visible" ? 1 : 0;
+      } else {
+        const match = String(frame.value).trim().match(/^([+-]?(?:\d+(?:\.\d*)?|\.\d+))px$/i);
+        if (!match) return void 0;
+        value = Number(match[1]);
+        if (!Number.isFinite(value) || (property === 7 || property === 8) && value < 0) return void 0;
+      }
       keyframes.push({ offset: Math.fround(frame.offset), values: [Math.fround(value)], easing: easingValues });
-    } else {
+    } else if (property === 2) {
       const parsed = compiledTransform(frame.value);
       if (!parsed) return void 0;
-      if (parsed.primitive !== "none") {
-        if (commonPrimitive !== "none" && commonPrimitive !== parsed.primitive) return void 0;
+      if (parsed.primitive !== 0) {
+        if (commonPrimitive !== 0 && commonPrimitive !== parsed.primitive) return void 0;
         commonPrimitive = parsed.primitive;
       }
       keyframes.push({ offset: Math.fround(frame.offset), values: parsed.values, easing: easingValues });
+    } else {
+      const parsed = compiledColor(frame.value);
+      if (!parsed) return void 0;
+      keyframes.push({ offset: Math.fround(frame.offset), values: parsed, easing: easingValues });
     }
   }
   const plan = {
     property,
+    costClass: descriptor.costClass,
     direction,
+    fill,
     iterations: request.nativeOptions.iterations,
     duration: request.nativeOptions.duration,
     delay: request.nativeOptions.delay,
@@ -476,6 +676,7 @@ function compileNativePlan(request) {
   plan.key = JSON.stringify([
     property,
     direction,
+    fill,
     plan.iterations,
     plan.duration,
     plan.delay,
@@ -485,11 +686,11 @@ function compileNativePlan(request) {
   return plan;
 }
 function encodePlanBatch(plans) {
-  const byteLength = 12 + plans.reduce((sum, plan) => sum + 32 + plan.keyframes.length * (plan.property === 1 ? 28 : 44), 0);
+  const byteLength = 12 + plans.reduce((sum, plan) => sum + 40 + plan.keyframes.length * (plan.property === 2 ? 52 : plan.property >= 10 ? 40 : 28), 0);
   const buffer = new ArrayBuffer(byteLength);
   const view = new DataView(buffer);
   view.setUint32(0, 827343186, true);
-  view.setUint16(4, 1, true);
+  view.setUint16(4, 3, true);
   view.setUint32(8, plans.length, true);
   let offset = 12;
   for (const plan of plans) {
@@ -500,7 +701,8 @@ function encodePlanBatch(plans) {
     view.setFloat64(offset + 8, plan.duration, true);
     view.setFloat64(offset + 16, plan.delay, true);
     view.setFloat64(offset + 24, plan.playbackRate, true);
-    offset += 32;
+    view.setUint8(offset + 32, plan.fill);
+    offset += 40;
     for (const frame of plan.keyframes) {
       view.setFloat32(offset, frame.offset, true);
       offset += 4;
@@ -519,7 +721,7 @@ function encodePlanBatch(plans) {
   return buffer;
 }
 function compiledPlanEstimatedAllocatedBytes(plan) {
-  return plan.keyframes.length * (plan.property === 1 ? 140 : 156);
+  return plan.keyframes.length * (plan.property === 2 ? 164 : plan.property >= 10 ? 152 : 140);
 }
 function compiledPlanCacheLimits() {
   const entries = native.CompiledAnimationPlanCacheMaxEntries;
@@ -591,7 +793,7 @@ function encodeCompiledStarts(requests, handles) {
   return buffer;
 }
 function startAnimations(requests) {
-  if (disposed) throw new Error("Animation runtime has been disposed");
+  if (disposed2) throw new Error("Animation runtime has been disposed");
   if (!Array.isArray(requests) || !requests.length) return [];
   const compositionByKey = /* @__PURE__ */ new Map();
   const normalized = requests.map((request) => {
@@ -606,9 +808,11 @@ function startAnimations(requests) {
     requirePositive(playbackRate, "playbackRate");
     const direction = options.direction ?? "normal";
     if (!["normal", "reverse", "alternate", "alternate-reverse"].includes(direction)) throw new Error("Unsupported direction");
+    const fill = options.fill ?? "both";
+    if (!["none", "forwards", "backwards", "both"].includes(fill)) throw new Error("Unsupported animation fill mode");
     const composite = options.composite ?? "replace";
-    if ((options.fill ?? "both") !== "both" || composite !== "replace" && composite !== "layered-replace")
-      throw new Error("Unsupported animation fill or composite mode");
+    if (composite !== "replace" && composite !== "layered-replace")
+      throw new Error("Unsupported animation composite mode");
     const compositionOrder = options.compositionOrder;
     if (composite === "layered-replace" && !Number.isInteger(compositionOrder))
       throw new Error("layered-replace requires an integer compositionOrder");
@@ -635,7 +839,7 @@ function startAnimations(requests) {
         iterations,
         playbackRate,
         direction,
-        fill: "both",
+        fill,
         composite,
         ...compositionOrder === void 0 ? {} : { compositionOrder }
       }
@@ -674,7 +878,8 @@ function startAnimations(requests) {
           handle: registration.handles[index],
           allocatedBytes: registration.allocatedBytes?.[index] ?? compiledPlanEstimatedAllocatedBytes(plan),
           activeBindings: 0,
-          lastUsed: ++compiledPlanClock
+          lastUsed: ++compiledPlanClock,
+          costClass: plan.costClass
         };
         compiledPlanCache.set(plan.key, entry);
         compiledPlanCacheBytes += entry.allocatedBytes;
@@ -741,7 +946,13 @@ function startAnimations(requests) {
         const entry = compiledPlanCache.get(planKey);
         if (!entry) throw new Error("Compiled animation plan disappeared before binding");
       }
-      const animation = new NativeAnimationController(result.handles[index], "native", request.key, planKey);
+      const animation = new NativeAnimationController(
+        result.handles[index],
+        "native",
+        request.key,
+        planKey,
+        getAnimationPropertyCostClass(request.property)
+      );
       addNativeAnimation(animation);
       trackTargetAnimation(request.key, animation);
       return animation;
@@ -756,12 +967,16 @@ function startAnimations(requests) {
     "unsupported_easing"
   ].includes(result.error || ""))
     throw new Error(result.error || "Animation was rejected");
-  const fallback = normalized.map((request) => ({
-    request,
-    frames: fallbackFrames(request.keyframes)
-  }));
-  const animations2 = fallback.map(({ request, frames }) => {
+  const fallback = normalized.map((request) => {
     replaceForFallback(request.key);
+    return {
+      request,
+      frames: fallbackFrames(request.keyframes),
+      underlyingValue: native.GetComputedProperty(request.node, request.property)
+    };
+  });
+  const animations2 = fallback.map(({ request, frames: frames2, underlyingValue }) => {
+    if (!underlyingValue) throw new Error(`Could not capture underlying ${request.property} value`);
     const handle = `js:${++fallbackSequence}`;
     const options = request.nativeOptions;
     const animation = new JsAnimationController(
@@ -769,10 +984,12 @@ function startAnimations(requests) {
       request.key,
       request.node,
       request.property,
-      frames,
+      frames2,
       options.duration,
       options.iterations,
       options.direction,
+      options.fill,
+      underlyingValue,
       options.delay,
       options.playbackRate
     );
@@ -787,6 +1004,91 @@ if (nativeAnimationEventPackedDelegate)
   nativeAnimationEventPackedDelegate.Add(onNativeAnimationEventsPacked);
 else
   nativeAnimationEventDelegate.Add(onNativeAnimationEvents);
+
+// src/runtime.ts
+var nextTimer = 0;
+var clock = 0;
+var disposed3 = false;
+var pending = /* @__PURE__ */ new Map();
+var timers = /* @__PURE__ */ new Map();
+var frames = /* @__PURE__ */ new Map();
+function receive(json) {
+  const response = JSON.parse(json), request = pending.get(response.id);
+  if (!request) return;
+  pending.delete(response.id);
+  if (!response.success) request.reject(new Error(response.payload));
+  else {
+    try {
+      request.resolve(JSON.parse(response.payload));
+    } catch (error) {
+      request.reject(error);
+    }
+  }
+}
+function schedule(callback, delay = 0, repeat = false) {
+  const id = ++nextTimer;
+  if (!disposed3) timers.set(id, { due: clock + Math.max(0, delay), period: repeat ? Math.max(1, delay) : 0, callback });
+  publishSchedule();
+  return id;
+}
+function publishSchedule() {
+  if (disposed3) return;
+  let delay = -1;
+  for (const timer of timers.values()) {
+    const candidate = Math.max(0, timer.due - clock);
+    if (delay < 0 || candidate < delay) delay = candidate;
+  }
+  native.SetWakeSchedule(delay, frames.size > 0);
+}
+Object.assign(globalThis, {
+  setTimeout: (callback, delay = 0) => schedule(callback, delay),
+  setInterval: (callback, delay = 0) => schedule(callback, delay, true),
+  clearTimeout: (id) => {
+    timers.delete(id);
+    publishSchedule();
+  },
+  clearInterval: (id) => {
+    timers.delete(id);
+    publishSchedule();
+  },
+  requestAnimationFrame: (callback) => {
+    const id = ++nextTimer;
+    frames.set(id, callback);
+    publishSchedule();
+    return id;
+  },
+  cancelAnimationFrame: (id) => {
+    frames.delete(id);
+    publishSchedule();
+  }
+});
+function advance(delta) {
+  clock += Math.max(0, delta) * 1e3;
+  const ready2 = [...timers].filter(([, timer]) => timer.due <= clock).slice(0, 100);
+  for (const [id, timer] of ready2) {
+    if (!timers.has(id)) continue;
+    if (timer.period) timer.due = clock + timer.period;
+    else timers.delete(id);
+    try {
+      timer.callback();
+    } catch (error) {
+      report(error);
+    }
+  }
+  const callbacks = [...frames.values()];
+  frames.clear();
+  for (const callback of callbacks) {
+    try {
+      callback(clock);
+    } catch (error) {
+      report(error);
+    }
+  }
+  publishSchedule();
+}
+native.OnHostResponse.Add(receive);
+native.OnFrame.Add(advance);
+publishSchedule();
 
 // src/animation-adapters.ts
 var RML_ANIMATION_ADAPTER_VERSIONS = Object.freeze({
@@ -833,9 +1135,14 @@ var transformAliases = /* @__PURE__ */ new Set([
   "y",
   "translatex",
   "translatey",
+  "xpercent",
+  "ypercent",
   "scale",
   "rotate",
-  "rotation"
+  "rotation",
+  "skew",
+  "skewx",
+  "skewy"
 ]);
 var unitlessProperties = /* @__PURE__ */ new Set(["opacity", "z-index", "font-weight", "flex-grow", "flex-shrink"]);
 function fail(library, code, message) {
@@ -863,7 +1170,7 @@ function captureAnimationHostSnapshot(targets, properties, includeMetrics = fals
 }
 function adapterSnapshot(library, targets, properties) {
   try {
-    return captureAnimationHostSnapshot(targets, properties);
+    return captureAnimationHostSnapshot(targets, properties, true);
   } catch (error) {
     return fail(library, "host_snapshot_failed", error instanceof Error ? error.message : String(error));
   }
@@ -924,8 +1231,10 @@ function transformValue(library, sourceName, value) {
   const text = String(value).trim();
   if (name === "scale") return `scale(${text})`;
   if (name === "rotate" || name === "rotation") return `rotate(${typeof value === "number" ? `${value}deg` : text})`;
-  if (name === "x" || name === "translatex") return `translate(${typeof value === "number" ? `${value}px` : text},0px)`;
-  if (name === "y" || name === "translatey") return `translate(0px,${typeof value === "number" ? `${value}px` : text})`;
+  if (name === "skew" || name === "skewx") return `skewX(${typeof value === "number" ? `${value}deg` : text})`;
+  if (name === "skewy") return `skewY(${typeof value === "number" ? `${value}deg` : text})`;
+  if (name === "x" || name === "translatex" || name === "xpercent") return `translate(${typeof value === "number" ? `${value}px` : text},0px)`;
+  if (name === "y" || name === "translatey" || name === "ypercent") return `translate(0px,${typeof value === "number" ? `${value}px` : text})`;
   return fail(library, "unsupported_transform", `Unsupported transform alias ${sourceName}`);
 }
 function transformBaseValue(library, sourceName, computed) {
@@ -933,14 +1242,14 @@ function transformBaseValue(library, sourceName, computed) {
   const text = (computed || "").trim().toLowerCase();
   if (!text || text === "none") {
     if (name === "scale") return 1;
-    if (name === "rotate" || name === "rotation") return "0deg";
+    if (name === "rotate" || name === "rotation" || name.startsWith("skew")) return "0deg";
     return "0px";
   }
   if (name === "scale") {
     const match = text.match(/^scale\(\s*([^,)]+)\s*\)$/);
     if (match) return match[1];
-  } else if (name === "rotate" || name === "rotation") {
-    const match = text.match(/^rotate\(\s*([^)]+)\s*\)$/);
+  } else if (name === "rotate" || name === "rotation" || name.startsWith("skew")) {
+    const match = text.match(/^(?:rotate|skewx|skewy)\(\s*([^)]+)\s*\)$/);
     if (match) return match[1];
   } else {
     const match = text.match(/^translate\(\s*([^,]+)\s*,\s*([^)]+)\s*\)$/);
@@ -967,9 +1276,9 @@ function sourceTrackFrames(library, sourceName, sourceFrames, defaultEasing, ini
       fail(library, "missing_initial_value", `No computed value is available for ${property}`);
     previous = isTransform ? transformBaseValue(library, sourceName, initialValue) : scalar(library, sourceName, initialValue);
   }
-  const frames = [];
+  const frames2 = [];
   if (sourceFrames[0].offset > 0) {
-    frames.push({
+    frames2.push({
       offset: 0,
       value: isTransform ? transformValue(library, sourceName, previous) : cssValue(property, previous)
     });
@@ -987,19 +1296,19 @@ function sourceTrackFrames(library, sourceName, sourceFrames, defaultEasing, ini
       offset: sourceFrame.offset,
       value: isTransform ? transformValue(library, sourceName, resolved) : cssValue(property, resolved)
     };
-    if (frames.length) frames[frames.length - 1].easing = sourceFrame.easing || defaultEasing;
-    frames.push(frame);
+    if (frames2.length) frames2[frames2.length - 1].easing = sourceFrame.easing || defaultEasing;
+    frames2.push(frame);
     previous = resolved;
   }
-  if (frames.length < 2) fail(library, "missing_keyframes", `${sourceName} requires at least two resolved keyframes`);
-  return frames;
+  if (frames2.length < 2) fail(library, "missing_keyframes", `${sourceName} requires at least two resolved keyframes`);
+  return frames2;
 }
 function normalizePowerEasing(library, source, fallback) {
   if (source === void 0 || source === null || source === "") source = fallback;
   if (typeof source !== "string") fail(library, "unsupported_easing", "Function and object easings require the JS callback route");
   const text = source.trim();
   const lower = text.toLowerCase();
-  if (["linear", "none", "ease", "ease-in", "ease-out", "ease-in-out"].includes(lower) || lower.startsWith("cubic-bezier("))
+  if (["linear", "none", "ease", "ease-in", "ease-out", "ease-in-out", "step-start", "step-end"].includes(lower) || lower.startsWith("cubic-bezier(") || lower.startsWith("steps("))
     return lower === "none" ? "linear" : lower;
   const anime = lower.match(/^(in|out|inout)\(\s*([1-9](?:\.\d+)?)\s*\)$/);
   if (anime) return `rml-power(${anime[1]},${anime[2]})`;
@@ -1015,8 +1324,60 @@ function normalizePowerEasing(library, source, fallback) {
 function validateSourceRequest(request) {
   const { library, tracks } = request;
   const transforms = tracks.filter((track) => transformAliases.has(track.sourceName.toLowerCase()));
-  if (transforms.length > 1) fail(library, "unsupported_transform_composition", "Multiple transform primitives require transform composition");
+  const components = /* @__PURE__ */ new Set();
+  for (const track of transforms) {
+    const name = track.sourceName.toLowerCase();
+    const component = name === "x" || name === "translatex" || name === "xpercent" ? "x" : name === "y" || name === "translatey" || name === "ypercent" ? "y" : name === "rotation" ? "rotate" : name === "skew" ? "skewx" : name;
+    if (components.has(component))
+      fail(library, "unsupported_transform_composition", `Transform component ${component} is specified more than once`);
+    components.add(component);
+  }
   if (!tracks.length) fail(library, "missing_properties", "No animatable properties were provided");
+}
+function composeTransformFrames(library, tracks) {
+  const reference = tracks[0].frames;
+  if (tracks.some((track) => track.frames.length !== reference.length || track.frames.some((frame, index) => frame.offset !== reference[index].offset || (frame.easing || "") !== (reference[index].easing || ""))))
+    fail(
+      library,
+      "unsupported_transform_timing_composition",
+      "Transform components require identical keyframe offsets and easing"
+    );
+  return reference.map((frame, index) => {
+    let x = "0px", y = "0px", scaleX = "1", scaleY = "1", rotation = "0deg", skewX = "0deg", skewY = "0deg";
+    for (const track of tracks) {
+      const name = track.sourceName.toLowerCase();
+      const value = String(track.frames[index].value).trim();
+      if (name === "x" || name === "translatex") {
+        const match = value.match(/^translate\(([^,]+),\s*0px\)$/);
+        if (!match) fail(library, "unsupported_transform_composition", `Cannot compose ${track.sourceName}`);
+        x = match[1];
+      } else if (name === "y" || name === "translatey") {
+        const match = value.match(/^translate\(0px,\s*([^\)]+)\)$/);
+        if (!match) fail(library, "unsupported_transform_composition", `Cannot compose ${track.sourceName}`);
+        y = match[1];
+      } else if (name === "scale") {
+        const match = value.match(/^scale\(([^,\)]+)(?:,\s*([^\)]+))?\)$/);
+        if (!match) fail(library, "unsupported_transform_composition", "Cannot compose scale");
+        scaleX = match[1];
+        scaleY = match[2] || match[1];
+      } else if (name === "rotate" || name === "rotation") {
+        const match = value.match(/^rotate\(([^\)]+)\)$/);
+        if (!match) fail(library, "unsupported_transform_composition", `Cannot compose ${track.sourceName}`);
+        rotation = match[1];
+      } else {
+        const match = value.match(/^skew([XY])\(([^\)]+)\)$/i);
+        if (!match) fail(library, "unsupported_transform_composition", `Cannot compose ${track.sourceName}`);
+        if (match[1].toLowerCase() === "x") skewX = match[2];
+        else skewY = match[2];
+      }
+    }
+    const hasSkew = tracks.some((track) => track.sourceName.toLowerCase().startsWith("skew"));
+    return {
+      offset: frame.offset,
+      value: `translate(${x},${y}) scale(${scaleX},${scaleY}) rotate(${rotation})${hasSkew ? ` skew(${skewX},${skewY})` : ""}`,
+      ...frame.easing ? { easing: frame.easing } : {}
+    };
+  });
 }
 function requiredSourceProperties(tracks) {
   return tracks.filter((track) => track.frames[0]?.offset > 0 || isRelativeValue(track.frames[0]?.value) || track.frames.some((frame) => frame.value === currentSourceValue)).map((track) => normalizedProperty(track.sourceName));
@@ -1035,7 +1396,42 @@ function compileSourceRequestForNodes(request, nodes, resolvedValues) {
   for (let targetIndex = 0; targetIndex < nodes.length; ++targetIndex) {
     const target = nodes[targetIndex];
     const staggerDelay = sourceStaggerDelay(request, targetIndex, nodes.length);
-    for (const track of tracks) {
+    const transformTracks = tracks.filter((track) => transformAliases.has(track.sourceName.toLowerCase())).map((track) => {
+      const name = track.sourceName.toLowerCase();
+      if (name !== "xpercent" && name !== "ypercent") return track;
+      const extent = name === "xpercent" ? target.metrics?.width : target.metrics?.height;
+      if (!Number.isFinite(extent)) fail(library, "missing_target_metrics", `${track.sourceName} requires target dimensions`);
+      return {
+        sourceName: name === "xpercent" ? "x" : "y",
+        frames: track.frames.map((frame) => {
+          const percent = typeof frame.value === "number" ? frame.value : Number(String(frame.value).replace(/%$/, ""));
+          if (!Number.isFinite(percent)) fail(library, "unsupported_percentage_transform", `${track.sourceName} requires numeric percentages`);
+          return { ...frame, value: percent * extent / 100 };
+        })
+      };
+    });
+    const regularTracks = tracks.filter((track) => !transformAliases.has(track.sourceName.toLowerCase()));
+    const compiledTransforms = transformTracks.map((track) => ({
+      sourceName: track.sourceName,
+      frames: sourceTrackFrames(
+        library,
+        track.sourceName,
+        track.frames,
+        defaultEasing,
+        resolvedValues?.get(`${target.node}:transform`) ?? target.properties.transform
+      )
+    }));
+    if (compiledTransforms.length) {
+      const keyframes = compiledTransforms.length === 1 ? compiledTransforms[0].frames : composeTransformFrames(library, compiledTransforms);
+      plans.push({
+        node: target.node,
+        property: "transform",
+        keyframes,
+        options: staggerDelay ? { ...options, delay: (options.delay ?? 0) + staggerDelay } : options
+      });
+      if (resolvedValues) resolvedValues.set(`${target.node}:transform`, String(keyframes[keyframes.length - 1].value));
+    }
+    for (const track of regularTracks) {
       const property = normalizedProperty(track.sourceName);
       const targetProperty = `${target.node}:${property}`;
       const keyframes = sourceTrackFrames(
@@ -1241,13 +1637,13 @@ function canonicalizeExactPowerEasings(library, plan) {
   return { ...plan, keyframes };
 }
 function sampleTimelinePlan(library, plan, normalized) {
-  const frames = plan.keyframes;
-  if (normalized <= 0) return frames[0].value;
-  if (normalized >= 1) return frames[frames.length - 1].value;
+  const frames2 = plan.keyframes;
+  if (normalized <= 0) return frames2[0].value;
+  if (normalized >= 1) return frames2[frames2.length - 1].value;
   let index = 0;
-  while (index + 1 < frames.length - 1 && normalized >= frames[index + 1].offset) ++index;
-  const left = frames[index];
-  const right = frames[index + 1];
+  while (index + 1 < frames2.length - 1 && normalized >= frames2[index + 1].offset) ++index;
+  const left = frames2[index];
+  const right = frames2[index + 1];
   const span = right.offset - left.offset;
   if (span <= 0) return right.value;
   const alpha = (normalized - left.offset) / span;
@@ -1646,6 +2042,16 @@ function instantSourceRequest(library, targets, properties, metadata) {
     defaultEasing: "linear"
   };
 }
+function buildPlans(library, targets, properties, options, easing2, stagger) {
+  return compileAnimationSourceRequest({
+    library,
+    targets,
+    tracks: propertyTracks(library, properties),
+    options,
+    defaultEasing: easing2,
+    stagger
+  });
+}
 function percentageKeyframeTracks(library, input, easingFallback) {
   const tracks = /* @__PURE__ */ new Map();
   const seenOffsets = /* @__PURE__ */ new Set();
@@ -1669,19 +2075,19 @@ function percentageKeyframeTracks(library, input, easingFallback) {
       if (sourceName === "ease") continue;
       if (["duration", "delay", "modifier", "composition"].includes(sourceName))
         fail(library, "unsupported_keyframe_timing", `${sourceName} is not valid in percentage keyframes`);
-      let frames = tracks.get(sourceName);
-      if (!frames) {
-        frames = [];
-        tracks.set(sourceName, frames);
+      let frames2 = tracks.get(sourceName);
+      if (!frames2) {
+        frames2 = [];
+        tracks.set(sourceName, frames2);
       }
-      frames.push({ offset: entry.offset, value, easing: easing2 });
+      frames2.push({ offset: entry.offset, value, easing: easing2 });
     }
   }
-  for (const [sourceName, frames] of tracks) {
-    if (frames[frames.length - 1]?.offset !== 1)
+  for (const [sourceName, frames2] of tracks) {
+    if (frames2[frames2.length - 1]?.offset !== 1)
       fail(library, "incomplete_keyframes", `${sourceName} must have a value at 100%`);
   }
-  return [...tracks].map(([sourceName, frames]) => ({ sourceName, frames }));
+  return [...tracks].map(([sourceName, frames2]) => ({ sourceName, frames: frames2 }));
 }
 function sequentialKeyframeTracks(library, segments) {
   const sourceNames = [...new Set(segments.flatMap((segment) => Object.keys(segment.properties)))];
@@ -1691,20 +2097,20 @@ function sequentialKeyframeTracks(library, segments) {
     fail(library, "invalid_timing", "Sequential keyframes require a positive total duration");
   const tracks = sourceNames.map((sourceName) => {
     let elapsed = 0;
-    const frames = [{ offset: 0, value: currentSourceValue }];
+    const frames2 = [{ offset: 0, value: currentSourceValue }];
     for (const segment of segments) {
       if (segment.delay > 0) {
         elapsed += segment.delay;
-        frames.push({ offset: elapsed / duration, value: currentSourceValue });
+        frames2.push({ offset: elapsed / duration, value: currentSourceValue });
       }
       elapsed += segment.duration;
-      frames.push({
+      frames2.push({
         offset: elapsed / duration,
         value: Object.prototype.hasOwnProperty.call(segment.properties, sourceName) ? segment.properties[sourceName] : currentSourceValue,
         easing: segment.easing
       });
     }
-    return { sourceName, frames };
+    return { sourceName, frames: frames2 };
   });
   return { tracks, duration };
 }
@@ -1756,6 +2162,28 @@ function gsapKeyframeTracks(library, input, varsEase) {
 function runPlans(library, plans, onComplete, onInterrupt) {
   const animations2 = startAnimations(plans.map((plan) => canonicalizeExactPowerEasings(library, plan)));
   return new AnimationGroup(animations2, onComplete, onInterrupt);
+}
+function adaptAnimationJs(input) {
+  const library = "animationjs@0.5.0";
+  if (typeof input.draw === "function" || input.onFrame) fail(library, "unsupported_callback", "draw functions and onFrame require per-frame JS callbacks");
+  if (input.loop === true) fail(library, "unsupported_infinite_loop", "Infinite loops are not supported");
+  const direction = input.dir ?? "normal";
+  const requestedLoops = typeof input.loop === "number" && input.loop > 0 ? Math.floor(input.loop) : 1;
+  const iterations = direction === "alternate" ? requestedLoops * 2 : requestedLoops;
+  if ((input.pause ?? 0) !== 0 && iterations > 1) fail(library, "unsupported_loop_delay", "Pause between loops is not represented by the current IR");
+  const easing2 = normalizePowerEasing(library, input.ease, "linear");
+  const durationMilliseconds = finiteNumber(library, "dur", input.dur, 1e3);
+  const delayMilliseconds = finiteNumber(library, "defer", input.defer, 0);
+  const options = {
+    duration: Math.max(1, durationMilliseconds) / 1e3,
+    delay: delayMilliseconds / 1e3,
+    iterations,
+    direction,
+    fill: "both",
+    composite: "replace",
+    fallback: "js-batched"
+  };
+  return runPlans(library, buildPlans(library, input.el, input.draw, options, easing2, input.stagger), input.onDone);
 }
 var animeMetadata = /* @__PURE__ */ new Set([
   "id",
@@ -2051,7 +2479,8 @@ var gsapMetadata = /* @__PURE__ */ new Set([
   "onUpdateParams",
   "defaults",
   "parent",
-  "scrollTrigger"
+  "scrollTrigger",
+  "autoAlpha"
 ]);
 function gsapSequentialKeyframeTracks(library, input, requestedDuration, playbackEase) {
   if (!input.length) fail(library, "missing_keyframes", "The sequential keyframes array is empty");
@@ -2102,7 +2531,6 @@ function gsapSourceRequest(targets, from, vars) {
     if (vars[callbackParams] !== void 0) fail(library, "unsupported_callback_params", `${callbackParams} cannot be preserved`);
   }
   if (vars.overwrite === false) fail(library, "unsupported_overwrite", "The runtime currently owns each target/property with replace semantics");
-  if (vars.autoAlpha !== void 0) fail(library, "unsupported_auto_alpha", "autoAlpha also changes visibility and needs a compound effect");
   if (vars.repeat === -1 || vars.repeat === Infinity) fail(library, "unsupported_infinite_loop", "Infinite repeats are not supported");
   const repeats = Math.max(0, Math.floor(vars.repeat ?? 0));
   if ((vars.repeatDelay ?? 0) !== 0 && repeats > 0) fail(library, "unsupported_loop_delay", "repeatDelay is not represented by the current IR");
@@ -2120,6 +2548,18 @@ function gsapSourceRequest(targets, from, vars) {
     fallback: "js-batched"
   };
   const toProperties = Object.fromEntries(Object.entries(vars).filter(([name]) => !gsapMetadata.has(name)));
+  if (vars.autoAlpha !== void 0) {
+    if (typeof vars.autoAlpha !== "number" || !Number.isFinite(vars.autoAlpha) || vars.autoAlpha < 0 || vars.autoAlpha > 1)
+      fail(library, "invalid_auto_alpha", "autoAlpha must be a number within 0..1");
+    toProperties.opacity = vars.autoAlpha;
+    toProperties.visibility = vars.autoAlpha === 0 ? "hidden" : "visible";
+    if (from?.autoAlpha !== void 0) {
+      const source = Number(from.autoAlpha);
+      if (!Number.isFinite(source) || source < 0 || source > 1)
+        fail(library, "invalid_auto_alpha", "from autoAlpha must be a number within 0..1");
+      from = { ...from, opacity: source, visibility: source === 0 ? "hidden" : "visible" };
+    }
+  }
   const stagger = normalizeGsapStagger(library, vars.stagger);
   if (vars.keyframes !== void 0) {
     if (from) fail(library, "unsupported_keyframes_from_to", "GSAP fromTo cannot be combined with keyframes");
@@ -2258,6 +2698,91 @@ var animeTimelineGroup = adaptAnimeTimeline([
   },
   { targets: ".stagger-target", position: "<<+=12.5", params: { scale: 1, duration: 50, ease: "linear" } }
 ]);
+var officialSnapshot = captureAnimationHostSnapshot(
+  ["#official-field", "#official-ball"],
+  [],
+  true
+);
+var officialField = officialSnapshot.nodes.find(
+  (node) => node.node === officialSnapshot.targetGroups[0][0]
+)?.metrics;
+var officialBall = officialSnapshot.nodes.find(
+  (node) => node.node === officialSnapshot.targetGroups[1][0]
+)?.metrics;
+if (!officialField || !officialBall) throw new Error("Animation.js official fixture metrics are unavailable");
+var officialTravelX = (officialField.clientWidth || officialField.width) - (officialBall.clientWidth || officialBall.width);
+var officialTravelY = (officialField.clientHeight || officialField.height) - (officialBall.clientHeight || officialBall.height);
+var officialGaps = [];
+function expectOfficialGap(name, callback) {
+  try {
+    callback();
+    officialGaps.push({ case: name, code: "unexpected_support" });
+  } catch (error) {
+    officialGaps.push({
+      case: name,
+      code: error instanceof RmlAnimationAdapterError ? error.code : "unexpected_error"
+    });
+  }
+}
+expectOfficialGap("readme-infinite-loop", () => {
+  adaptAnimationJs({
+    el: "#official-ball",
+    draw: { left: [0, officialTravelX] },
+    dur: 2e3,
+    ease: "easeOutQuad",
+    loop: true
+  });
+});
+expectOfficialGap("readme-bounce", () => {
+  adaptAnimationJs({
+    el: "#official-ball",
+    draw: { top: [0, officialTravelY] },
+    dur: 2e3,
+    ease: "easeOutBounce",
+    loop: 1
+  });
+});
+var officialGroups = [
+  adaptAnimationJs({
+    el: "#official-ball",
+    draw: { left: [0, officialTravelX] },
+    dur: 2e3,
+    ease: "easeOutQuad",
+    loop: 2,
+    dir: "alternate"
+  }),
+  adaptAnimationJs({
+    el: "#official-ball",
+    draw: { rotate: [0, 360] },
+    dur: 1200,
+    loop: 2
+  }),
+  adaptAnimationJs({
+    el: "#official-fade",
+    draw: { opacity: [0, 1] },
+    dur: 300,
+    ease: "linear"
+  }),
+  adaptAnimationJs({
+    el: "#official-slide",
+    draw: { left: [-100, 0], opacity: [0, 1] },
+    dur: 300,
+    ease: "linear"
+  }),
+  adaptAnimationJs({
+    el: "#official-zoom",
+    draw: { scale: [3, 1], opacity: [0, 1] },
+    dur: 300,
+    ease: "linear"
+  }),
+  adaptAnimationJs({
+    el: "#official-effect",
+    draw: { scale: [3, 1], rotate: [180, 0], opacity: [0, 1] },
+    dur: 300,
+    ease: "linear"
+  })
+];
+var officialAnimations = officialGroups.flatMap((group) => group.animations);
 var animations = [
   ...keyframeGroup.animations,
   ...staggerGroup.animations,
@@ -2269,6 +2794,15 @@ native.ReportDebugState(JSON.stringify({
   animationCount: animations.length,
   handles: animations.map((animation) => animation.handle),
   routes: animations.map((animation) => animation.route),
-  states: animations.map((animation) => animation.state)
+  states: animations.map((animation) => animation.state),
+  official: {
+    source: "https://github.com/olton/animation/tree/d1506c290b488aa42d91fa2e26bea5ab3d5f3805",
+    travel: { x: officialTravelX, y: officialTravelY },
+    animationCount: officialAnimations.length,
+    handles: officialAnimations.map((animation) => animation.handle),
+    nativeHandles: officialAnimations.filter((animation) => animation.route === "native").map((animation) => animation.handle),
+    routes: officialAnimations.map((animation) => animation.route),
+    gaps: officialGaps
+  }
 }));
 native.ReportReady();

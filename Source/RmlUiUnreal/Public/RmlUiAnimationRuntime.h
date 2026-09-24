@@ -8,8 +8,42 @@ enum class ERmlUiAnimatedProperty : uint8
 {
     None = 0,
     Opacity = 1,
-    Transform2D = 2
+    Transform2D = 2,
+    LeftPx = 3,
+    TopPx = 4,
+    RightPx = 5,
+    BottomPx = 6,
+    WidthPx = 7,
+    HeightPx = 8,
+    Visibility = 9,
+    Color = 10,
+    BackgroundColor = 11,
+    BorderColor = 12,
+    ImageColor = 13
 };
+
+enum class ERmlUiAnimationCostClass : uint8
+{
+    Unknown = 0,
+    Visual = 1,
+    LayoutPosition = 2,
+    LayoutSize = 3,
+    VisualDiscrete = 4,
+    Paint = 5
+};
+
+struct FRmlUiAnimationViewActivity
+{
+    int32 Total = 0;
+    int32 Visual = 0;
+    int32 LayoutPosition = 0;
+    int32 LayoutSize = 0;
+    int32 VisualDiscrete = 0;
+    int32 Paint = 0;
+};
+
+RMLUIUNREAL_API ERmlUiAnimationCostClass GetRmlUiAnimationCostClass(
+    ERmlUiAnimatedProperty Property);
 
 enum class ERmlUiAnimationCompletionReason : uint8
 {
@@ -24,6 +58,16 @@ enum class ERmlUiAnimationDirection : uint8
     Reverse,
     Alternate,
     AlternateReverse
+};
+
+enum class ERmlUiAnimationFillMode : uint8
+{
+    // Controls keyframe contribution outside the active interval. Cancellation
+    // and replacement always restore the captured underlying property value.
+    None,
+    Forwards,
+    Backwards,
+    Both
 };
 
 struct FRmlUiAnimationHandle
@@ -99,12 +143,22 @@ struct FRmlUiFloatAnimationDesc
     uint64 BindingId = 0;
     double PlaybackRate = 1.0;
     ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
+    ERmlUiAnimationFillMode Fill = ERmlUiAnimationFillMode::Both;
 };
 
 enum class ERmlUiAnimationEasingType : uint8
 {
     Linear,
-    CubicBezier
+    CubicBezier,
+    Steps
+};
+
+enum class ERmlUiAnimationStepPosition : uint8
+{
+    JumpEnd,
+    JumpStart,
+    JumpNone,
+    JumpBoth
 };
 
 struct FRmlUiAnimationEasing
@@ -114,6 +168,8 @@ struct FRmlUiAnimationEasing
     float Y1 = 0.0f;
     float X2 = 1.0f;
     float Y2 = 1.0f;
+    int32 StepCount = 1;
+    ERmlUiAnimationStepPosition StepPosition = ERmlUiAnimationStepPosition::JumpEnd;
 };
 
 struct FRmlUiFloatAnimationKeyframe
@@ -134,6 +190,7 @@ struct FRmlUiFloatAnimationDefinition
     int32 Iterations = 1;
     double PlaybackRate = 1.0;
     ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
+    ERmlUiAnimationFillMode Fill = ERmlUiAnimationFillMode::Both;
     // When present, Keyframes replace From/To. Easing belongs to the segment starting here.
     TArray<FRmlUiFloatAnimationKeyframe> Keyframes;
 };
@@ -145,6 +202,36 @@ struct FRmlUiTransform2D
     float ScaleX = 1.0f;
     float ScaleY = 1.0f;
     float RotationDegrees = 0.0f;
+    float SkewXDegrees = 0.0f;
+    float SkewYDegrees = 0.0f;
+};
+
+struct FRmlUiColor
+{
+    float Red = 0.0f;
+    float Green = 0.0f;
+    float Blue = 0.0f;
+    float Alpha = 1.0f;
+};
+
+struct FRmlUiColorAnimationKeyframe
+{
+    float Offset = 0.0f;
+    FRmlUiColor Value;
+    FRmlUiAnimationEasing EasingToNext;
+};
+
+struct FRmlUiColorAnimationDefinition
+{
+    FRmlUiColor From;
+    FRmlUiColor To;
+    double DurationSeconds = 0.2;
+    double DelaySeconds = 0.0;
+    int32 Iterations = 1;
+    double PlaybackRate = 1.0;
+    ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
+    ERmlUiAnimationFillMode Fill = ERmlUiAnimationFillMode::Both;
+    TArray<FRmlUiColorAnimationKeyframe> Keyframes;
 };
 
 struct FRmlUiTransform2DAnimationDesc
@@ -157,6 +244,7 @@ struct FRmlUiTransform2DAnimationDesc
     uint64 BindingId = 0;
     double PlaybackRate = 1.0;
     ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
+    ERmlUiAnimationFillMode Fill = ERmlUiAnimationFillMode::Both;
 };
 
 struct FRmlUiTransform2DAnimationKeyframe
@@ -175,6 +263,7 @@ struct FRmlUiTransform2DAnimationDefinition
     int32 Iterations = 1;
     double PlaybackRate = 1.0;
     ERmlUiAnimationDirection Direction = ERmlUiAnimationDirection::Normal;
+    ERmlUiAnimationFillMode Fill = ERmlUiAnimationFillMode::Both;
     TArray<FRmlUiTransform2DAnimationKeyframe> Keyframes;
 };
 
@@ -183,7 +272,7 @@ struct FRmlUiAnimationCommitUpdate
     RmlUE_View* View = nullptr;
     uint32 Node = 0;
     ERmlUiAnimatedProperty Property = ERmlUiAnimatedProperty::None;
-    float Values[5] = {};
+    float Values[7] = {};
     bool bFinal = false;
     uint64 Target = 0;
 };
@@ -222,6 +311,9 @@ public:
         const FRmlUiFloatAnimationDefinition& Definition);
     FRmlUiAnimationDefinitionHandle RegisterTransform2DDefinition(
         const FRmlUiTransform2DAnimationDefinition& Definition);
+    FRmlUiAnimationDefinitionHandle RegisterColorDefinition(
+        ERmlUiAnimatedProperty Property,
+        const FRmlUiColorAnimationDefinition& Definition);
     bool ReleaseDefinition(FRmlUiAnimationDefinitionHandle Handle);
 
     FRmlUiAnimationBindingHandle BindCallback(
@@ -287,6 +379,7 @@ public:
     bool IsAdvancing() const;
 
     int32 GetActiveAnimationCount() const;
+    FRmlUiAnimationViewActivity GetViewActivity(RmlUE_View* View) const;
     bool HasActiveAnimations(RmlUE_View* View) const;
     double GetNextWakeDelaySeconds(RmlUE_View* View) const;
     int32 GetDefinitionCount() const;
