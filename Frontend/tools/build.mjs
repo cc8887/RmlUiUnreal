@@ -24,7 +24,7 @@ export function validateCss(css, filename, options = {}) {
 export async function buildFrontend({ entryPoint, outputRoot, mirrorRoot, activate = true,
   profile = 'dx11-compat', mode = 'strict', allowDegrade = [], requiredFeatures = [],
   tailwindContentFile, tailwindTheme, rewriteUnicodeProperties = false,
-  requiredMotionRule = () => false, dependencyRoots = [], iconNames = [], iconDirectory,
+  requiredMotionRule = () => false, transformStyle, dependencyRoots = [], iconNames = [], iconDirectory,
   fontFiles = [], fontDirectory, assetFiles = [],
 } = {}) {
   if (!entryPoint || !outputRoot) throw new Error('A frontend entry point and output directory are required.');
@@ -68,6 +68,7 @@ export async function buildFrontend({ entryPoint, outputRoot, mirrorRoot, activa
               theme: tailwindTheme,
             })]).process(cssRoot, { from: filename })).root;
           }
+          if (transformStyle) transformStyle(cssRoot, filename);
           componentStyles.push(validateCss(cssRoot, filename, { ...compilerOptions, sourceLabel, lineOffset: style.loc.start.line - 1 }));
         }
         styles.set(filename, componentStyles);

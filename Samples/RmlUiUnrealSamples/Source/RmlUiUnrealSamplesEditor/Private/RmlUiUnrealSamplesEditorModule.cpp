@@ -6,6 +6,8 @@
 #include "Misc/Paths.h"
 #include "Misc/AutomationTest.h"
 #include "RmlUiActorObserverService.h"
+#include "RmlUiChatTransport.h"
+#include "RmlUiDemoHostService.h"
 #include "RmlUiAnimationRuntime.h"
 #include "RmlUiJSRuntime.h"
 #include "RmlUiUnrealModule.h"
@@ -42,11 +44,18 @@ public:
         RmlWidget = TStrongObjectPtr<URmlUiWidget>(NewObject<URmlUiWidget>());
         Runtime = TStrongObjectPtr<URmlUiJSRuntime>(NewObject<URmlUiJSRuntime>());
         Observer = TStrongObjectPtr<URmlUiActorObserverService>(NewObject<URmlUiActorObserverService>());
+        Host = TStrongObjectPtr<URmlUiDemoHostService>(NewObject<URmlUiDemoHostService>());
+        Probe = TStrongObjectPtr<URmlUiDemoProbeObject>(NewObject<URmlUiDemoProbeObject>(Host.Get()));
+        Chat = TStrongObjectPtr<URmlUiChatTransport>(NewObject<URmlUiChatTransport>());
         RmlWidget->bUseSlateRenderer = true;
         ObservedWorld = CurrentEditorWorld();
         Observer->Initialize(ObservedWorld.Get());
         Observer->AttachMaterialShowcase(RmlWidget.Get());
         Runtime->RegisterService(TEXT("actorObserver"), Observer.Get());
+        Host->Probe = Probe.Get();
+        Runtime->RegisterService(TEXT("host"), Host.Get());
+        Chat->SetApiKey(FPlatformMisc::GetEnvironmentVariable(TEXT("RMLUI_CHAT_API_KEY")));
+        Chat->Attach(Runtime.Get(), TEXT("http://127.0.0.1:4180/v1/chat/completions"), TEXT("local-demo"), TEXT("openai"));
 
         const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("RmlUiUnrealSamples"));
         const FString Manifest = Plugin.IsValid()
@@ -77,7 +86,11 @@ public:
 
     virtual ~SRmlUiActorObserverEditorPanel() override
     {
+        if (Chat.IsValid()) Chat->Stop();
         if (Runtime.IsValid()) Runtime->Stop();
+        Chat.Reset();
+        Probe.Reset();
+        Host.Reset();
         Runtime.Reset();
         Observer.Reset();
         RmlWidget.Reset();
@@ -122,6 +135,9 @@ private:
     TStrongObjectPtr<URmlUiWidget> RmlWidget;
     TStrongObjectPtr<URmlUiJSRuntime> Runtime;
     TStrongObjectPtr<URmlUiActorObserverService> Observer;
+    TStrongObjectPtr<URmlUiDemoHostService> Host;
+    TStrongObjectPtr<URmlUiDemoProbeObject> Probe;
+    TStrongObjectPtr<URmlUiChatTransport> Chat;
     TWeakObjectPtr<UWorld> ObservedWorld;
     int32 DefinitionsBeforeStart = 0;
     int32 BindingsBeforeStart = 0;

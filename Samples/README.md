@@ -1,5 +1,7 @@
 # Optional RmlUi Unreal Samples
 
+For the unified Actor Observer, Chat and Vue Dashboard walkthrough and ready-to-run examples, see [DEMO_README.md](DEMO_README.md).
+
 The core `RmlUiUnreal` plugin requires Puerts but does not require a sample UI, business service, or sample JavaScript library. This directory is source for the separately installed `RmlUiUnrealSamples` plugin. Its `.uplugin.in` descriptor prevents Unreal from discovering a nested plugin inside the core source checkout.
 
 `InstallSamples.ps1` copies the sample plugin next to the core plugin in `RmlUiUnrealTest/Plugins`. `BuildSamples.ps1` installs both frontend dependency sets when needed, builds one content-addressed UI bundle, and mirrors its atomic `current.json` pointer to the installed sample plugin. The project-root `BuildActors.ps1`, `BuildChat.ps1`, and `BuildVue.ps1` are thin wrappers.

@@ -16,6 +16,8 @@ import AnimationSpringShowcase from './AnimationSpringShowcase.vue';
 import AnimationOfficialExamples from './AnimationOfficialExamples.vue';
 import NativeCssAnimationShowcase from './NativeCssAnimationShowcase.vue';
 import CssProbeView from './CssProbeView.vue';
+import ChatApp from '../chat/ChatApp.vue';
+import VueDashboard from '../vue/App.vue';
 
 interface ActorSummary { path: string; name: string; type: string; level: string; hidden: boolean; ticking: boolean }
 interface ActorProperty { category: string; name: string; type: string; value: string }
@@ -29,7 +31,7 @@ const selectedPath = ref('');
 const showDetails = ref(false);
 const details = ref<ActorDetails | null>(null);
 const query = ref('');
-const activeView = ref<'actors' | 'lab' | 'tree' | 'dialogs' | 'mask' | 'host' | 'data' | 'scene' | 'talent' | 'motion' | 'animation' | 'animationofficial' | 'cssmotion' | 'cssprobe'>('cssmotion');
+const activeView = ref<'actors' | 'chat' | 'vue' | 'lab' | 'tree' | 'dialogs' | 'mask' | 'host' | 'data' | 'scene' | 'talent' | 'motion' | 'animation' | 'animationofficial' | 'cssmotion' | 'cssprobe'>('cssmotion');
 const isLive = ref(true);
 const error = ref('');
 const materialIntensity = ref(72);
@@ -134,6 +136,8 @@ onUnmounted(() => clearInterval(timer));
 
     <div class="view-tabs flex items-center border-b px-6">
       <button id="actor-view-tab" class="view-tab" :class="activeView === 'actors' ? 'active' : ''" @click="activeView = 'actors'"><img src="icons/list-tree.png" /><span>Actors</span></button>
+      <button id="chat-view-tab" class="view-tab" :class="activeView === 'chat' ? 'active' : ''" @click="activeView = 'chat'"><img src="icons/messages-square.png" /><span>Chat</span></button>
+      <button id="vue-dashboard-view-tab" class="view-tab" :class="activeView === 'vue' ? 'active' : ''" @click="activeView = 'vue'"><img src="icons/panels-top-left.png" /><span>Vue Dashboard</span></button>
       <button id="ui-lab-tab" class="view-tab" :class="activeView === 'lab' ? 'active' : ''" @click="activeView = 'lab'"><img src="icons/panels-top-left.png" /><span>UI Lab</span></button>
       <button id="motion-view-tab" class="view-tab" :class="activeView === 'motion' ? 'active' : ''" @click="activeView = 'motion'"><img src="icons/chevron-down.png" /><span>Motion Menu</span></button>
       <button id="tree-view-tab" class="view-tab" :class="activeView === 'tree' ? 'active' : ''" @click="activeView = 'tree'"><img src="icons/git-branch.png" /><span>Tree Canvas</span></button>
@@ -199,6 +203,8 @@ onUnmounted(() => clearInterval(timer));
     </div>
     </template>
 
+    <div v-else-if="activeView === 'chat'" id="chat-tab" class="demo-tab"><ChatApp /></div>
+    <div v-else-if="activeView === 'vue'" id="vue-tab" class="demo-tab"><VueDashboard /></div>
     <div v-else-if="activeView === 'lab'" id="ui-lab" class="lab-scroll min-h-0 flex-1 overflow-auto">
       <div class="lab-grid">
         <section class="lab-panel icon-panel">
@@ -330,6 +336,7 @@ body { margin:0; width:100%; height:100%; overflow:hidden; background-color:tran
 div,h1,h2,p,span,section,strong { display:block; } button,img,input { display:block; }
 button { cursor:pointer; font-family:"Noto Sans CJK SC"; } button:disabled { cursor:default; opacity:0.45; }
 .observer-shell { background-color:#eef1f3; }
+.demo-tab { position:relative; min-height:0; flex:1 1 0%; overflow:hidden; }
 .observer-shell.scene-mode { background-color:transparent; }
 .scene-mode .topbar { background-color:#eef5f2dd; }
 .scene-mode .view-tabs { background-color:#edf3f0dd; }
@@ -338,7 +345,7 @@ button { cursor:pointer; font-family:"Noto Sans CJK SC"; } button:disabled { cur
 .live-state { color:#677580; } .live-state.running { color:#087f69; } .live-state.paused { color:#a76314; }
 .live-dot { width:7px; height:7px; border-radius:7px; background-color:#9aa6af; } .running .live-dot { background-color:#0d9b7d; animation:1.2s cubic-in-out live-pulse infinite alternate; } .paused .live-dot { background-color:#d18b2c; }
 @keyframes live-pulse { from { opacity:0.35; transform:scale(0.8); } to { opacity:1; transform:scale(1.15); } }
-.view-tabs { height:42px; overflow-x:auto; overflow-y:hidden; background-color:#f4f6f7; border-color:#cbd2d8; }
+.view-tabs { min-height:42px; max-height:168px; flex-wrap:wrap; overflow-y:auto; background-color:#f4f6f7; border-color:#cbd2d8; }
 .view-tab { display:flex; flex-shrink:0; align-items:center; gap:7px; height:42px; padding:0 16px; border:0; border-bottom:3px transparent; border-radius:0; background-color:transparent; color:#64717c; white-space:nowrap; }
 .view-tab.active { border-bottom:3px #0d8a73; color:#17252d; background-color:#ffffff; } .view-tab img { width:16px; height:16px; }
 .metrics { border-color:#d2d8dd; background-color:#e9eef0; }
@@ -372,7 +379,7 @@ button { cursor:pointer; font-family:"Noto Sans CJK SC"; } button:disabled { cur
 .shadow-demo { display:flex; align-items:center; justify-content:center; background-color:#dce3e7; } .shadow-sheet { padding:14px 18px; border-radius:5px; background-color:#ffffff; box-shadow:7px 8px 12px #20313d55; color:#53616a; font-size:10px; }
 .motion-demo { position:relative; overflow:hidden; background-color:#172a34; } .motion-track { height:4px; margin-top:12px; overflow:hidden; border-radius:2px; background-color:#42545f; } .motion-scan { width:24%; height:4px; background-color:#3dd6b3; animation:1.8s cubic-in-out scan-line infinite alternate; } .motion-square { position:absolute; right:16px; bottom:12px; width:18px; height:18px; border:3px #f2b84b; border-radius:3px; animation:5s linear turn infinite; }
 @keyframes scan-line { from { transform:translateX(0%); } to { transform:translateX(310%); } } @keyframes turn { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
-.swatches { display:flex; align-items:center; justify-content:space-between; } .swatch { width:24px; height:42px; border-radius:4px; } .teal { background-color:#168c78; } .blue { background-color:#3277a8; } .amber { background-color:#d69a2f; } .coral { background-color:#c85c4b; } .violet { background-color:#76549a; }
+.swatches { display:flex; align-items:center; justify-content:space-between; } .swatch { width:24px; height:42px; border-radius:4px; } .swatch.teal { background-color:#168c78; } .swatch.blue { background-color:#3277a8; } .swatch.amber { background-color:#d69a2f; } .swatch.coral { background-color:#c85c4b; } .swatch.violet { background-color:#76549a; }
 .layout-stage { position:relative; display:grid; grid-template-columns:72px minmax(0px,1fr); grid-template-rows:34px 100px 28px; grid-template-areas:"head head" "side main" "foot foot"; gap:5px; padding:9px; border-radius:5px; background-color:#273640; color:#dce6eb; font-family:"JetBrains Mono"; font-size:9px; }
 .layout-header { grid-area:head; padding:10px; background-color:#336f83; } .layout-side { grid-area:side; padding:10px; background-color:#674f78; } .layout-main { grid-area:main; padding:10px; background-color:#376354; } .layout-foot { grid-area:foot; padding:7px 10px; background-color:#7d572f; }
 .anchor-badge { position:absolute; width:24px; height:20px; padding-top:4px; box-sizing:border-box; border-radius:3px; text-align:center; background-color:#f4c151; color:#29333a; } .anchor-ne { top:15px; right:15px; } .anchor-sw { left:15px; bottom:15px; background-color:#ec7968; }

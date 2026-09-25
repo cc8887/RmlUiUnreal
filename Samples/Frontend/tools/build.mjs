@@ -12,6 +12,16 @@ const actorIcons = ['panel-bottom', 'pause', 'play', 'list-tree', 'panels-top-le
 const chatIcons = ['arrow-up', 'arrow-down', 'square', 'copy', 'check', 'plus', 'pencil',
   'rotate-ccw', 'settings-2', 'panel-left', 'x', 'trash-2', 'messages-square'];
 
+export function scopeDemoStyles(root, filename) {
+  const normalized = filename.split(path.sep).join('/');
+  const scope = normalized.includes('/src/chat/') ? '#chat-tab' : normalized.includes('/src/vue/') ? '#vue-tab' : null;
+  if (!scope) return;
+  root.walkRules(rule => {
+    if (rule.parent?.type === 'atrule' && /keyframes$/i.test(rule.parent.name)) return;
+    rule.selectors = rule.selectors.map(selector => selector === 'body' ? scope : `${scope} ${selector}`);
+  });
+}
+
 export async function buildSample({ app = 'vue', outputRoot, mirrorRoot, activate = true } = {}) {
   if (!['vue', 'chat', 'actors'].includes(app)) throw new Error(`Unknown sample app: ${app}`);
   const isActor = app === 'actors', isChat = app === 'chat';
@@ -33,13 +43,14 @@ export async function buildSample({ app = 'vue', outputRoot, mirrorRoot, activat
     requiredFeatures: isActor ? ['nodes.query', 'layout.measure', 'events.extended', 'overlays.modal', 'input.ime'] : [],
     tailwindContentFile: isActor ? path.join(root, 'src/actors/ActorObserverApp.vue') : undefined,
     tailwindTheme: isActor ? { extend: { colors: { ink: '#202a2e', signal: '#14866d', warning: '#c27a28' } } } : undefined,
-    rewriteUnicodeProperties: isChat,
+    rewriteUnicodeProperties: isChat || isActor,
+    transformStyle: isActor ? scopeDemoStyles : undefined,
     requiredMotionRule: rule => isActor &&
       (rule.selector.startsWith('.css-motion-run.css-motion-item-') || rule.selector === '.css-control-loop'),
     dependencyRoots: [path.join(root, 'node_modules'), path.join(core, 'node_modules')],
-    iconNames: isActor ? actorIcons : isChat ? chatIcons : [],
+    iconNames: isActor ? [...new Set([...actorIcons, ...chatIcons])] : isChat ? chatIcons : [],
     iconDirectory: path.join(root, 'node_modules/lucide-static/icons'),
-    fontFiles: isActor ? commonFonts : isChat ? [...commonFonts, 'LatoLatin-Italic.ttf', 'LatoLatin-BoldItalic.ttf'] : [],
+    fontFiles: isActor || isChat ? [...commonFonts, 'LatoLatin-Italic.ttf', 'LatoLatin-BoldItalic.ttf'] : [],
     fontDirectory: path.join(root, 'assets'), assetFiles,
     watchRoots: [path.join(core, 'src'), path.join(root, 'src')],
   });

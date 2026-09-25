@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from '@rmlui/vue';
-import { findService } from '../../../../Frontend/src/bridge';
+import { getService } from '../../../../Frontend/src/bridge';
 import { state, version, addProject, reverseProjects, removeProject, save } from './store';
 import ProjectCard from './ProjectCard.vue';
 const total = computed(() => state.projects.length);
@@ -8,15 +8,13 @@ const hostName = ref('Unreal Engine');
 const probeResult = ref('No C++ object');
 interface DemoProbeObject { GetIdentity(): string; Add(left: number, right: number): number }
 interface DemoHostService { GetHostName(): string; GetProbeObject(): DemoProbeObject }
-const host = findService<DemoHostService>('host');
+const host = getService<DemoHostService>('host');
 let timer = 0;
 onMounted(() => {
   timer = setInterval(() => state.ticks++, 1000) as unknown as number;
-  if (host) {
-    hostName.value = host.GetHostName();
-    const probe = host.GetProbeObject();
-    probeResult.value = `${probe.GetIdentity()}:${probe.Add(19, 23)}`;
-  }
+  hostName.value = host.GetHostName();
+  const probe = host.GetProbeObject();
+  probeResult.value = `${probe.GetIdentity()}:${probe.Add(19, 23)}`;
 });
 onUnmounted(() => clearInterval(timer));
 </script>

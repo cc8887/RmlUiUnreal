@@ -8,6 +8,17 @@ import { fileURLToPath } from 'node:url';
 import { build as bundle } from 'esbuild';
 import { validateCss } from '../../../Frontend/tools/build.mjs';
 import { buildSample } from '../tools/build.mjs';
+import { scopeDemoStyles } from '../tools/build.mjs';
+import postcss from 'postcss';
+
+test('embedded sample styles stay inside their tab while keyframe selectors retain their meaning', () => {
+  const css = postcss.parse('body, button { color:red } @media (max-width:700px) { .card { width:100% } } @keyframes fade { from { opacity:0 } to { opacity:1 } }');
+  scopeDemoStyles(css, path.join(process.cwd(), 'src', 'chat', 'ChatApp.vue'));
+  assert.match(css.toString(), /#chat-tab,\s*#chat-tab button/);
+  assert.match(css.toString(), /#chat-tab \.card/);
+  assert.match(css.toString(), /@keyframes fade \{ from \{/);
+  assert.doesNotMatch(css.toString(), /#chat-tab from/);
+});
 
 test('published sample versions retain every content-addressed asset', async () => {
   const content = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../RmlUiUnrealSamples/Content');
@@ -76,6 +87,14 @@ test('actor observer compiles Tailwind utilities into the supported RmlUi CSS su
   assert.ok(result.diagnostics.some(item => item.classification === 'degraded' && item.property === 'box-shadow' && item.source.endsWith('.vue') && item.line > 0));
   assert.match(css, /@keyframes scan-line/);
   assert.ok(source.includes('GetActorSnapshot'));
+  assert.ok(source.includes('chat-view-tab'));
+  assert.ok(source.includes('vue-dashboard-view-tab'));
+  assert.match(css, /#chat-tab #chat-app/);
+  assert.match(css, /#vue-tab #vue-workspace/);
+  assert.match(css, /\.swatch\.teal\s*\{/);
+  assert.doesNotMatch(css, /(^|\})\s*\.teal\s*\{/);
+  assert.doesNotMatch(css, /(^|\})\s*#chat-app\s*\{/);
+  assert.doesNotMatch(css, /(^|\})\s*#vue-workspace\s*\{/);
   assert.ok(source.includes('GetActorDetails'));
   assert.ok(source.includes('hello_world.png'));
   assert.ok(source.includes('Pause live refresh'));
@@ -157,7 +176,7 @@ test('actor observer compiles Tailwind utilities into the supported RmlUi CSS su
   assert.match(css, /\.gold-edge-mask[^\{]*\{[^}]*position:\s*fixed[^}]*pointer-events:\s*none/);
   assert.match(css, /@keyframes gold-spark-down\s*\{/);
   assert.ok(source.includes('AnimateNode'), 'flow animation is started after native layout');
-  for (const edge of ['top', 'right', 'bottom', 'left']) assert.match(source, new RegExp(`side: ["']${edge}["']`));
+  for (const edge of ['top', 'right', 'bottom', 'left']) assert.match(source, new RegExp(`side:\\s*["']${edge}["']`));
   const maskSvg = await readFile(path.resolve('assets/gold-edge-mask.svg'), 'utf8');
   assert.match(maskSvg, /<mask\b[^>]*id="edge-mask"/);
   assert.match(maskSvg, /mask="url\(#edge-mask\)"/);

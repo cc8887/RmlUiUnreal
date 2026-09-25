@@ -6,7 +6,12 @@ export interface Message { id: number; role: 'user' | 'assistant'; content: stri
 export interface Conversation { id: number; title: string; messages: Message[] }
 const defaults = { conversations: [] as Conversation[], activeId: 0, nextId: 1, draft: '', temperature: 0.7 };
 let restored: Partial<typeof defaults> = {};
-try { const saved = JSON.parse(native.StateJson); if (saved.kind === 'chat' && saved.schema === 1) restored = saved.data; } catch {}
+const savedChatState = JSON.parse(native.StateJson || '{}');
+if (savedChatState.schema === 1 && (savedChatState.kind === 'demo' || savedChatState.kind === 'chat')) {
+  const data = savedChatState.kind === 'demo' ? savedChatState.chat : savedChatState.data;
+  if (!data || !Array.isArray(data.conversations)) throw new Error('Invalid Chat state in the saved demo session.');
+  restored = data;
+}
 export const state = reactive({ ...defaults, ...restored, endpoint: 'http://127.0.0.1:4180/v1/chat/completions', model: 'local-demo', protocol: 'openai',
   generating: false, ready: false, settings: false, sidebar: false, toast: '', error: '', streamId: '', follow: true, editing: -1, deltaCount: 0 });
 for (const conversation of state.conversations) for (const message of conversation.messages) if (message.status === 'streaming') message.status = 'interrupted';

@@ -9,6 +9,8 @@
 
 RmlUi Unreal 是一个统一的 Unreal Engine UI 插件，可使用 RmlUi、类 HTML 的 RML、CSS/RCSS、原生 CSS Grid、Vue 3，以及基于 Puerts 的类型化 Unreal 服务构建游戏和编辑器界面。它的目标是让 AI 编写 UE 页面真正可用，并让受支持页面的渲染成本和集成方式尽可能贴近 Unreal 原生 UI。插件集成 UMG 与 Slate，不需要修改 Unreal Engine 源码。
 
+要体验合并后的 Actor Observer、Chat 和 Vue Dashboard 页签，请参阅[演示说明与上手用例](Samples/DEMO_README.md)。
+
 > [!IMPORTANT]
 > 本项目不是内嵌浏览器。文档必须遵循 RmlUi 的 XML 兼容标记和受支持的 RCSS 语义。浏览器 DOM API、任意网页以及直接复用浏览器组件库不属于项目范围。
 
