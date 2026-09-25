@@ -125,7 +125,7 @@ onUnmounted(() => clearInterval(timer));
   <div class="observer-shell flex h-full w-full flex-col text-ink" :class="activeView === 'scene' ? 'scene-mode' : ''">
     <div class="topbar flex items-center justify-between border-b px-6 py-4">
       <div class="flex flex-col gap-1">
-        <h1 class="m-0 text-xl font-bold">Level Actor Observer</h1>
+        <h1 class="m-0 text-xl font-bold">RmlUIDemo</h1>
         <p class="m-0 text-xs text-slate-500">{{ snapshot.level || 'World unavailable' }}</p>
       </div>
       <div class="flex items-center gap-3">

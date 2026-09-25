@@ -87,6 +87,7 @@ test('actor observer compiles Tailwind utilities into the supported RmlUi CSS su
   assert.ok(result.diagnostics.some(item => item.classification === 'degraded' && item.property === 'box-shadow' && item.source.endsWith('.vue') && item.line > 0));
   assert.match(css, /@keyframes scan-line/);
   assert.ok(source.includes('GetActorSnapshot'));
+  assert.ok(source.includes('RmlUIDemo'));
   assert.ok(source.includes('chat-view-tab'));
   assert.ok(source.includes('vue-dashboard-view-tab'));
   assert.match(css, /#chat-tab #chat-app/);

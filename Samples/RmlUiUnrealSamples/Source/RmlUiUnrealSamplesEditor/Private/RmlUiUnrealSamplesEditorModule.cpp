@@ -12,28 +12,25 @@
 #include "RmlUiJSRuntime.h"
 #include "RmlUiUnrealModule.h"
 #include "RmlUiWidget.h"
-#include "Styling/AppStyle.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Text/STextBlock.h"
-#include "WorkspaceMenuStructure.h"
-#include "WorkspaceMenuStructureModule.h"
 
 namespace
 {
-const FName ActorObserverTabName(TEXT("RmlUiActorObserver"));
+const FName DemoTabName(TEXT("RmlUIDemo"));
 
 UWorld* CurrentEditorWorld()
 {
     return GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 }
 
-class SRmlUiActorObserverEditorPanel final : public SCompoundWidget
+class SRmlUiDemoEditorPanel final : public SCompoundWidget
 {
 public:
-    SLATE_BEGIN_ARGS(SRmlUiActorObserverEditorPanel) {}
+    SLATE_BEGIN_ARGS(SRmlUiDemoEditorPanel) {}
     SLATE_END_ARGS()
 
     void Construct(const FArguments&)
@@ -78,13 +75,13 @@ public:
             ChildSlot
             [
                 SNew(STextBlock)
-                .Text(FText::FromString(FString(TEXT("Could not start Actor Observer: ")) + Error))
+                .Text(FText::FromString(FString(TEXT("Could not start RmlUIDemo: ")) + Error))
                 .AutoWrapText(true)
             ];
         }
     }
 
-    virtual ~SRmlUiActorObserverEditorPanel() override
+    virtual ~SRmlUiDemoEditorPanel() override
     {
         if (Chat.IsValid()) Chat->Stop();
         if (Runtime.IsValid()) Runtime->Stop();
@@ -149,40 +146,51 @@ class FRmlUiUnrealSamplesEditorModule final : public IModuleInterface
 public:
     virtual void StartupModule() override
     {
-        FGlobalTabmanager::Get()->RegisterNomadTabSpawner(ActorObserverTabName,
-            FOnSpawnTab::CreateRaw(this, &FRmlUiUnrealSamplesEditorModule::SpawnActorObserver))
-            .SetDisplayName(FText::FromString(TEXT("RmlUi Actor Observer")))
-            .SetTooltipText(FText::FromString(TEXT("Inspect Actors in the current editor level")))
-            .SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
-            .SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("LevelEditor.Tabs.Outliner")));
+        FGlobalTabmanager::Get()->RegisterNomadTabSpawner(DemoTabName,
+            FOnSpawnTab::CreateRaw(this, &FRmlUiUnrealSamplesEditorModule::SpawnDemo))
+            .SetDisplayName(FText::FromString(TEXT("RmlUIDemo")))
+            .SetTooltipText(FText::FromString(TEXT("RmlUi Unreal demonstration")))
+            .SetMenuType(ETabSpawnerMenuType::Hidden)
+            .SetAutoGenerateMenuEntry(false);
     }
 
     virtual void ShutdownModule() override
     {
-        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(ActorObserverTabName);
+        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(DemoTabName);
     }
 
 private:
-    TSharedRef<SDockTab> SpawnActorObserver(const FSpawnTabArgs&)
+    TSharedRef<SDockTab> SpawnDemo(const FSpawnTabArgs&)
     {
         return SNew(SDockTab)
             .TabRole(ETabRole::NomadTab)
-            [SNew(SRmlUiActorObserverEditorPanel)];
+            [SNew(SRmlUiDemoEditorPanel)];
     }
 };
 
 IMPLEMENT_MODULE(FRmlUiUnrealSamplesEditorModule, RmlUiUnrealSamplesEditor)
 
 #if WITH_DEV_AUTOMATION_TESTS
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiActorObserverEditorTabTest, "RmlUi.ActorObserver.EditorTab",
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRmlUiDemoEditorTabTest, "RmlUi.Demo.EditorTab",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FRmlUiActorObserverEditorTabTest::RunTest(const FString& Parameters)
+bool FRmlUiDemoEditorTabTest::RunTest(const FString& Parameters)
 {
-    const TSharedPtr<SDockTab> Tab = FGlobalTabmanager::Get()->TryInvokeTab(ActorObserverTabName);
-    if (!TestTrue(TEXT("Actor Observer Nomad tab opens"), Tab.IsValid())) return false;
-    const TSharedRef<SRmlUiActorObserverEditorPanel> Panel =
-        StaticCastSharedRef<SRmlUiActorObserverEditorPanel>(Tab->GetContent());
+    TestFalse(TEXT("Old Actor Observer tab spawner is removed"), FGlobalTabmanager::Get()->HasTabSpawner(TEXT("RmlUiActorObserver")));
+    const TSharedPtr<FTabSpawnerEntry> Spawner = FGlobalTabmanager::Get()->FindTabSpawnerFor(DemoTabName);
+    if (!TestTrue(TEXT("RmlUIDemo tab spawner remains available"), Spawner.IsValid())) return false;
+    TestTrue(TEXT("RmlUIDemo has no editor menu entry"), Spawner->IsHidden());
+    bool bDemoInMenu = false;
+    for (const TWeakPtr<FTabSpawnerEntry>& Entry : FGlobalTabmanager::Get()->CollectSpawners())
+    {
+        const TSharedPtr<FTabSpawnerEntry> MenuEntry = Entry.Pin();
+        bDemoInMenu |= MenuEntry.IsValid() && MenuEntry->GetTabType() == DemoTabName;
+    }
+    TestFalse(TEXT("RmlUIDemo is absent from generated editor menus"), bDemoInMenu);
+    const TSharedPtr<SDockTab> Tab = FGlobalTabmanager::Get()->TryInvokeTab(DemoTabName);
+    if (!TestTrue(TEXT("RmlUIDemo Nomad tab opens programmatically"), Tab.IsValid())) return false;
+    const TSharedRef<SRmlUiDemoEditorPanel> Panel =
+        StaticCastSharedRef<SRmlUiDemoEditorPanel>(Tab->GetContent());
     TestTrue(TEXT("Vue runtime reports ready inside the editor tab"), Panel->IsRuntimeReady());
     TestEqual(TEXT("Panel observes the active editor world"), Panel->GetObservedWorld(), CurrentEditorWorld());
     const FString Snapshot = Panel->CaptureActorSnapshot();

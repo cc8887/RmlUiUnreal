@@ -1,6 +1,6 @@
 # Optional RmlUi Unreal Samples
 
-For the unified Actor Observer, Chat and Vue Dashboard walkthrough and ready-to-run examples, see [DEMO_README.md](DEMO_README.md).
+For the unified `RmlUIDemo` walkthrough and ready-to-run examples, see [DEMO_README.md](DEMO_README.md).
 
 The core `RmlUiUnreal` plugin requires Puerts but does not require a sample UI, business service, or sample JavaScript library. This directory is source for the separately installed `RmlUiUnrealSamples` plugin. Its `.uplugin.in` descriptor prevents Unreal from discovering a nested plugin inside the core source checkout.
 
@@ -14,7 +14,7 @@ The core `RmlUiUnreal` plugin requires Puerts but does not require a sample UI, 
 
 `Frontend` contains the shared Puerts/Vue runtime, animation IR and compiler. `Samples/Frontend` contains the Vue, Chat, Actor Observer pages and their own `package-lock.json`; ECharts, D3, TanStack, Floating UI, Markdown, Lucide, Animation.js, Anime.js and GSAP are installed only for sample development or compatibility tests. The Animation.js/Anime.js/GSAP adapters compile library-shaped configuration into the shared animation IR and do not import the libraries at runtime.
 
-The sample plugin owns `URmlUiActorObserverService`, `URmlUiChatTransport`, the Actor Observer editor tab, three published UI bundles, and the Puerts integration tests. The core `URmlUiJSRuntime` requires an explicit manifest path and accepts application services through `RegisterService` before `Start`. Missing apps, services, assets and unsupported compile features fail through the diagnostic channel.
+The sample plugin owns `URmlUiActorObserverService`, `URmlUiChatTransport`, the hidden `RmlUIDemo` editor tab spawner, three published UI bundles, and the Puerts integration tests. The demo does not add a Tools menu item. The core `URmlUiJSRuntime` requires an explicit manifest path and accepts application services through `RegisterService` before `Start`. Missing apps, services, assets and unsupported compile features fail through the diagnostic channel.
 
 The sample plugin is optional for consumers. The host test project enables it because its GameMode and smoke tests exercise all three example applications. Core-only projects install just `RmlUiUnreal` and its required `Puerts` plugin, then provide their own manifest and services.
 

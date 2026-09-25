@@ -9,7 +9,7 @@ English | [简体中文](README.zh-CN.md)
 
 RmlUi Unreal is a unified Unreal Engine plugin for building game and editor interfaces with RmlUi, HTML-like RML, CSS/RCSS, native CSS Grid, Vue 3, and typed Unreal services through Puerts. It is designed to make AI-authored UE interfaces practical while moving their rendering cost and integration model as close to native Unreal UI as the supported content allows. It integrates with UMG and Slate and does not require changes to Unreal Engine source.
 
-To try the unified Actor Observer, Chat, and Vue Dashboard tabs, follow the [demo walkthrough and hands-on examples](Samples/DEMO_README.md).
+To try `RmlUIDemo` and its Actor Observer, Chat, and Vue Dashboard tabs, follow the [demo walkthrough and hands-on examples](Samples/DEMO_README.md).
 
 > [!IMPORTANT]
 > This is not an embedded browser. Documents must follow RmlUi's XML-compatible markup and supported RCSS semantics. Browser DOM APIs, arbitrary websites, and drop-in browser component libraries are outside the project scope.
@@ -177,7 +177,7 @@ Rebuilding the bridge requires CMake, Visual Studio 2022 C++ tools, a Windows SD
 4. Bind document events or call the Blueprint DOM helpers for application behavior.
 5. Open **Tools > RmlUi Preview** to inspect documents without starting the game.
 
-Use **RmlUi Web-Compatible Document** when the page needs the `WebModernV1` compatibility profile. Install the optional samples plugin to expose **Tools > RmlUi Actor Observer**; PIE is not required.
+Use **RmlUi Web-Compatible Document** when the page needs the `WebModernV1` compatibility profile. The optional samples plugin provides `RmlUIDemo`; it no longer adds an Actor Observer button to the Editor Tools menu. Run the host project's `Launch.ps1` to explore the demo, or invoke the hidden editor tab programmatically.
 
 ### C++
 

@@ -7,7 +7,7 @@ public class RmlUiUnrealSamplesEditor : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateDependencyModuleNames.AddRange(new[] {
             "Core", "CoreUObject", "Engine", "Slate", "SlateCore", "UMG", "UnrealEd",
-            "WorkspaceMenuStructure", "Projects", "RmlUiUnreal", "RmlUiUnrealJS", "RmlUiUnrealSamples"
+            "Projects", "RmlUiUnreal", "RmlUiUnrealJS", "RmlUiUnrealSamples"
         });
     }
 }

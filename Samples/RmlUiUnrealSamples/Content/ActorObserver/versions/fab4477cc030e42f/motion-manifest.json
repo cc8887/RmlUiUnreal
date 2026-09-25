@@ -1,0 +1,624 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    {
+      "selector": ".css-motion-run.css-motion-item-1",
+      "name": "css-motion-rise",
+      "duration": 2.8,
+      "delay": 0.2,
+      "iterations": 1,
+      "direction": 0,
+      "fill": 3,
+      "paused": false,
+      "tracks": [
+        {
+          "property": "opacity",
+          "propertyId": 1,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "property": "transform",
+          "propertyId": 2,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0,
+                28,
+                0.93,
+                0.93,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                0,
+                -5,
+                1.025,
+                1.025,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOnLoad": true
+    },
+    {
+      "selector": ".css-motion-run.css-motion-item-2",
+      "name": "css-motion-rise",
+      "duration": 2.8,
+      "delay": 0.55,
+      "iterations": 1,
+      "direction": 0,
+      "fill": 3,
+      "paused": false,
+      "tracks": [
+        {
+          "property": "opacity",
+          "propertyId": 1,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "property": "transform",
+          "propertyId": 2,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0,
+                28,
+                0.93,
+                0.93,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                0,
+                -5,
+                1.025,
+                1.025,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOnLoad": true
+    },
+    {
+      "selector": ".css-motion-run.css-motion-item-3",
+      "name": "css-motion-rise",
+      "duration": 2.8,
+      "delay": 0.9,
+      "iterations": 1,
+      "direction": 0,
+      "fill": 3,
+      "paused": false,
+      "tracks": [
+        {
+          "property": "opacity",
+          "propertyId": 1,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "property": "transform",
+          "propertyId": 2,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0,
+                28,
+                0.93,
+                0.93,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                0,
+                -5,
+                1.025,
+                1.025,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOnLoad": true
+    },
+    {
+      "selector": ".css-motion-run.css-motion-item-4",
+      "name": "css-motion-rise",
+      "duration": 2.8,
+      "delay": 1.25,
+      "iterations": 1,
+      "direction": 0,
+      "fill": 3,
+      "paused": false,
+      "tracks": [
+        {
+          "property": "opacity",
+          "propertyId": 1,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "property": "transform",
+          "propertyId": 2,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0,
+                28,
+                0.93,
+                0.93,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 0.68,
+              "values": [
+                0,
+                -5,
+                1.025,
+                1.025,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.2,
+                0.78,
+                0.24,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOnLoad": true
+    },
+    {
+      "selector": ".css-control-loop",
+      "name": "css-control-travel",
+      "duration": 1.4,
+      "delay": -0.55,
+      "iterations": 0,
+      "direction": 2,
+      "fill": 3,
+      "paused": false,
+      "tracks": [
+        {
+          "property": "opacity",
+          "propertyId": 1,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0.38
+              ],
+              "easing": [
+                1,
+                0.3,
+                0.05,
+                0.2,
+                1
+              ]
+            },
+            {
+              "offset": 0.72,
+              "values": [
+                1
+              ],
+              "easing": [
+                1,
+                0.3,
+                0.05,
+                0.2,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                0.76
+              ],
+              "easing": [
+                1,
+                0.3,
+                0.05,
+                0.2,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "property": "transform",
+          "propertyId": 2,
+          "keyframes": [
+            {
+              "offset": 0,
+              "values": [
+                0,
+                0,
+                0.82,
+                0.82,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.3,
+                0.05,
+                0.2,
+                1
+              ]
+            },
+            {
+              "offset": 0.72,
+              "values": [
+                168,
+                0,
+                1.12,
+                1.12,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.3,
+                0.05,
+                0.2,
+                1
+              ]
+            },
+            {
+              "offset": 1,
+              "values": [
+                188,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0
+              ],
+              "easing": [
+                1,
+                0.3,
+                0.05,
+                0.2,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "requiredOnLoad": true
+    }
+  ],
+  "playStates": [
+    {
+      "selector": ".css-motion-run",
+      "paused": false
+    },
+    {
+      "selector": ".css-control-loop",
+      "paused": false
+    },
+    {
+      "selector": ".css-control-paused",
+      "paused": true
+    }
+  ]
+}
